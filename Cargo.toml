@@ -1,0 +1,26 @@
+[package]
+name = "douconel-test-env"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+douconel = { path = "../douconel"}
+potpoursi = { path = "../potpoursi" }
+
+bevy = "0.12.1"
+bevy_egui = "0.24.0"
+smooth-bevy-cameras = "0.10.0"
+rfd = "0.13.0"
+rand = "0.8.5"
+rayon = "1.8.1"
+itertools = "0.12.1"
+serde = "1.0.196"
+petgraph = "0.6.4"
+priq = "0.1.0"
+slotmap = "1.0.7"
+bevy_mod_raycast = "0.16"
+kiddo = "3.0.0"
+kdtree = "0.7.0"
+ordered-float = "4.2.0"
