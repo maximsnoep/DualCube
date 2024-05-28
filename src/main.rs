@@ -10,7 +10,7 @@ use bevy::utils::petgraph::visit::IntoNodeReferences;
 use bevy::window::WindowMode;
 use bevy_egui::EguiPlugin;
 use bevy_mod_raycast::prelude::*;
-use douconel::douconel::{Douconel, EdgeID, FaceID, VertID};
+use douconel::douconel::{find_shortest_cycle, Douconel, EdgeID, FaceID, VertID};
 use douconel::douconel_embedded::EmbeddedFace;
 use douconel::douconel_embedded::EmbeddedVertex;
 use dual::Dual;
@@ -26,10 +26,8 @@ use smooth_bevy_cameras::controllers::orbit::{
     OrbitCameraBundle, OrbitCameraController, OrbitCameraPlugin,
 };
 use smooth_bevy_cameras::LookTransformPlugin;
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::rc::Rc;
 use std::time::Duration;
 
 const BACKGROUND_COLOR: bevy::prelude::Color = bevy::prelude::Color::WHITE;
@@ -116,10 +114,13 @@ impl Default for TreeD {
 }
 
 #[derive(Default, Resource)]
+pub struct CacheResource {
+    cache: [HashMap<(EdgeID, EdgeID), Vec<((EdgeID, EdgeID), OrderedFloat<f32>)>>; 3],
+}
+
+#[derive(Default, Resource)]
 pub struct MeshResource {
     mesh: Douconel<EmbeddedVertex, (), EmbeddedFace>,
-
-    cache: HashMap<(EdgeID, EdgeID), Vec<((EdgeID, EdgeID), OrderedFloat<f32>)>>,
 
     vertex_lookup: TreeD,
     keys: Vec<VertID>,
@@ -160,6 +161,7 @@ impl HasDirection for EdgeWithDirection {
 fn main() {
     App::new()
         .init_resource::<MeshResource>()
+        .init_resource::<CacheResource>()
         .init_resource::<Configuration>()
         .insert_resource(ClearColor(BACKGROUND_COLOR))
         .insert_resource(AmbientLight {
@@ -203,6 +205,7 @@ fn raycast(
     mouse: Res<Input<MouseButton>>,
     mut gizmos: Gizmos,
     mut mesh_resmut: ResMut<MeshResource>,
+    mut cache: ResMut<CacheResource>,
     configuration: ResMut<Configuration>,
 ) {
     if let Some(cursor_ray) = **cursor_ray {
@@ -364,9 +367,18 @@ fn raycast(
             //     draw_arrow(&mut gizmos, &configuration, (u, un), (v, vn), color, 0.6);
             // }
 
-            let total_path = mesh_resmut
-                .mesh
-                .find_shortest_cycle(
+            let total_path = [
+                find_shortest_cycle(
+                    (nearest_edge, second_nearest_edge),
+                    mesh_resmut.mesh.neighbor_function_edgepairgraph(),
+                    mesh_resmut.mesh.weight_function_angle_edgepairs_aligned(
+                        5,
+                        5,
+                        configuration.direction.to_vector(),
+                    ),
+                    &mut cache.cache[configuration.direction as usize],
+                ),
+                find_shortest_cycle(
                     (nearest_edge, second_nearest_edge),
                     mesh_resmut.mesh.neighbor_function_edgepairgraph(),
                     mesh_resmut.mesh.weight_function_angle_edgepairs_aligned(
@@ -374,11 +386,17 @@ fn raycast(
                         8,
                         configuration.direction.to_vector(),
                     ),
-                    &mut mesh_resmut.cache,
-                )
-                .unwrap();
+                    &mut cache.cache[configuration.direction as usize],
+                ),
+            ]
+            .into_iter()
+            .flatten()
+            .sorted_by(|&(_, a), &(_, b)| a.cmp(&b))
+            .next()
+            .unwrap_or_default()
+            .0;
 
-            for edge in total_path.0 {
+            for edge in total_path {
                 let u_pos = mesh_resmut.mesh.midpoint(edge.0);
                 let v_pos = mesh_resmut.mesh.midpoint(edge.1);
                 let u_nor = mesh_resmut.mesh.edge_normal(edge.0);
