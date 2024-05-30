@@ -1,3 +1,5 @@
+#![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::cargo)]
+#![allow(clippy::missing_panics_doc, clippy::missing_errors_doc)]
 mod dual;
 mod ui;
 
@@ -422,7 +424,7 @@ fn raycast(
 }
 
 /// Set up
-fn setup(mut commands: Commands) {
+fn setup(mut commands: Commands, mut egui_ctx: bevy_egui::EguiContexts) {
     commands
         .spawn(Camera3dBundle::default())
         .insert(OrbitCameraBundle::new(
@@ -431,6 +433,28 @@ fn setup(mut commands: Commands) {
             Vec3::new(0., 0., 0.),
             Vec3::Y,
         ));
+
+    let mut fonts = bevy_egui::egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "my_font".to_owned(),
+        bevy_egui::egui::FontData::from_static(include_bytes!(
+            "../assets/BerkeleyMonoTrial-Regular.ttf"
+        )),
+    );
+    fonts
+        .families
+        .entry(bevy_egui::egui::FontFamily::Proportional)
+        .or_default()
+        .insert(0, "my_font".to_owned());
+    fonts
+        .families
+        .entry(bevy_egui::egui::FontFamily::Monospace)
+        .or_default()
+        .push("my_font".to_owned());
+    egui_ctx.ctx_mut().set_fonts(fonts);
+    egui_ctx
+        .ctx_mut()
+        .set_visuals(bevy_egui::egui::Visuals::light());
 }
 
 // // Graph s.t. node for each original edge, and (directed) edges between nodes if the original edges are adjacent

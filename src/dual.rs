@@ -1,3 +1,5 @@
+#![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::cargo)]
+
 use crate::Configuration;
 use crate::EdgeWithDirection;
 use crate::HasDirection;

@@ -1653,7 +1653,6 @@ dependencies = [
  "bimap",
  "glam",
  "itertools 0.12.1",
- "obj",
  "ordered-float",
  "pathfinding",
  "petgraph",
@@ -3057,12 +3056,6 @@ dependencies = [
  "quote",
  "syn 2.0.65",
 ]
-
-[[package]]
-name = "obj"
-version = "0.10.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "059c95245738cdc7b40078cdd51a23200252a4c0a0a6dd005136152b3f467a4a"
 
 [[package]]
 name = "objc"

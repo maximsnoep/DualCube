@@ -1,3 +1,5 @@
+#![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::cargo)]
+
 use crate::{dual::PrincipalDirection, ActionEvent, Configuration};
 use bevy::prelude::*;
 use bevy_egui::egui::{emath::Numeric, Slider, TopBottomPanel, Ui};
@@ -12,7 +14,7 @@ pub fn ui(
         ui.horizontal(|ui| {
             if ui.button("Load file (supported: .stl)").clicked() {
                 if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("triangulated geometry", &["stl", "poc"])
+                    .add_filter("triangulated geometry", &["stl", "poc", "obj"])
                     .pick_file()
                 {
                     ev_w.send(ActionEvent::LoadFile(path));
