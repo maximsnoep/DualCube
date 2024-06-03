@@ -13,7 +13,6 @@ use bevy::window::WindowMode;
 use bevy_egui::EguiPlugin;
 use bevy_mod_raycast::prelude::*;
 use douconel::douconel::{find_shortest_cycle, Douconel, EdgeID, FaceID, VertID};
-use douconel::douconel_embedded::EmbeddedFace;
 use douconel::douconel_embedded::EmbeddedVertex;
 use dual::Dual;
 use itertools::Itertools;
@@ -122,7 +121,7 @@ pub struct CacheResource {
 
 #[derive(Default, Resource)]
 pub struct MeshResource {
-    mesh: Douconel<EmbeddedVertex, (), EmbeddedFace>,
+    mesh: Douconel<EmbeddedVertex, (), ()>,
 
     vertex_lookup: TreeD,
     keys: Vec<VertID>,

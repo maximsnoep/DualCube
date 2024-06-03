@@ -8,7 +8,6 @@ use crate::Rules;
 use bevy::prelude::*;
 use douconel::douconel::{Douconel, EdgeID, FaceID, VertID};
 use douconel::douconel_embedded::EmbeddedVertex;
-use douconel::douconel_embedded::HasNormal;
 use douconel::douconel_embedded::HasPosition;
 use itertools::Itertools;
 use petgraph::algo::astar;
