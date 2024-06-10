@@ -1652,14 +1652,12 @@ dependencies = [
  "approx",
  "bevy",
  "bimap",
+ "hutspot",
  "itertools 0.13.0",
  "nalgebra",
  "ordered-float",
- "pathfinding",
  "petgraph",
- "potpoursi",
  "rand",
- "rayon",
  "serde",
  "slotmap",
  "stl_io",
@@ -1674,12 +1672,12 @@ dependencies = [
  "bevy_egui",
  "bevy_mod_raycast",
  "douconel",
+ "hutspot",
  "itertools 0.12.1",
  "kdtree",
  "kiddo",
  "ordered-float",
  "petgraph",
- "potpoursi",
  "priq",
  "rand",
  "rayon",
@@ -2402,6 +2400,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3d1354bf6b7235cb4a0576c2619fd4ed18183f689b12b006a0ee7329eeff9a5"
 dependencies = [
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "hutspot"
+version = "0.0.1"
+dependencies = [
+ "approx",
+ "bevy_render",
+ "glam",
+ "itertools 0.13.0",
+ "nalgebra",
+ "ordered-float",
+ "pathfinding",
 ]
 
 [[package]]
@@ -3507,14 +3518,6 @@ dependencies = [
  "fdeflate",
  "flate2",
  "miniz_oxide",
-]
-
-[[package]]
-name = "potpoursi"
-version = "0.1.0"
-dependencies = [
- "approx",
- "nalgebra",
 ]
 
 [[package]]

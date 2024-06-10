@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 douconel = { path = "../douconel"}
-potpoursi = { path = "../potpoursi" }
+hutspot = { path = "../hutspot" }
 
 bevy = "0.12.1"
 bevy_egui = "0.24.0"

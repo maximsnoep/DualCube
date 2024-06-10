@@ -12,16 +12,16 @@ use bevy::utils::petgraph::visit::IntoNodeReferences;
 use bevy::window::WindowMode;
 use bevy_egui::EguiPlugin;
 use bevy_mod_raycast::prelude::*;
-use douconel::douconel::{find_shortest_cycle, Douconel, EdgeID, FaceID, VertID};
+use douconel::douconel::{Douconel, EdgeID, FaceID, VertID};
 use douconel::douconel_embedded::EmbeddedVertex;
 use dual::Dual;
+use hutspot::geom::Vector3D;
 use itertools::Itertools;
 use kdtree::distance::squared_euclidean;
 use kdtree::KdTree;
 use ordered_float::OrderedFloat;
 use petgraph::graphmap::*;
 use petgraph::visit::IntoEdgeReferences;
-use potpoursi::math::{inv_transform_coordinates, transform_coordinates};
 use serde::{Deserialize, Serialize};
 use smooth_bevy_cameras::controllers::orbit::{
     OrbitCameraBundle, OrbitCameraController, OrbitCameraPlugin,
@@ -195,232 +195,232 @@ fn main() {
             Update,
             update_mesh.run_if(on_timer(Duration::from_millis(100))),
         )
-        .add_systems(Update, raycast)
+        // .add_systems(Update, raycast)
         .add_event::<ActionEvent>()
         .run();
 }
 
-fn raycast(
-    cursor_ray: Res<CursorRay>,
-    mut raycast: Raycast,
-    mouse: Res<Input<MouseButton>>,
-    mut gizmos: Gizmos,
-    mut mesh_resmut: ResMut<MeshResource>,
-    mut cache: ResMut<CacheResource>,
-    configuration: ResMut<Configuration>,
-) {
-    if let Some(cursor_ray) = **cursor_ray {
-        let intersections = raycast.cast_ray(cursor_ray, &default());
-        if !intersections.is_empty() {
-            let intersection = &raycast.cast_ray(cursor_ray, &default())[0].1;
+// fn raycast(
+//     cursor_ray: Res<CursorRay>,
+//     mut raycast: Raycast,
+//     mouse: Res<Input<MouseButton>>,
+//     mut gizmos: Gizmos,
+//     mut mesh_resmut: ResMut<MeshResource>,
+//     mut cache: ResMut<CacheResource>,
+//     configuration: ResMut<Configuration>,
+// ) {
+//     if let Some(cursor_ray) = **cursor_ray {
+//         let intersections = raycast.cast_ray(cursor_ray, &default());
+//         if !intersections.is_empty() {
+//             let intersection = &raycast.cast_ray(cursor_ray, &default())[0].1;
 
-            let normal = intersection.normal();
-            let position = inv_transform_coordinates(
-                configuration.translation,
-                configuration.scale,
-                intersection.position().into(),
-            );
+//             let normal = intersection.normal();
+//             let position = inv_transform_coordinates(
+//                 configuration.translation,
+//                 configuration.scale,
+//                 intersection.position().into(),
+//             );
 
-            draw_pointer(&mut gizmos, &configuration, (position, normal), Color::RED);
+//             draw_pointer(&mut gizmos, &configuration, (position, normal), Color::RED);
 
-            let triangle = intersection.triangle().unwrap();
-            let v0 = inv_transform_coordinates(
-                configuration.translation,
-                configuration.scale,
-                triangle.v0.into(),
-            );
-            let v1 = inv_transform_coordinates(
-                configuration.translation,
-                configuration.scale,
-                triangle.v1.into(),
-            );
-            let v2 = inv_transform_coordinates(
-                configuration.translation,
-                configuration.scale,
-                triangle.v2.into(),
-            );
+//             let triangle = intersection.triangle().unwrap();
+//             let v0 = inv_transform_coordinates(
+//                 configuration.translation,
+//                 configuration.scale,
+//                 triangle.v0.into(),
+//             );
+//             let v1 = inv_transform_coordinates(
+//                 configuration.translation,
+//                 configuration.scale,
+//                 triangle.v1.into(),
+//             );
+//             let v2 = inv_transform_coordinates(
+//                 configuration.translation,
+//                 configuration.scale,
+//                 triangle.v2.into(),
+//             );
 
-            // get nearest point of v0, v1, and v2
-            let dist_v0 = position.distance(v0);
-            let dist_v1 = position.distance(v1);
-            let dist_v2 = position.distance(v2);
-            let (nearest, second_nearest, third_nearest) = if dist_v0 < dist_v1 {
-                if dist_v1 < dist_v2 {
-                    (v0, v1, v2)
-                } else {
-                    if dist_v0 < dist_v2 {
-                        (v0, v2, v1)
-                    } else {
-                        (v2, v0, v1)
-                    }
-                }
-            } else {
-                if dist_v0 < dist_v2 {
-                    (v1, v0, v2)
-                } else {
-                    if dist_v1 < dist_v2 {
-                        (v1, v2, v0)
-                    } else {
-                        (v2, v1, v0)
-                    }
-                }
-            };
+//             // get nearest point of v0, v1, and v2
+//             let dist_v0 = position.distance(v0);
+//             let dist_v1 = position.distance(v1);
+//             let dist_v2 = position.distance(v2);
+//             let (nearest, second_nearest, third_nearest) = if dist_v0 < dist_v1 {
+//                 if dist_v1 < dist_v2 {
+//                     (v0, v1, v2)
+//                 } else {
+//                     if dist_v0 < dist_v2 {
+//                         (v0, v2, v1)
+//                     } else {
+//                         (v2, v0, v1)
+//                     }
+//                 }
+//             } else {
+//                 if dist_v0 < dist_v2 {
+//                     (v1, v0, v2)
+//                 } else {
+//                     if dist_v1 < dist_v2 {
+//                         (v1, v2, v0)
+//                     } else {
+//                         (v2, v1, v0)
+//                     }
+//                 }
+//             };
 
-            // v positions to mesh ids
-            let nearest_id = mesh_resmut.keys[mesh_resmut.vertex_lookup.nearest(&nearest.into()).1];
-            let nearest_face = mesh_resmut
-                .mesh
-                .star(nearest_id)
-                .into_iter()
-                .sorted_by(|&face_a, &face_b| {
-                    mesh_resmut
-                        .mesh
-                        .centroid(face_a)
-                        .distance(position)
-                        .partial_cmp(&mesh_resmut.mesh.centroid(face_b).distance(position))
-                        .unwrap()
-                })
-                .next()
-                .unwrap();
+//             // v positions to mesh ids
+//             let nearest_id = mesh_resmut.keys[mesh_resmut.vertex_lookup.nearest(&nearest.into()).1];
+//             let nearest_face = mesh_resmut
+//                 .mesh
+//                 .star(nearest_id)
+//                 .into_iter()
+//                 .sorted_by(|&face_a, &face_b| {
+//                     mesh_resmut
+//                         .mesh
+//                         .centroid(face_a)
+//                         .distance(position)
+//                         .partial_cmp(&mesh_resmut.mesh.centroid(face_b).distance(position))
+//                         .unwrap()
+//                 })
+//                 .next()
+//                 .unwrap();
 
-            let mut two_edges = mesh_resmut
-                .mesh
-                .edges(nearest_face)
-                .into_iter()
-                .filter(|&edge| {
-                    let (u, v) = mesh_resmut.mesh.endpoints(edge);
-                    u == nearest_id || v == nearest_id
-                });
+//             let mut two_edges = mesh_resmut
+//                 .mesh
+//                 .edges(nearest_face)
+//                 .into_iter()
+//                 .filter(|&edge| {
+//                     let (u, v) = mesh_resmut.mesh.endpoints(edge);
+//                     u == nearest_id || v == nearest_id
+//                 });
 
-            let nearest_edge = two_edges.next().unwrap();
-            let second_nearest_edge = two_edges.next().unwrap();
+//             let nearest_edge = two_edges.next().unwrap();
+//             let second_nearest_edge = two_edges.next().unwrap();
 
-            draw_vertex(
-                &mut gizmos,
-                &configuration,
-                (nearest, mesh_resmut.mesh.vert_normal(nearest_id)),
-                Color::GREEN,
-            );
+//             draw_vertex(
+//                 &mut gizmos,
+//                 &configuration,
+//                 (nearest, mesh_resmut.mesh.vert_normal(nearest_id)),
+//                 Color::GREEN,
+//             );
 
-            for edge in mesh_resmut.mesh.edges(nearest_face) {
-                let (u, v) = mesh_resmut.mesh.endpoints(edge);
-                let color = match configuration.direction {
-                    PrincipalDirection::X => potpoursi::color::YZ_PRIMARY,
-                    PrincipalDirection::Y => potpoursi::color::XZ_PRIMARY,
-                    PrincipalDirection::Z => potpoursi::color::XY_PRIMARY,
-                };
-                let u_pos = mesh_resmut.mesh.position(u);
-                let v_pos = mesh_resmut.mesh.position(v);
-                let u_nor = mesh_resmut.mesh.vert_normal(u);
-                let v_nor = mesh_resmut.mesh.vert_normal(v);
-                draw_arrow(
-                    &mut gizmos,
-                    &configuration,
-                    (u_pos, u_nor),
-                    (v_pos, v_nor),
-                    color,
-                    0.6,
-                );
-            }
+//             for edge in mesh_resmut.mesh.edges(nearest_face) {
+//                 let (u, v) = mesh_resmut.mesh.endpoints(edge);
+//                 let color = match configuration.direction {
+//                     PrincipalDirection::X => potpoursi::color::YZ_PRIMARY,
+//                     PrincipalDirection::Y => potpoursi::color::XZ_PRIMARY,
+//                     PrincipalDirection::Z => potpoursi::color::XY_PRIMARY,
+//                 };
+//                 let u_pos = mesh_resmut.mesh.position(u);
+//                 let v_pos = mesh_resmut.mesh.position(v);
+//                 let u_nor = mesh_resmut.mesh.vert_normal(u);
+//                 let v_nor = mesh_resmut.mesh.vert_normal(v);
+//                 draw_arrow(
+//                     &mut gizmos,
+//                     &configuration,
+//                     (u_pos, u_nor),
+//                     (v_pos, v_nor),
+//                     color,
+//                     0.6,
+//                 );
+//             }
 
-            // draw line from nearest to second nearest (midpoints)
-            let u = mesh_resmut.mesh.midpoint(nearest_edge);
-            let v = mesh_resmut.mesh.midpoint(second_nearest_edge);
-            let un = mesh_resmut.mesh.edge_normal(nearest_edge);
-            let vn = mesh_resmut.mesh.edge_normal(second_nearest_edge);
-            draw_arrow(
-                &mut gizmos,
-                &configuration,
-                (u, un),
-                (v, vn),
-                Color::PINK,
-                0.8,
-            );
+//             // draw line from nearest to second nearest (midpoints)
+//             let u = mesh_resmut.mesh.midpoint(nearest_edge);
+//             let v = mesh_resmut.mesh.midpoint(second_nearest_edge);
+//             let un = mesh_resmut.mesh.edge_normal(nearest_edge);
+//             let vn = mesh_resmut.mesh.edge_normal(second_nearest_edge);
+//             draw_arrow(
+//                 &mut gizmos,
+//                 &configuration,
+//                 (u, un),
+//                 (v, vn),
+//                 Color::PINK,
+//                 0.8,
+//             );
 
-            // let cache = Rc::new(RefCell::new(SecondaryMap::<
-            //     EdgeID,
-            //     Vec<(EdgeID, OrderedFloat<f32>)>,
-            // >::new()));
+//             // let cache = Rc::new(RefCell::new(SecondaryMap::<
+//             //     EdgeID,
+//             //     Vec<(EdgeID, OrderedFloat<f32>)>,
+//             // >::new()));
 
-            // let total_path = mesh_resmut
-            //     .mesh
-            //     .find_shortest_cycle(
-            //         nearest_edge,
-            //         mesh_resmut.mesh.neighbor_function_edgegraph(),
-            //         mesh_resmut.mesh.weight_function_angle_edges(2),
-            //         cache,
-            //     )
-            //     .unwrap();
+//             // let total_path = mesh_resmut
+//             //     .mesh
+//             //     .find_shortest_cycle(
+//             //         nearest_edge,
+//             //         mesh_resmut.mesh.neighbor_function_edgegraph(),
+//             //         mesh_resmut.mesh.weight_function_angle_edges(2),
+//             //         cache,
+//             //     )
+//             //     .unwrap();
 
-            // for edge in total_path.0 {
-            //     let (u_id, v_id) = mesh_resmut.mesh.endpoints(edge);
+//             // for edge in total_path.0 {
+//             //     let (u_id, v_id) = mesh_resmut.mesh.endpoints(edge);
 
-            //     let color = match configuration.direction {
-            //         PrincipalDirection::X => potpoursi::color::YZ_PRIMARY,
-            //         PrincipalDirection::Y => potpoursi::color::XZ_PRIMARY,
-            //         PrincipalDirection::Z => potpoursi::color::XY_PRIMARY,
-            //     };
+//             //     let color = match configuration.direction {
+//             //         PrincipalDirection::X => potpoursi::color::YZ_PRIMARY,
+//             //         PrincipalDirection::Y => potpoursi::color::XZ_PRIMARY,
+//             //         PrincipalDirection::Z => potpoursi::color::XY_PRIMARY,
+//             //     };
 
-            //     let u = mesh_resmut.mesh.position(u_id);
-            //     let v = mesh_resmut.mesh.position(v_id);
-            //     let un = mesh_resmut.mesh.vert_normal(u_id);
-            //     let vn = mesh_resmut.mesh.vert_normal(v_id);
-            //     draw_arrow(&mut gizmos, &configuration, (u, un), (v, vn), color, 0.6);
-            // }
+//             //     let u = mesh_resmut.mesh.position(u_id);
+//             //     let v = mesh_resmut.mesh.position(v_id);
+//             //     let un = mesh_resmut.mesh.vert_normal(u_id);
+//             //     let vn = mesh_resmut.mesh.vert_normal(v_id);
+//             //     draw_arrow(&mut gizmos, &configuration, (u, un), (v, vn), color, 0.6);
+//             // }
 
-            let total_path = [
-                find_shortest_cycle(
-                    (nearest_edge, second_nearest_edge),
-                    mesh_resmut.mesh.neighbor_function_edgepairgraph(),
-                    mesh_resmut.mesh.weight_function_angle_edgepairs_aligned(
-                        5,
-                        5,
-                        configuration.direction.to_vector(),
-                    ),
-                    &mut cache.cache[configuration.direction as usize],
-                ),
-                find_shortest_cycle(
-                    (nearest_edge, second_nearest_edge),
-                    mesh_resmut.mesh.neighbor_function_edgepairgraph(),
-                    mesh_resmut.mesh.weight_function_angle_edgepairs_aligned(
-                        2,
-                        8,
-                        configuration.direction.to_vector(),
-                    ),
-                    &mut cache.cache[configuration.direction as usize],
-                ),
-            ]
-            .into_iter()
-            .flatten()
-            .sorted_by(|&(_, a), &(_, b)| a.cmp(&b))
-            .next()
-            .unwrap_or_default()
-            .0;
+//             let total_path = [
+//                 find_shortest_cycle(
+//                     (nearest_edge, second_nearest_edge),
+//                     mesh_resmut.mesh.neighbor_function_edgepairgraph(),
+//                     mesh_resmut.mesh.weight_function_angle_edgepairs_aligned(
+//                         5,
+//                         5,
+//                         configuration.direction.to_vector(),
+//                     ),
+//                     &mut cache.cache[configuration.direction as usize],
+//                 ),
+//                 find_shortest_cycle(
+//                     (nearest_edge, second_nearest_edge),
+//                     mesh_resmut.mesh.neighbor_function_edgepairgraph(),
+//                     mesh_resmut.mesh.weight_function_angle_edgepairs_aligned(
+//                         2,
+//                         8,
+//                         configuration.direction.to_vector(),
+//                     ),
+//                     &mut cache.cache[configuration.direction as usize],
+//                 ),
+//             ]
+//             .into_iter()
+//             .flatten()
+//             .sorted_by(|&(_, a), &(_, b)| a.cmp(&b))
+//             .next()
+//             .unwrap_or_default()
+//             .0;
 
-            for edge in total_path {
-                let u_pos = mesh_resmut.mesh.midpoint(edge.0);
-                let v_pos = mesh_resmut.mesh.midpoint(edge.1);
-                let u_nor = mesh_resmut.mesh.edge_normal(edge.0);
-                let v_nor = mesh_resmut.mesh.edge_normal(edge.1);
+//             for edge in total_path {
+//                 let u_pos = mesh_resmut.mesh.midpoint(edge.0);
+//                 let v_pos = mesh_resmut.mesh.midpoint(edge.1);
+//                 let u_nor = mesh_resmut.mesh.edge_normal(edge.0);
+//                 let v_nor = mesh_resmut.mesh.edge_normal(edge.1);
 
-                let color = match configuration.direction {
-                    PrincipalDirection::X => potpoursi::color::YZ_PRIMARY,
-                    PrincipalDirection::Y => potpoursi::color::XZ_PRIMARY,
-                    PrincipalDirection::Z => potpoursi::color::XY_PRIMARY,
-                };
+//                 let color = match configuration.direction {
+//                     PrincipalDirection::X => potpoursi::color::YZ_PRIMARY,
+//                     PrincipalDirection::Y => potpoursi::color::XZ_PRIMARY,
+//                     PrincipalDirection::Z => potpoursi::color::XY_PRIMARY,
+//                 };
 
-                draw_arrow(
-                    &mut gizmos,
-                    &configuration,
-                    (u_pos, u_nor),
-                    (v_pos, v_nor),
-                    color,
-                    0.6,
-                );
-            }
-        }
-    }
-}
+//                 draw_arrow(
+//                     &mut gizmos,
+//                     &configuration,
+//                     (u_pos, u_nor),
+//                     (v_pos, v_nor),
+//                     color,
+//                     0.6,
+//                 );
+//             }
+//         }
+//     }
+// }
 
 /// Set up
 fn setup(mut commands: Commands, mut egui_ctx: bevy_egui::EguiContexts) {
@@ -584,7 +584,7 @@ pub fn handle_events(
         match ev {
             ActionEvent::LoadFile(path) => {
                 match path.extension().unwrap().to_str() {
-                    Some("stl") => match Douconel::from_stl(path.to_str().unwrap()) {
+                    Some("obj") => match Douconel::from_obj(path.to_str().unwrap()) {
                         Ok(res) => {
                             *configuration = Configuration::default();
                             configuration.source = String::from(path.to_str().unwrap());
@@ -594,38 +594,38 @@ pub fn handle_events(
                             configuration.nr_of_edges = mesh_resmut.mesh.nr_edges() / 2; // dcel -> single edge
                             configuration.nr_of_faces = mesh_resmut.mesh.nr_faces();
 
-                            let mut patterns = TreeD::default();
-                            let keys = mesh_resmut.mesh.verts.keys().collect_vec();
+                            // let mut patterns = TreeD::default();
+                            // let keys = mesh_resmut.mesh.verts.keys().collect_vec();
 
-                            for (i, &v_id) in keys.iter().enumerate() {
-                                let p = mesh_resmut.mesh.position(v_id);
+                            // for (i, &v_id) in keys.iter().enumerate() {
+                            //     let p = mesh_resmut.mesh.position(v_id);
 
-                                if patterns.0.size() > 0 {
-                                    // lookup the position, to see if it already exists
-                                    let d = patterns.nearest(&p.into()).0;
-                                    if d < 0.00001 {
-                                        println!("duplicate vertex found at {:?}", p);
-                                        continue;
-                                    }
-                                }
+                            //     if patterns.0.size() > 0 {
+                            //         // lookup the position, to see if it already exists
+                            //         let d = patterns.nearest(&p.into()).0;
+                            //         if d < 0.00001 {
+                            //             println!("duplicate vertex found at {:?}", p);
+                            //             continue;
+                            //         }
+                            //     }
 
-                                println!("inserting vertex at {:?}", p);
+                            //     println!("inserting vertex at {:?}", p);
 
-                                patterns.add(p.into(), i);
-                            }
+                            //     patterns.add(p.into(), i);
+                            // }
 
-                            mesh_resmut.vertex_lookup = patterns;
+                            // mesh_resmut.vertex_lookup = patterns;
 
-                            mesh_resmut.keys = keys;
+                            // mesh_resmut.keys = keys;
 
-                            mesh_resmut.graph = mesh_resmut.mesh.graph_euclidean();
-                            mesh_resmut.dual_graph = mesh_resmut.mesh.dual_graph_euclidean();
+                            // mesh_resmut.graph = mesh_resmut.mesh.graph_euclidean();
+                            // mesh_resmut.dual_graph = mesh_resmut.mesh.dual_graph_euclidean();
 
-                            let edges = mesh_resmut.mesh.edges.keys().into_iter().collect_vec();
+                            // let edges = mesh_resmut.mesh.edges.keys().into_iter().collect_vec();
 
-                            for edge_id in edges {
-                                mesh_resmut.dual.edge_to_paths.insert(edge_id, Vec::new());
-                            }
+                            // for edge_id in edges {
+                            //     mesh_resmut.dual.edge_to_paths.insert(edge_id, Vec::new());
+                            // }
 
                             let color_map = HashMap::new();
 
@@ -714,14 +714,14 @@ fn draw_gizmos(
     configuration: Res<Configuration>,
 ) {
     let secondary_color = match configuration.direction {
-        PrincipalDirection::X => potpoursi::color::YZ_PRIMARY,
-        PrincipalDirection::Y => potpoursi::color::XZ_PRIMARY,
-        PrincipalDirection::Z => potpoursi::color::XY_PRIMARY,
+        PrincipalDirection::X => hutspot::color::GREEN,
+        PrincipalDirection::Y => hutspot::color::ORANG,
+        PrincipalDirection::Z => hutspot::color::PURPL,
     };
     let secondary_color_light = match configuration.direction {
-        PrincipalDirection::X => potpoursi::color::YZ_SECONDARY,
-        PrincipalDirection::Y => potpoursi::color::XZ_SECONDARY,
-        PrincipalDirection::Z => potpoursi::color::XY_SECONDARY,
+        PrincipalDirection::X => hutspot::color::GREEN,
+        PrincipalDirection::Y => hutspot::color::ORANG,
+        PrincipalDirection::Z => hutspot::color::PURPL,
     };
 
     // if true {
@@ -751,146 +751,53 @@ fn draw_gizmos(
             let v = mesh_resmut.mesh.position(v_id);
             let un = mesh_resmut.mesh.vert_normal(u_id);
             let vn = mesh_resmut.mesh.vert_normal(v_id);
-            draw_line(&mut gizmos, &configuration, (u, un), (v, vn), Color::GRAY);
-        }
-
-        for (v_id, _) in g.node_references() {
-            let p = mesh_resmut.mesh.position(v_id);
-            let n = mesh_resmut.mesh.vert_normal(v_id);
-            draw_vertex(&mut gizmos, &configuration, (p, n), Color::GRAY);
+            draw_line(
+                &mut gizmos,
+                &configuration,
+                &u,
+                &v,
+                hutspot::color::GRIJS.into(),
+            );
         }
     }
 }
 
-pub fn draw_vertex(
-    gizmos: &mut Gizmos,
-    configuration: &Configuration,
-    (p, n): (Vec3, Vec3),
-    color: Color,
-) {
-    gizmos.line(
-        transform_coordinates(configuration.translation, configuration.scale, p),
-        transform_coordinates(configuration.translation, configuration.scale, p + n * 0.01),
-        color,
-    );
+fn to_bevy_vec(v: &Vector3D) -> Vec3 {
+    Vec3::new(v.x as f32, v.y as f32, v.z as f32)
 }
 
-pub fn draw_pointer(
+fn draw_line(
     gizmos: &mut Gizmos,
-    configuration: &Configuration,
-    (p, n): (Vec3, Vec3),
-    color: Color,
+    configuration: &Res<Configuration>,
+    u: &Vector3D,
+    v: &Vector3D,
+    c: Color,
 ) {
-    gizmos.line(
-        transform_coordinates(configuration.translation, configuration.scale, p),
-        transform_coordinates(configuration.translation, configuration.scale, p + n * 0.1),
-        color,
+    let line = hutspot::draw::draw_line(
+        to_bevy_vec(u),
+        to_bevy_vec(v),
+        configuration.translation,
+        configuration.scale,
     );
+    gizmos.line(line.u, line.v, c);
 }
 
-pub fn draw_pointer_notransform(
+fn draw_arrow(
     gizmos: &mut Gizmos,
-    configuration: &Configuration,
-    (p, n): (Vec3, Vec3),
-    color: Color,
+    configuration: &Res<Configuration>,
+    u: &Vector3D,
+    v: &Vector3D,
+    n: &Vector3D,
+    c: Color,
 ) {
-    gizmos.line(p, p + n * 0.1, color);
-}
-
-pub fn draw_line(
-    gizmos: &mut Gizmos,
-    configuration: &Configuration,
-    (u, un): (Vec3, Vec3),
-    (v, vn): (Vec3, Vec3),
-    color: Color,
-) {
-    gizmos.line(
-        transform_coordinates(
-            configuration.translation + un * 0.005,
-            configuration.scale,
-            u,
-        ),
-        transform_coordinates(
-            configuration.translation + vn * 0.005,
-            configuration.scale,
-            v,
-        ),
-        color,
+    let line = hutspot::draw::draw_arrow(
+        to_bevy_vec(u),
+        to_bevy_vec(v),
+        to_bevy_vec(n),
+        configuration.translation,
+        configuration.scale,
     );
-}
-
-pub fn draw_line_notransform(
-    gizmos: &mut Gizmos,
-    (u, un): (Vec3, Vec3),
-    (v, vn): (Vec3, Vec3),
-    color: Color,
-) {
-    gizmos.line(
-        transform_coordinates(un * 0.01, 1., u),
-        transform_coordinates(vn * 0.01, 1., v),
-        color,
-    );
-}
-
-pub fn draw_arrow(
-    gizmos: &mut Gizmos,
-    configuration: &Configuration,
-    (u, un): (Vec3, Vec3),
-    (v, vn): (Vec3, Vec3),
-    color: Color,
-    offset: f32,
-) {
-    let arrow = (v - u);
-    let rev_arrow = (u - v);
-
-    let quat = Quat::from_axis_angle(vn, ((5. + offset) / 6.) * std::f32::consts::PI);
-    let quat2 = Quat::from_axis_angle(vn, ((7. - offset) / 6.) * std::f32::consts::PI);
-
-    let arrow_head = quat.mul_vec3(arrow);
-    let arrow_head2 = quat2.mul_vec3(arrow);
-
-    let offset = 0.9;
-    let arrow_head_offset = 0.1;
-
-    gizmos.line(
-        transform_coordinates(
-            configuration.translation + un * 0.02,
-            configuration.scale,
-            v + rev_arrow * offset,
-        ),
-        transform_coordinates(
-            configuration.translation + vn * 0.02,
-            configuration.scale,
-            u + arrow * offset,
-        ),
-        color,
-    );
-
-    gizmos.line(
-        transform_coordinates(
-            configuration.translation + vn * 0.02,
-            configuration.scale,
-            u + arrow * offset,
-        ),
-        transform_coordinates(
-            configuration.translation + vn * 0.02,
-            configuration.scale,
-            u + arrow * offset + arrow_head * arrow_head_offset,
-        ),
-        color,
-    );
-
-    gizmos.line(
-        transform_coordinates(
-            configuration.translation + vn * 0.02,
-            configuration.scale,
-            u + arrow * offset,
-        ),
-        transform_coordinates(
-            configuration.translation + vn * 0.02,
-            configuration.scale,
-            u + arrow * offset + arrow_head2 * arrow_head_offset,
-        ),
-        color,
-    );
+    gizmos.line(line[0].u, line[0].v, c);
+    gizmos.line(line[1].u, line[1].v, c);
+    gizmos.line(line[2].u, line[2].v, c);
 }

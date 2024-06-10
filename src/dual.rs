@@ -1,35 +1,12 @@
 #![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::cargo)]
 
-use crate::Configuration;
 use crate::EdgeWithDirection;
-use crate::HasDirection;
-use crate::LoopScoring;
-use crate::Rules;
 use bevy::prelude::*;
-use douconel::douconel::{Douconel, EdgeID, FaceID, VertID};
+use douconel::douconel::{Douconel, EdgeID, FaceID};
 use douconel::douconel_embedded::EmbeddedVertex;
-use douconel::douconel_embedded::HasPosition;
-use itertools::Itertools;
-use petgraph::algo::astar;
-use petgraph::graphmap::DiGraphMap;
-use petgraph::graphmap::UnGraphMap;
-use petgraph::visit::EdgeRef;
-use potpoursi::math::convert_3d_to_2d;
-use potpoursi::math::intersection_exact_in_2d;
-use potpoursi::math::intersection_in_sequence;
-use potpoursi::math::set_intersection;
-use priq::PriorityQueue;
-use rand::seq::SliceRandom;
-use rand::Rng;
-use rayon::prelude::*;
 use serde::Deserialize;
 use serde::Serialize;
 use slotmap::SecondaryMap;
-use std::cmp::Reverse;
-use std::{
-    collections::{HashMap, HashSet},
-    mem::swap,
-};
 
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
 pub struct Vertex {
