@@ -36,20 +36,11 @@ pub fn ui(
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 ui.checkbox(&mut conf.draw_wireframe, "graph");
-                ui.checkbox(&mut conf.draw_dualgraph, "dual graph");
-                ui.checkbox(&mut conf.draw_edgegraph, "edge graph");
-                ui.checkbox(&mut conf.draw_line_midpoint_graph, "line midpoint graph");
+                ui.checkbox(&mut conf.draw_vertices, "vertices");
+                ui.checkbox(&mut conf.draw_normals, "normals");
             });
 
             ui.add_space(10.);
-
-            ui.vertical(|ui| {
-                ui.checkbox(&mut conf.draw_loopgraph, "loop graph");
-                ui.checkbox(&mut conf.draw_loops, "loops");
-                ui.checkbox(&mut conf.draw_loops_plus, "loops+");
-                ui.checkbox(&mut conf.draw_acyclic, "draw_acyclic");
-                ui.checkbox(&mut conf.draw_next, "draw_next");
-            });
 
             ui.add_space(10.);
 

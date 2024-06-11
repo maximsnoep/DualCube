@@ -8,20 +8,18 @@ use crate::ui::ui;
 use bevy::diagnostic::LogDiagnosticsPlugin;
 use bevy::prelude::*;
 use bevy::time::common_conditions::on_timer;
-use bevy::utils::petgraph::visit::IntoNodeReferences;
 use bevy::window::WindowMode;
 use bevy_egui::EguiPlugin;
 use bevy_mod_raycast::prelude::*;
-use douconel::douconel::{Douconel, EdgeID, FaceID, VertID};
+use douconel::douconel::{Douconel, EdgeID, VertID};
 use douconel::douconel_embedded::EmbeddedVertex;
-use dual::Dual;
+use dual::{Dual, Path};
+use hutspot::draw::DrawableLine;
 use hutspot::geom::Vector3D;
 use itertools::Itertools;
 use kdtree::distance::squared_euclidean;
 use kdtree::KdTree;
 use ordered_float::OrderedFloat;
-use petgraph::graphmap::*;
-use petgraph::visit::IntoEdgeReferences;
 use serde::{Deserialize, Serialize};
 use smooth_bevy_cameras::controllers::orbit::{
     OrbitCameraBundle, OrbitCameraController, OrbitCameraPlugin,
@@ -66,24 +64,17 @@ pub struct Configuration {
     pub direction: PrincipalDirection,
 
     pub scale: f32,
-    pub translation: Vec3,
+    pub translation: Vector3D,
 
     pub draw_wireframe: bool,
-    pub draw_dualgraph: bool,
-    pub draw_line_midpoint_graph: bool,
-    pub draw_edgegraph: bool,
-    pub draw_loopgraph: bool,
+    pub draw_vertices: bool,
+    pub draw_normals: bool,
+    pub draw_debug: bool,
 
-    pub draw_acyclic: bool,
     pub angle_filter: f32,
-
     pub draw_next: bool,
-
     pub loop_scoring: LoopScoring,
-
     pub draw_loops: bool,
-    pub draw_loops_plus: bool,
-
     pub id_selector: usize,
 
     pub iterations: usize,
@@ -91,20 +82,20 @@ pub struct Configuration {
 }
 
 // implement default for KdTree using the New Type Idiom
-struct TreeD(KdTree<f32, usize, [f32; 3]>);
+struct TreeD(KdTree<f64, usize, [f64; 3]>);
 impl TreeD {
-    fn nearest(&self, point: &[f32; 3]) -> (f32, usize) {
+    fn nearest(&self, point: &[f64; 3]) -> (f64, usize) {
         let neighbors = self.0.nearest(point, 1, &squared_euclidean).unwrap();
         let (d, i) = neighbors.first().unwrap();
         (*d, **i)
     }
 
-    fn nearests(&self, point: &[f32; 3], n: usize) -> Vec<(f32, usize)> {
+    fn nearests(&self, point: &[f64; 3], n: usize) -> Vec<(f64, usize)> {
         let neighbors = self.0.nearest(point, n, &squared_euclidean).unwrap();
         neighbors.iter().map(|(d, i)| (*d, **i)).collect_vec()
     }
 
-    fn add(&mut self, point: [f32; 3], index: usize) {
+    fn add(&mut self, point: [f64; 3], index: usize) {
         self.0.add(point, index).unwrap();
     }
 }
@@ -116,7 +107,21 @@ impl Default for TreeD {
 
 #[derive(Default, Resource)]
 pub struct CacheResource {
-    cache: [HashMap<(EdgeID, EdgeID), Vec<((EdgeID, EdgeID), OrderedFloat<f32>)>>; 3],
+    cache: [HashMap<(EdgeID, EdgeID), Vec<((EdgeID, EdgeID), OrderedFloat<f64>)>>; 3],
+}
+
+#[derive(Copy, Clone)]
+enum GizmoType {
+    Wireframe,
+    Vertex,
+    Normal,
+}
+
+#[derive(Default, Resource)]
+pub struct GizmosCache {
+    lines: Vec<(Vec3, Vec3, Color, GizmoType)>,
+    raycast: Vec<(Vec3, Vec3, Color)>,
+    debug: Vec<(Vec3, Vec3, Color)>,
 }
 
 #[derive(Default, Resource)]
@@ -126,17 +131,13 @@ pub struct MeshResource {
     vertex_lookup: TreeD,
     keys: Vec<VertID>,
 
-    graph: DiGraphMap<VertID, f32>,
-    dual_graph: DiGraphMap<FaceID, f32>,
-    edge_graph: DiGraphMap<EdgeID, f32>,
-    midpoint_graph: DiGraphMap<EdgeID, ()>,
-    line_midpoint_graph: DiGraphMap<(EdgeID, EdgeID), ()>,
-    line_midpoint_graph_weighted: [DiGraphMap<(EdgeID, EdgeID), f32>; 3],
+    wireframe_cache: Vec<[Vector3D; 4]>,
 
     anchors: Vec<EdgeID>,
+}
 
-    paths: Vec<Vec<EdgeID>>,
-
+#[derive(Default, Resource)]
+pub struct SolutionResource {
     dual: Dual,
 }
 
@@ -163,6 +164,8 @@ fn main() {
     App::new()
         .init_resource::<MeshResource>()
         .init_resource::<CacheResource>()
+        .init_resource::<GizmosCache>()
+        .init_resource::<SolutionResource>()
         .init_resource::<Configuration>()
         .insert_resource(ClearColor(BACKGROUND_COLOR))
         .insert_resource(AmbientLight {
@@ -195,232 +198,10 @@ fn main() {
             Update,
             update_mesh.run_if(on_timer(Duration::from_millis(100))),
         )
-        // .add_systems(Update, raycast)
+        .add_systems(Update, raycast.run_if(on_timer(Duration::from_millis(100))))
         .add_event::<ActionEvent>()
         .run();
 }
-
-// fn raycast(
-//     cursor_ray: Res<CursorRay>,
-//     mut raycast: Raycast,
-//     mouse: Res<Input<MouseButton>>,
-//     mut gizmos: Gizmos,
-//     mut mesh_resmut: ResMut<MeshResource>,
-//     mut cache: ResMut<CacheResource>,
-//     configuration: ResMut<Configuration>,
-// ) {
-//     if let Some(cursor_ray) = **cursor_ray {
-//         let intersections = raycast.cast_ray(cursor_ray, &default());
-//         if !intersections.is_empty() {
-//             let intersection = &raycast.cast_ray(cursor_ray, &default())[0].1;
-
-//             let normal = intersection.normal();
-//             let position = inv_transform_coordinates(
-//                 configuration.translation,
-//                 configuration.scale,
-//                 intersection.position().into(),
-//             );
-
-//             draw_pointer(&mut gizmos, &configuration, (position, normal), Color::RED);
-
-//             let triangle = intersection.triangle().unwrap();
-//             let v0 = inv_transform_coordinates(
-//                 configuration.translation,
-//                 configuration.scale,
-//                 triangle.v0.into(),
-//             );
-//             let v1 = inv_transform_coordinates(
-//                 configuration.translation,
-//                 configuration.scale,
-//                 triangle.v1.into(),
-//             );
-//             let v2 = inv_transform_coordinates(
-//                 configuration.translation,
-//                 configuration.scale,
-//                 triangle.v2.into(),
-//             );
-
-//             // get nearest point of v0, v1, and v2
-//             let dist_v0 = position.distance(v0);
-//             let dist_v1 = position.distance(v1);
-//             let dist_v2 = position.distance(v2);
-//             let (nearest, second_nearest, third_nearest) = if dist_v0 < dist_v1 {
-//                 if dist_v1 < dist_v2 {
-//                     (v0, v1, v2)
-//                 } else {
-//                     if dist_v0 < dist_v2 {
-//                         (v0, v2, v1)
-//                     } else {
-//                         (v2, v0, v1)
-//                     }
-//                 }
-//             } else {
-//                 if dist_v0 < dist_v2 {
-//                     (v1, v0, v2)
-//                 } else {
-//                     if dist_v1 < dist_v2 {
-//                         (v1, v2, v0)
-//                     } else {
-//                         (v2, v1, v0)
-//                     }
-//                 }
-//             };
-
-//             // v positions to mesh ids
-//             let nearest_id = mesh_resmut.keys[mesh_resmut.vertex_lookup.nearest(&nearest.into()).1];
-//             let nearest_face = mesh_resmut
-//                 .mesh
-//                 .star(nearest_id)
-//                 .into_iter()
-//                 .sorted_by(|&face_a, &face_b| {
-//                     mesh_resmut
-//                         .mesh
-//                         .centroid(face_a)
-//                         .distance(position)
-//                         .partial_cmp(&mesh_resmut.mesh.centroid(face_b).distance(position))
-//                         .unwrap()
-//                 })
-//                 .next()
-//                 .unwrap();
-
-//             let mut two_edges = mesh_resmut
-//                 .mesh
-//                 .edges(nearest_face)
-//                 .into_iter()
-//                 .filter(|&edge| {
-//                     let (u, v) = mesh_resmut.mesh.endpoints(edge);
-//                     u == nearest_id || v == nearest_id
-//                 });
-
-//             let nearest_edge = two_edges.next().unwrap();
-//             let second_nearest_edge = two_edges.next().unwrap();
-
-//             draw_vertex(
-//                 &mut gizmos,
-//                 &configuration,
-//                 (nearest, mesh_resmut.mesh.vert_normal(nearest_id)),
-//                 Color::GREEN,
-//             );
-
-//             for edge in mesh_resmut.mesh.edges(nearest_face) {
-//                 let (u, v) = mesh_resmut.mesh.endpoints(edge);
-//                 let color = match configuration.direction {
-//                     PrincipalDirection::X => potpoursi::color::YZ_PRIMARY,
-//                     PrincipalDirection::Y => potpoursi::color::XZ_PRIMARY,
-//                     PrincipalDirection::Z => potpoursi::color::XY_PRIMARY,
-//                 };
-//                 let u_pos = mesh_resmut.mesh.position(u);
-//                 let v_pos = mesh_resmut.mesh.position(v);
-//                 let u_nor = mesh_resmut.mesh.vert_normal(u);
-//                 let v_nor = mesh_resmut.mesh.vert_normal(v);
-//                 draw_arrow(
-//                     &mut gizmos,
-//                     &configuration,
-//                     (u_pos, u_nor),
-//                     (v_pos, v_nor),
-//                     color,
-//                     0.6,
-//                 );
-//             }
-
-//             // draw line from nearest to second nearest (midpoints)
-//             let u = mesh_resmut.mesh.midpoint(nearest_edge);
-//             let v = mesh_resmut.mesh.midpoint(second_nearest_edge);
-//             let un = mesh_resmut.mesh.edge_normal(nearest_edge);
-//             let vn = mesh_resmut.mesh.edge_normal(second_nearest_edge);
-//             draw_arrow(
-//                 &mut gizmos,
-//                 &configuration,
-//                 (u, un),
-//                 (v, vn),
-//                 Color::PINK,
-//                 0.8,
-//             );
-
-//             // let cache = Rc::new(RefCell::new(SecondaryMap::<
-//             //     EdgeID,
-//             //     Vec<(EdgeID, OrderedFloat<f32>)>,
-//             // >::new()));
-
-//             // let total_path = mesh_resmut
-//             //     .mesh
-//             //     .find_shortest_cycle(
-//             //         nearest_edge,
-//             //         mesh_resmut.mesh.neighbor_function_edgegraph(),
-//             //         mesh_resmut.mesh.weight_function_angle_edges(2),
-//             //         cache,
-//             //     )
-//             //     .unwrap();
-
-//             // for edge in total_path.0 {
-//             //     let (u_id, v_id) = mesh_resmut.mesh.endpoints(edge);
-
-//             //     let color = match configuration.direction {
-//             //         PrincipalDirection::X => potpoursi::color::YZ_PRIMARY,
-//             //         PrincipalDirection::Y => potpoursi::color::XZ_PRIMARY,
-//             //         PrincipalDirection::Z => potpoursi::color::XY_PRIMARY,
-//             //     };
-
-//             //     let u = mesh_resmut.mesh.position(u_id);
-//             //     let v = mesh_resmut.mesh.position(v_id);
-//             //     let un = mesh_resmut.mesh.vert_normal(u_id);
-//             //     let vn = mesh_resmut.mesh.vert_normal(v_id);
-//             //     draw_arrow(&mut gizmos, &configuration, (u, un), (v, vn), color, 0.6);
-//             // }
-
-//             let total_path = [
-//                 find_shortest_cycle(
-//                     (nearest_edge, second_nearest_edge),
-//                     mesh_resmut.mesh.neighbor_function_edgepairgraph(),
-//                     mesh_resmut.mesh.weight_function_angle_edgepairs_aligned(
-//                         5,
-//                         5,
-//                         configuration.direction.to_vector(),
-//                     ),
-//                     &mut cache.cache[configuration.direction as usize],
-//                 ),
-//                 find_shortest_cycle(
-//                     (nearest_edge, second_nearest_edge),
-//                     mesh_resmut.mesh.neighbor_function_edgepairgraph(),
-//                     mesh_resmut.mesh.weight_function_angle_edgepairs_aligned(
-//                         2,
-//                         8,
-//                         configuration.direction.to_vector(),
-//                     ),
-//                     &mut cache.cache[configuration.direction as usize],
-//                 ),
-//             ]
-//             .into_iter()
-//             .flatten()
-//             .sorted_by(|&(_, a), &(_, b)| a.cmp(&b))
-//             .next()
-//             .unwrap_or_default()
-//             .0;
-
-//             for edge in total_path {
-//                 let u_pos = mesh_resmut.mesh.midpoint(edge.0);
-//                 let v_pos = mesh_resmut.mesh.midpoint(edge.1);
-//                 let u_nor = mesh_resmut.mesh.edge_normal(edge.0);
-//                 let v_nor = mesh_resmut.mesh.edge_normal(edge.1);
-
-//                 let color = match configuration.direction {
-//                     PrincipalDirection::X => potpoursi::color::YZ_PRIMARY,
-//                     PrincipalDirection::Y => potpoursi::color::XZ_PRIMARY,
-//                     PrincipalDirection::Z => potpoursi::color::XY_PRIMARY,
-//                 };
-
-//                 draw_arrow(
-//                     &mut gizmos,
-//                     &configuration,
-//                     (u_pos, u_nor),
-//                     (v_pos, v_nor),
-//                     color,
-//                     0.6,
-//                 );
-//             }
-//         }
-//     }
-// }
 
 /// Set up
 fn setup(mut commands: Commands, mut egui_ctx: bevy_egui::EguiContexts) {
@@ -456,203 +237,119 @@ fn setup(mut commands: Commands, mut egui_ctx: bevy_egui::EguiContexts) {
         .set_visuals(bevy_egui::egui::Visuals::light());
 }
 
-// // Graph s.t. node for each original edge, and (directed) edges between nodes if the original edges are adjacent
-// pub fn line_graph<E>(
-//     g: &DiGraphMap<EdgeID, E>,
-//     mesh: &Douconel<EmbeddedVertex, (), EmbeddedFace>,
-// ) -> DiGraphMap<(EdgeID, EdgeID), ()>
-// where
-//     E: Clone + Default,
-// {
-//     let mut edges = vec![];
-//     for (u0, u1, _) in g.all_edges() {
-//         for (v0, v1, _) in g.all_edges() {
-//             if u1 == v0 {
-//                 // Add hyperedge if u0 != v1 AND face(u0) != face(v1)
-//                 // or on any of their twins...
-//                 if mesh.face(u0) == mesh.face(v1)
-//                     || mesh.face(mesh.twin(u0)) == mesh.face(v1)
-//                     || mesh.face(u0) == mesh.face(mesh.twin(v1))
-//                 {
-//                     continue;
-//                 }
-
-//                 edges.push(((u0, u1), (v0, v1), ()));
-//             }
-//         }
-//     }
-//     DiGraphMap::<(_, _), ()>::from_edges(edges)
-// }
-
-// pub fn weight_e(
-//     mesh: &Douconel<EmbeddedVertex, (), EmbeddedFace>,
-//     e: ((EdgeID, EdgeID), (EdgeID, EdgeID)),
-//     d: Vec3,
-// ) -> f32 {
-//     let primal_edge0 = e.0 .0;
-//     let primal_edge1 = e.0 .1;
-//     let primal_edge2 = e.1 .0;
-//     let primal_edge3 = e.1 .1;
-
-//     assert!(primal_edge1 == primal_edge2);
-
-//     // get midpoint of edges
-//     let u0 = mesh.midpoint(primal_edge0);
-//     let v0 = mesh.midpoint(primal_edge1);
-//     let w0 = mesh.midpoint(primal_edge3);
-
-//     let u0n = mesh.edge_normal(primal_edge0);
-//     let v0n = mesh.edge_normal(primal_edge1);
-//     let w0n = mesh.edge_normal(primal_edge3);
-
-//     // edge0 = (u0, v0)
-//     let edge0 = v0 - u0;
-//     // edge1 = (v0, w0)
-//     let edge1 = w0 - v0;
-
-//     // angle between edge0 and edge1
-//     let gamma = edge0.angle_between(edge1);
-
-//     // length of edge0
-//     let len0 = edge0.length();
-
-//     // length of edge1
-//     let len1 = edge1.length();
-
-//     // |e|
-//     let l_e = (gamma * f32::min(len0, len1)) / (2.0 * f32::tan(gamma / 2.0));
-
-//     // k^2 (e)
-//     let k2_e = gamma.powi(2) / f32::min(len0, len1);
-
-//     // midpoint of edge0
-//     let n0 = (u0 + v0) / 2.;
-//     let n0n = (u0n + v0n) / 2.;
-
-//     // midpoint of edge1
-//     let n1 = (v0 + w0) / 2.;
-//     let n1n = (v0n + w0n) / 2.;
-
-//     let edge0_dir = edge0.normalize();
-//     let edge1_dir = edge1.normalize();
-
-//     let edge0_nor = n0n;
-//     let edge1_nor = n1n;
-
-//     let edge0_cross = edge0_dir.cross(edge0_nor);
-//     let edge0_angle = (d.angle_between(edge0_cross) / std::f32::consts::PI) * 180.;
-
-//     let edge1_cross = edge1_dir.cross(edge1_nor);
-//     let edge1_angle = (d.angle_between(edge1_cross) / std::f32::consts::PI) * 180.;
-
-//     // q(e)
-//     let q_e = f32::max(edge0_angle, edge1_angle).powi(2);
-
-//     // w(e)
-//     let alpha = 10.;
-//     let beta = 0.5;
-//     let w_e = l_e + alpha * q_e + beta * k2_e;
-
-//     return w_e;
-// }
-
-// // weight based on :: blabla
-// pub fn line_graph_weighted(
-//     mesh: &Douconel<EmbeddedVertex, (), EmbeddedFace>,
-//     g: &DiGraphMap<(EdgeID, EdgeID), ()>,
-//     d: PrincipalDirection,
-// ) -> DiGraphMap<(EdgeID, EdgeID), f32> {
-//     let mut edges = vec![];
-//     // go through current edges, compute weight, and add it to `edges`
-//     for (edge0, edge1, _) in g.all_edges() {
-//         let w = weight_e(mesh, (edge0, edge1), d.to_vector());
-//         if w.is_nan() {
-//             continue;
-//         }
-//         edges.push((edge0, edge1, w));
-//     }
-//     DiGraphMap::<(EdgeID, EdgeID), f32>::from_edges(edges)
-// }
-
 pub fn handle_events(
     mut ev_reader: EventReader<ActionEvent>,
     mut mesh_resmut: ResMut<MeshResource>,
+    mut gizmos_cache: ResMut<GizmosCache>,
     mut configuration: ResMut<Configuration>,
 ) {
     for ev in ev_reader.read() {
         info!("Received event {ev:?}. Handling...");
         match ev {
             ActionEvent::LoadFile(path) => {
-                match path.extension().unwrap().to_str() {
+                mesh_resmut.mesh = match path.extension().unwrap().to_str() {
                     Some("obj") => match Douconel::from_obj(path.to_str().unwrap()) {
-                        Ok(res) => {
-                            *configuration = Configuration::default();
-                            configuration.source = String::from(path.to_str().unwrap());
-
-                            mesh_resmut.mesh = res.0;
-                            configuration.nr_of_vertices = mesh_resmut.mesh.nr_verts();
-                            configuration.nr_of_edges = mesh_resmut.mesh.nr_edges() / 2; // dcel -> single edge
-                            configuration.nr_of_faces = mesh_resmut.mesh.nr_faces();
-
-                            // let mut patterns = TreeD::default();
-                            // let keys = mesh_resmut.mesh.verts.keys().collect_vec();
-
-                            // for (i, &v_id) in keys.iter().enumerate() {
-                            //     let p = mesh_resmut.mesh.position(v_id);
-
-                            //     if patterns.0.size() > 0 {
-                            //         // lookup the position, to see if it already exists
-                            //         let d = patterns.nearest(&p.into()).0;
-                            //         if d < 0.00001 {
-                            //             println!("duplicate vertex found at {:?}", p);
-                            //             continue;
-                            //         }
-                            //     }
-
-                            //     println!("inserting vertex at {:?}", p);
-
-                            //     patterns.add(p.into(), i);
-                            // }
-
-                            // mesh_resmut.vertex_lookup = patterns;
-
-                            // mesh_resmut.keys = keys;
-
-                            // mesh_resmut.graph = mesh_resmut.mesh.graph_euclidean();
-                            // mesh_resmut.dual_graph = mesh_resmut.mesh.dual_graph_euclidean();
-
-                            // let edges = mesh_resmut.mesh.edges.keys().into_iter().collect_vec();
-
-                            // for edge_id in edges {
-                            //     mesh_resmut.dual.edge_to_paths.insert(edge_id, Vec::new());
-                            // }
-
-                            let color_map = HashMap::new();
-
-                            let mesh = mesh_resmut.mesh.bevy(&color_map);
-
-                            let aabb = mesh.compute_aabb().unwrap();
-                            configuration.scale = 10. * (1. / aabb.half_extents.max_element());
-                            configuration.translation = (-configuration.scale * aabb.center).into();
-
-                            configuration.loop_scoring = LoopScoring::PathLength;
-                            configuration.samples = 1000;
-
-                            // mesh_resmut
-                            //     .cached_paths
-                            //     .insert(PrincipalDirection::X, HashMap::new());
-                            // mesh_resmut
-                            //     .cached_paths
-                            //     .insert(PrincipalDirection::Y, HashMap::new());
-                            // mesh_resmut
-                            //     .cached_paths
-                            //     .insert(PrincipalDirection::Z, HashMap::new());
-                        }
+                        Ok(res) => res.0,
                         Err(err) => {
-                            error!("Error while parsing STL file {path:?}: {err:?}");
+                            panic!("Error while parsing STL file {path:?}: {err:?}");
                         }
                     },
+                    // Some("stl") => match Douconel::from_stl(path.to_str().unwrap()) {
+                    //     Ok(res) => res.0,
+                    //     Err(err) => {
+                    //         panic!("Error while parsing STL file {path:?}: {err:?}");
+                    //     }
+                    // },
                     _ => panic!("File format not supported."),
+                };
+
+                *configuration = Configuration::default();
+                configuration.source = String::from(path.to_str().unwrap());
+
+                configuration.nr_of_vertices = mesh_resmut.mesh.nr_verts();
+                configuration.nr_of_edges = mesh_resmut.mesh.nr_edges() / 2; // dcel -> single edge
+                configuration.nr_of_faces = mesh_resmut.mesh.nr_faces();
+
+                let mut patterns = TreeD::default();
+                mesh_resmut.keys = mesh_resmut.mesh.verts.keys().collect_vec();
+                for (i, &v_id) in mesh_resmut.keys.iter().enumerate() {
+                    patterns.add(mesh_resmut.mesh.position(v_id).into(), i);
+                }
+                mesh_resmut.vertex_lookup = patterns;
+
+                let color_map = HashMap::new();
+
+                let mesh = mesh_resmut.mesh.bevy(&color_map);
+
+                let aabb = mesh.compute_aabb().unwrap();
+                configuration.scale = 10. * (1. / aabb.half_extents.max_element());
+                let translation = -configuration.scale * aabb.center;
+                configuration.translation = Vector3D::new(
+                    translation.x as f64,
+                    translation.y as f64,
+                    translation.z as f64,
+                );
+
+                configuration.loop_scoring = LoopScoring::PathLength;
+                configuration.samples = 1000;
+
+                mesh_resmut.wireframe_cache.clear();
+                let keys = mesh_resmut.mesh.edges.keys().collect_vec();
+                for edge_id in keys {
+                    let endpoints = mesh_resmut.mesh.endpoints(edge_id);
+                    let u = mesh_resmut.mesh.position(endpoints.0);
+                    let v = mesh_resmut.mesh.position(endpoints.1);
+                    let line = DrawableLine::from_line(
+                        u,
+                        v,
+                        configuration.translation,
+                        configuration.scale,
+                    );
+                    gizmos_cache.lines.push((
+                        line.u,
+                        line.v,
+                        hutspot::color::GRIJS.into(),
+                        GizmoType::Wireframe,
+                    ));
+                }
+
+                for vert in mesh_resmut.mesh.verts.keys() {
+                    let p = mesh_resmut.mesh.position(vert);
+                    let n = mesh_resmut.mesh.vert_normal(vert);
+                    let line = DrawableLine::from_vertex(
+                        p,
+                        n,
+                        0.01,
+                        configuration.translation,
+                        configuration.scale,
+                    );
+                    gizmos_cache.lines.push((
+                        line.u,
+                        line.v,
+                        hutspot::color::GRIJS.into(),
+                        GizmoType::Vertex,
+                    ));
+                }
+
+                for face in mesh_resmut.mesh.faces.keys() {
+                    let p = mesh_resmut.mesh.centroid(face);
+                    let n = mesh_resmut.mesh.normal(face);
+                    let lines = DrawableLine::from_arrow(
+                        p,
+                        p + n,
+                        p.cross(&n).normalize(),
+                        0.05,
+                        configuration.translation,
+                        configuration.scale,
+                    );
+                    for line in lines.iter() {
+                        gizmos_cache.lines.push((
+                            line.u,
+                            line.v,
+                            hutspot::color::ROODT.into(),
+                            GizmoType::Normal,
+                        ));
+                    }
                 }
             }
             ActionEvent::AddLoop(dir) => {}
@@ -694,7 +391,11 @@ fn update_mesh(
         PbrBundle {
             mesh: meshes.add(mesh),
             transform: Transform {
-                translation: configuration.translation,
+                translation: Vec3::new(
+                    configuration.translation.x as f32,
+                    configuration.translation.y as f32,
+                    configuration.translation.z as f32,
+                ),
                 rotation: Quat::from_rotation_z(0f32),
                 scale: Vec3::splat(configuration.scale),
             },
@@ -710,94 +411,260 @@ fn update_mesh(
 
 fn draw_gizmos(
     mut gizmos: Gizmos,
-    mesh_resmut: Res<MeshResource>,
+    gizmos_cache: Res<GizmosCache>,
+
     configuration: Res<Configuration>,
+
+    solution: Res<SolutionResource>,
+    mesh_resmut: Res<MeshResource>,
 ) {
-    let secondary_color = match configuration.direction {
-        PrincipalDirection::X => hutspot::color::GREEN,
-        PrincipalDirection::Y => hutspot::color::ORANG,
-        PrincipalDirection::Z => hutspot::color::PURPL,
-    };
-    let secondary_color_light = match configuration.direction {
-        PrincipalDirection::X => hutspot::color::GREEN,
-        PrincipalDirection::Y => hutspot::color::ORANG,
-        PrincipalDirection::Z => hutspot::color::PURPL,
-    };
+    for &(u, v, c, t) in gizmos_cache.lines.iter() {
+        match t {
+            GizmoType::Wireframe => {
+                if configuration.draw_wireframe {
+                    gizmos.line(u, v, c);
+                }
+            }
+            GizmoType::Vertex => {
+                if configuration.draw_vertices {
+                    gizmos.line(u, v, c);
+                }
+            }
+            GizmoType::Normal => {
+                if configuration.draw_normals {
+                    gizmos.line(u, v, c);
+                }
+            }
+        }
+    }
 
-    // if true {
-    //     // draw anchors
-    //     for &(nearest_edge, second_nearest_edge) in &mesh_resmut.anchors {
-    //         // draw line from nearest to second nearest (midpoints)
-    //         let u = mesh_resmut.mesh.midpoint(nearest_edge);
-    //         let v = mesh_resmut.mesh.midpoint(second_nearest_edge);
-    //         let un = mesh_resmut.mesh.edge_normal(nearest_edge);
-    //         let vn = mesh_resmut.mesh.edge_normal(second_nearest_edge);
-    //         draw_arrow(
-    //             &mut gizmos,
-    //             &configuration,
-    //             (u, un),
-    //             (v, vn),
-    //             Color::PINK,
-    //             0.8,
-    //         );
-    //     }
-    // }
+    for &(u, v, c) in gizmos_cache.raycast.iter() {
+        gizmos.line(u, v, c);
+    }
 
-    if configuration.draw_wireframe {
-        let g: &DiGraphMap<VertID, f32> = &mesh_resmut.graph;
+    for &(u, v, c) in gizmos_cache.debug.iter() {
+        gizmos.line(u, v, c);
+    }
 
-        for (u_id, v_id, _) in g.edge_references() {
-            let u = mesh_resmut.mesh.position(u_id);
-            let v = mesh_resmut.mesh.position(v_id);
-            let un = mesh_resmut.mesh.vert_normal(u_id);
-            let vn = mesh_resmut.mesh.vert_normal(v_id);
-            draw_line(
-                &mut gizmos,
-                &configuration,
-                &u,
-                &v,
-                hutspot::color::GRIJS.into(),
-            );
+    for paths in &solution.dual.paths {
+        let color = match paths.direction {
+            PrincipalDirection::X => hutspot::color::PURPL.into(),
+            PrincipalDirection::Y => hutspot::color::GREEN.into(),
+            PrincipalDirection::Z => hutspot::color::ORANG.into(),
+        };
+        for edge in paths.edges.windows(2) {
+            let u = mesh_resmut.mesh.midpoint(edge[0]);
+            let v = mesh_resmut.mesh.midpoint(edge[1]);
+            let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge[0]));
+            for line in DrawableLine::from_arrow(
+                u,
+                v,
+                n,
+                0.9,
+                configuration.translation,
+                configuration.scale,
+            ) {
+                gizmos.line(line.u, line.v, color);
+            }
         }
     }
 }
 
-fn to_bevy_vec(v: &Vector3D) -> Vec3 {
-    Vec3::new(v.x as f32, v.y as f32, v.z as f32)
-}
-
-fn draw_line(
-    gizmos: &mut Gizmos,
-    configuration: &Res<Configuration>,
-    u: &Vector3D,
-    v: &Vector3D,
-    c: Color,
+fn raycast(
+    cursor_ray: Res<CursorRay>,
+    mut raycast: Raycast,
+    mouse: Res<Input<MouseButton>>,
+    mesh_resmut: Res<MeshResource>,
+    mut solution: ResMut<SolutionResource>,
+    mut cache: ResMut<CacheResource>,
+    mut gizmos_cache: ResMut<GizmosCache>,
+    configuration: ResMut<Configuration>,
 ) {
-    let line = hutspot::draw::draw_line(
-        to_bevy_vec(u),
-        to_bevy_vec(v),
-        configuration.translation,
-        configuration.scale,
-    );
-    gizmos.line(line.u, line.v, c);
-}
+    if let Some(cursor_ray) = **cursor_ray {
+        let intersections = raycast.cast_ray(cursor_ray, &default());
+        if !intersections.is_empty() {
+            gizmos_cache.raycast.clear();
 
-fn draw_arrow(
-    gizmos: &mut Gizmos,
-    configuration: &Res<Configuration>,
-    u: &Vector3D,
-    v: &Vector3D,
-    n: &Vector3D,
-    c: Color,
-) {
-    let line = hutspot::draw::draw_arrow(
-        to_bevy_vec(u),
-        to_bevy_vec(v),
-        to_bevy_vec(n),
-        configuration.translation,
-        configuration.scale,
-    );
-    gizmos.line(line[0].u, line[0].v, c);
-    gizmos.line(line[1].u, line[1].v, c);
-    gizmos.line(line[2].u, line[2].v, c);
+            let intersection = &raycast.cast_ray(cursor_ray, &default())[0].1;
+
+            let normal = Vector3D::new(
+                intersection.normal().x as f64,
+                intersection.normal().y as f64,
+                intersection.normal().z as f64,
+            );
+            let position_in_render = Vector3D::new(
+                intersection.position().x as f64,
+                intersection.position().y as f64,
+                intersection.position().z as f64,
+            );
+            let triangle_in_render = [
+                Vector3D::new(
+                    intersection.triangle().unwrap().v0.x as f64,
+                    intersection.triangle().unwrap().v0.y as f64,
+                    intersection.triangle().unwrap().v0.z as f64,
+                ),
+                Vector3D::new(
+                    intersection.triangle().unwrap().v1.x as f64,
+                    intersection.triangle().unwrap().v1.y as f64,
+                    intersection.triangle().unwrap().v1.z as f64,
+                ),
+                Vector3D::new(
+                    intersection.triangle().unwrap().v2.x as f64,
+                    intersection.triangle().unwrap().v2.y as f64,
+                    intersection.triangle().unwrap().v2.z as f64,
+                ),
+            ]
+            .into_iter()
+            .sorted_by(|a, b| {
+                a.metric_distance(&position_in_render)
+                    .partial_cmp(&b.metric_distance(&position_in_render))
+                    .unwrap()
+            })
+            .collect_vec();
+
+            let position = hutspot::draw::invert_transform_coordinates(
+                position_in_render,
+                configuration.translation,
+                configuration.scale,
+            );
+
+            let line = DrawableLine::from_vertex(
+                position,
+                normal,
+                5.,
+                configuration.translation,
+                configuration.scale,
+            );
+            gizmos_cache
+                .raycast
+                .push((line.u, line.v, hutspot::color::ROODT.into()));
+
+            // v positions to mesh ids
+            let triangle_ids = triangle_in_render
+                .into_iter()
+                .map(|position_in_render| {
+                    mesh_resmut.keys[mesh_resmut
+                        .vertex_lookup
+                        .nearest(
+                            &hutspot::draw::invert_transform_coordinates(
+                                position_in_render,
+                                configuration.translation,
+                                configuration.scale,
+                            )
+                            .into(),
+                        )
+                        .1]
+                })
+                .collect_vec();
+
+            let line = DrawableLine::from_vertex(
+                mesh_resmut.mesh.position(triangle_ids[0]),
+                mesh_resmut.mesh.vert_normal(triangle_ids[0]),
+                0.1,
+                configuration.translation,
+                configuration.scale,
+            );
+            gizmos_cache
+                .raycast
+                .push((line.u, line.v, hutspot::color::ROODT.into()));
+
+            let line = DrawableLine::from_vertex(
+                mesh_resmut.mesh.position(triangle_ids[1]),
+                mesh_resmut.mesh.vert_normal(triangle_ids[1]),
+                0.01,
+                configuration.translation,
+                configuration.scale,
+            );
+            gizmos_cache
+                .raycast
+                .push((line.u, line.v, hutspot::color::GRIJS.into()));
+
+            let line = DrawableLine::from_vertex(
+                mesh_resmut.mesh.position(triangle_ids[2]),
+                mesh_resmut.mesh.vert_normal(triangle_ids[2]),
+                0.01,
+                configuration.translation,
+                configuration.scale,
+            );
+            gizmos_cache
+                .raycast
+                .push((line.u, line.v, hutspot::color::GRIJS.into()));
+
+            let nearest_face = mesh_resmut.mesh.face_with_verts(&triangle_ids).unwrap();
+
+            let (edge1, edge2) = mesh_resmut
+                .mesh
+                .edges(nearest_face)
+                .into_iter()
+                .filter(|&edge| {
+                    let (u, v) = mesh_resmut.mesh.endpoints(edge);
+                    u == triangle_ids[0] || v == triangle_ids[0]
+                })
+                .collect_tuple()
+                .unwrap();
+
+            let total_path = [
+                hutspot::graph::find_shortest_cycle(
+                    (edge1, edge2),
+                    mesh_resmut.mesh.neighbor_function_edgepairgraph(),
+                    mesh_resmut.mesh.weight_function_angle_edgepairs_aligned(
+                        5,
+                        5,
+                        configuration.direction.to_vector(),
+                    ),
+                    &mut cache.cache[configuration.direction as usize],
+                ),
+                hutspot::graph::find_shortest_cycle(
+                    (edge2, edge1),
+                    mesh_resmut.mesh.neighbor_function_edgepairgraph(),
+                    mesh_resmut.mesh.weight_function_angle_edgepairs_aligned(
+                        5,
+                        5,
+                        configuration.direction.to_vector(),
+                    ),
+                    &mut cache.cache[configuration.direction as usize],
+                ),
+            ]
+            .into_iter()
+            .flatten()
+            .sorted_by(|&(_, a), &(_, b)| a.cmp(&b))
+            .next()
+            .unwrap_or_default()
+            .0;
+
+            let color = match configuration.direction {
+                PrincipalDirection::X => hutspot::color::PURPL.into(),
+                PrincipalDirection::Y => hutspot::color::GREEN.into(),
+                PrincipalDirection::Z => hutspot::color::ORANG.into(),
+            };
+
+            for &edge in &total_path {
+                let u = mesh_resmut.mesh.midpoint(edge.0);
+                let v = mesh_resmut.mesh.midpoint(edge.1);
+                let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge.0));
+                for line in DrawableLine::from_arrow(
+                    u,
+                    v,
+                    n,
+                    0.9,
+                    configuration.translation,
+                    configuration.scale,
+                ) {
+                    gizmos_cache.raycast.push((line.u, line.v, color));
+                }
+            }
+
+            if mouse.just_pressed(MouseButton::Left) {
+                println!("Adding loop to solution.");
+                let path = total_path.into_iter().map(|edge| edge.0).collect_vec();
+                println!("{path:?}");
+
+                solution.dual.paths.push(Path {
+                    edges: path,
+                    direction: configuration.direction,
+                    order_token: 0.0,
+                });
+            }
+        }
+    }
 }

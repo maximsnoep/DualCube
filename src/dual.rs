@@ -4,6 +4,7 @@ use crate::EdgeWithDirection;
 use bevy::prelude::*;
 use douconel::douconel::{Douconel, EdgeID, FaceID};
 use douconel::douconel_embedded::EmbeddedVertex;
+use hutspot::geom::Vector3D;
 use serde::Deserialize;
 use serde::Serialize;
 use slotmap::SecondaryMap;
@@ -83,11 +84,11 @@ pub enum PrincipalDirection {
     Z = 2,
 }
 impl PrincipalDirection {
-    pub fn to_vector(&self) -> Vec3 {
+    pub fn to_vector(&self) -> Vector3D {
         match self {
-            PrincipalDirection::X => Vec3::new(1., 0., 0.),
-            PrincipalDirection::Y => Vec3::new(0., 1., 0.),
-            PrincipalDirection::Z => Vec3::new(0., 0., 1.),
+            PrincipalDirection::X => Vector3D::new(1., 0., 0.),
+            PrincipalDirection::Y => Vector3D::new(0., 1., 0.),
+            PrincipalDirection::Z => Vector3D::new(0., 0., 1.),
         }
     }
 }
