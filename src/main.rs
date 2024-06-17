@@ -11,6 +11,7 @@ use bevy::time::common_conditions::on_timer;
 use bevy::window::WindowMode;
 use bevy_egui::EguiPlugin;
 use bevy_mod_raycast::prelude::*;
+use bevy_toon_shader::{ToonShaderMainCamera, ToonShaderMaterial, ToonShaderPlugin, ToonShaderSun};
 use douconel::douconel::{Douconel, EdgeID, VertID};
 use douconel::douconel_embedded::EmbeddedVertex;
 use dual::{Dual, Path};
@@ -26,10 +27,13 @@ use smooth_bevy_cameras::controllers::orbit::{
 };
 use smooth_bevy_cameras::LookTransformPlugin;
 use std::collections::HashMap;
+use std::f32::consts::PI;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
-const BACKGROUND_COLOR: bevy::prelude::Color = bevy::prelude::Color::WHITE;
+const BACKGROUND_COLOR: bevy::prelude::Color =
+    bevy::prelude::Color::rgb(27. / 255., 27. / 255., 27. / 255.);
 
 #[derive(Component)]
 pub struct RenderedMesh;
@@ -54,6 +58,13 @@ pub struct Rules {
     pub loop_regions: bool,
 }
 
+#[derive(Default, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RenderType {
+    #[default]
+    Original,
+    RegionsMesh,
+}
+
 #[derive(Default, Resource, Clone)]
 pub struct Configuration {
     pub source: String,
@@ -63,8 +74,12 @@ pub struct Configuration {
 
     pub direction: PrincipalDirection,
 
+    pub render_type: RenderType,
+
     pub scale: f32,
     pub translation: Vector3D,
+
+    pub interactive: bool,
 
     pub draw_wireframe: bool,
     pub draw_vertices: bool,
@@ -101,7 +116,7 @@ impl TreeD {
 }
 impl Default for TreeD {
     fn default() -> Self {
-        TreeD(KdTree::new(3))
+        Self(KdTree::new(3))
     }
 }
 
@@ -126,7 +141,7 @@ pub struct GizmosCache {
 
 #[derive(Default, Resource)]
 pub struct MeshResource {
-    mesh: Douconel<EmbeddedVertex, (), ()>,
+    mesh: Arc<Douconel<EmbeddedVertex, (), ()>>,
 
     vertex_lookup: TreeD,
     keys: Vec<VertID>,
@@ -168,10 +183,6 @@ fn main() {
         .init_resource::<SolutionResource>()
         .init_resource::<Configuration>()
         .insert_resource(ClearColor(BACKGROUND_COLOR))
-        .insert_resource(AmbientLight {
-            brightness: 1.0,
-            ..default()
-        })
         // Load default plugins
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
@@ -189,30 +200,48 @@ fn main() {
         // Plugin for smooth camera
         .add_plugins(LookTransformPlugin)
         .add_plugins(OrbitCameraPlugin::default())
+        // Toon shading
+        .add_plugins(ToonShaderPlugin)
         // User specified
         .add_systems(Startup, setup)
+        .add_systems(Update, update)
         .add_systems(Update, ui)
         .add_systems(Update, handle_events)
         .add_systems(Update, draw_gizmos)
-        .add_systems(
-            Update,
-            update_mesh.run_if(on_timer(Duration::from_millis(100))),
-        )
-        .add_systems(Update, raycast.run_if(on_timer(Duration::from_millis(100))))
+        .add_systems(Update, update_mesh)
+        .add_systems(Update, raycast.run_if(on_timer(Duration::from_millis(50))))
         .add_event::<ActionEvent>()
         .run();
 }
 
 /// Set up
 fn setup(mut commands: Commands, mut egui_ctx: bevy_egui::EguiContexts) {
-    commands
-        .spawn(Camera3dBundle::default())
-        .insert(OrbitCameraBundle::new(
+    commands.spawn(Camera3dBundle::default()).insert((
+        OrbitCameraBundle::new(
             OrbitCameraController::default(),
             Vec3::new(0.0, 5.0, 20.0),
             Vec3::new(0., 0., 0.),
             Vec3::Y,
-        ));
+        ),
+        (ToonShaderMainCamera),
+    ));
+
+    commands.spawn((
+        DirectionalLightBundle {
+            directional_light: DirectionalLight {
+                shadows_enabled: true,
+                illuminance: 0.00001,
+                ..default()
+            },
+            ..default()
+        },
+        ToonShaderSun,
+    ));
+
+    commands.insert_resource(AmbientLight {
+        color: Color::BLACK,
+        brightness: 10.,
+    });
 
     let mut fonts = bevy_egui::egui::FontDefinitions::default();
     fonts.font_data.insert(
@@ -234,12 +263,41 @@ fn setup(mut commands: Commands, mut egui_ctx: bevy_egui::EguiContexts) {
     egui_ctx.ctx_mut().set_fonts(fonts);
     egui_ctx
         .ctx_mut()
-        .set_visuals(bevy_egui::egui::Visuals::light());
+        .set_visuals(bevy_egui::egui::Visuals::dark());
+}
+
+#[must_use]
+pub fn dir_to_color(direction: PrincipalDirection) -> Color {
+    match direction {
+        PrincipalDirection::X => hutspot::color::GREEN.into(),
+        PrincipalDirection::Y => hutspot::color::ORANG.into(),
+        PrincipalDirection::Z => hutspot::color::PURPL.into(),
+    }
+}
+
+// Update directional and ambient light
+pub fn update(
+    mut directional_lights: Query<(&DirectionalLight, &mut Transform), With<ToonShaderSun>>,
+    mut ambient_light: ResMut<AmbientLight>,
+    configuration: Res<Configuration>,
+) {
+    for (_, mut transform) in &mut directional_lights {
+        transform.rotation = match configuration.direction {
+            PrincipalDirection::X => Quat::from_euler(EulerRot::XYZ, 0., -PI / 2., 0.),
+            PrincipalDirection::Y => Quat::from_euler(EulerRot::XYZ, -PI / 2., 0., 0.),
+            PrincipalDirection::Z => Quat::from_euler(EulerRot::XYZ, 0., 0., 0.),
+        };
+    }
+
+    //ambient_light.color = dir_to_color(configuration.direction);
+
+    ambient_light.color = Color::BLACK;
 }
 
 pub fn handle_events(
     mut ev_reader: EventReader<ActionEvent>,
     mut mesh_resmut: ResMut<MeshResource>,
+    mut solution: ResMut<SolutionResource>,
     mut gizmos_cache: ResMut<GizmosCache>,
     mut configuration: ResMut<Configuration>,
 ) {
@@ -247,7 +305,7 @@ pub fn handle_events(
         info!("Received event {ev:?}. Handling...");
         match ev {
             ActionEvent::LoadFile(path) => {
-                mesh_resmut.mesh = match path.extension().unwrap().to_str() {
+                mesh_resmut.mesh = Arc::new(match path.extension().unwrap().to_str() {
                     Some("obj") => match Douconel::from_obj(path.to_str().unwrap()) {
                         Ok(res) => res.0,
                         Err(err) => {
@@ -261,7 +319,7 @@ pub fn handle_events(
                     //     }
                     // },
                     _ => panic!("File format not supported."),
-                };
+                });
 
                 *configuration = Configuration::default();
                 configuration.source = String::from(path.to_str().unwrap());
@@ -277,6 +335,8 @@ pub fn handle_events(
                 }
                 mesh_resmut.vertex_lookup = patterns;
 
+                solution.dual = Dual::new(mesh_resmut.mesh.clone());
+
                 let color_map = HashMap::new();
 
                 let mesh = mesh_resmut.mesh.bevy(&color_map);
@@ -285,9 +345,9 @@ pub fn handle_events(
                 configuration.scale = 10. * (1. / aabb.half_extents.max_element());
                 let translation = -configuration.scale * aabb.center;
                 configuration.translation = Vector3D::new(
-                    translation.x as f64,
-                    translation.y as f64,
-                    translation.z as f64,
+                    translation.x.into(),
+                    translation.y.into(),
+                    translation.z.into(),
                 );
 
                 configuration.loop_scoring = LoopScoring::PathLength;
@@ -302,6 +362,7 @@ pub fn handle_events(
                     let line = DrawableLine::from_line(
                         u,
                         v,
+                        mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge_id)) * 0.001,
                         configuration.translation,
                         configuration.scale,
                     );
@@ -339,10 +400,11 @@ pub fn handle_events(
                         p + n,
                         p.cross(&n).normalize(),
                         0.05,
+                        Vector3D::new(0., 0., 0.),
                         configuration.translation,
                         configuration.scale,
                     );
-                    for line in lines.iter() {
+                    for line in &lines {
                         gizmos_cache.lines.push((
                             line.u,
                             line.v,
@@ -363,7 +425,10 @@ fn update_mesh(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 
+    mut toon_materials: ResMut<Assets<ToonShaderMaterial>>,
+
     mesh_resmut: Res<MeshResource>,
+    solution: Res<SolutionResource>,
     configuration: Res<Configuration>,
 
     rendered_mesh_query: Query<Entity, With<RenderedMesh>>,
@@ -384,11 +449,18 @@ fn update_mesh(
     }
 
     let color_map = HashMap::new();
-    let mesh = mesh_resmut.mesh.bevy(&color_map);
+
+    //let material = toon_materials.add(ToonShaderMaterial::default());
+    let material = materials.add(StandardMaterial::default());
+
+    let mesh = match configuration.render_type {
+        RenderType::Original => mesh_resmut.mesh.bevy(&color_map),
+        RenderType::RegionsMesh => mesh_resmut.mesh.bevy(&color_map),
+    };
 
     // Spawn new mesh
     commands.spawn((
-        PbrBundle {
+        MaterialMeshBundle {
             mesh: meshes.add(mesh),
             transform: Transform {
                 translation: Vec3::new(
@@ -399,10 +471,7 @@ fn update_mesh(
                 rotation: Quat::from_rotation_z(0f32),
                 scale: Vec3::splat(configuration.scale),
             },
-            material: materials.add(StandardMaterial {
-                perceptual_roughness: 0.9,
-                ..default()
-            }),
+            material,
             ..default()
         },
         RenderedMesh,
@@ -418,7 +487,7 @@ fn draw_gizmos(
     solution: Res<SolutionResource>,
     mesh_resmut: Res<MeshResource>,
 ) {
-    for &(u, v, c, t) in gizmos_cache.lines.iter() {
+    for &(u, v, c, t) in &gizmos_cache.lines {
         match t {
             GizmoType::Wireframe => {
                 if configuration.draw_wireframe {
@@ -438,29 +507,26 @@ fn draw_gizmos(
         }
     }
 
-    for &(u, v, c) in gizmos_cache.raycast.iter() {
+    for &(u, v, c) in &gizmos_cache.raycast {
         gizmos.line(u, v, c);
     }
 
-    for &(u, v, c) in gizmos_cache.debug.iter() {
+    for &(u, v, c) in &gizmos_cache.debug {
         gizmos.line(u, v, c);
     }
 
-    for paths in &solution.dual.paths {
-        let color = match paths.direction {
-            PrincipalDirection::X => hutspot::color::PURPL.into(),
-            PrincipalDirection::Y => hutspot::color::GREEN.into(),
-            PrincipalDirection::Z => hutspot::color::ORANG.into(),
-        };
-        for edge in paths.edges.windows(2) {
-            let u = mesh_resmut.mesh.midpoint(edge[0]);
-            let v = mesh_resmut.mesh.midpoint(edge[1]);
-            let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge[0]));
+    for (path_id, path) in &solution.dual.paths {
+        let color = dir_to_color(path.direction);
+        for edge in &path.edges {
+            let u = mesh_resmut.mesh.midpoint(edge.0);
+            let v = mesh_resmut.mesh.midpoint(edge.1);
+            let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge.0));
             for line in DrawableLine::from_arrow(
                 u,
                 v,
                 n,
                 0.9,
+                mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge.0)) * 0.001,
                 configuration.translation,
                 configuration.scale,
             ) {
@@ -473,13 +539,23 @@ fn draw_gizmos(
 fn raycast(
     cursor_ray: Res<CursorRay>,
     mut raycast: Raycast,
-    mouse: Res<Input<MouseButton>>,
+    mut mouse: ResMut<Input<MouseButton>>,
     mesh_resmut: Res<MeshResource>,
     mut solution: ResMut<SolutionResource>,
     mut cache: ResMut<CacheResource>,
     mut gizmos_cache: ResMut<GizmosCache>,
-    configuration: ResMut<Configuration>,
+    configuration: Res<Configuration>,
 ) {
+    if !configuration.interactive {
+        gizmos_cache.raycast.clear();
+        return;
+    }
+
+    if configuration.render_type != RenderType::Original {
+        gizmos_cache.raycast.clear();
+        return;
+    }
+
     if let Some(cursor_ray) = **cursor_ray {
         let intersections = raycast.cast_ray(cursor_ray, &default());
         if !intersections.is_empty() {
@@ -487,32 +563,16 @@ fn raycast(
 
             let intersection = &raycast.cast_ray(cursor_ray, &default())[0].1;
 
-            let normal = Vector3D::new(
-                intersection.normal().x as f64,
-                intersection.normal().y as f64,
-                intersection.normal().z as f64,
-            );
-            let position_in_render = Vector3D::new(
-                intersection.position().x as f64,
-                intersection.position().y as f64,
-                intersection.position().z as f64,
-            );
+            let n = intersection.normal();
+            let p = intersection.position();
+            let normal = Vector3D::new(n.x.into(), n.y.into(), n.z.into());
+            let position_in_render = Vector3D::new(p.x.into(), p.y.into(), p.z.into());
+
+            let t = intersection.triangle().unwrap();
             let triangle_in_render = [
-                Vector3D::new(
-                    intersection.triangle().unwrap().v0.x as f64,
-                    intersection.triangle().unwrap().v0.y as f64,
-                    intersection.triangle().unwrap().v0.z as f64,
-                ),
-                Vector3D::new(
-                    intersection.triangle().unwrap().v1.x as f64,
-                    intersection.triangle().unwrap().v1.y as f64,
-                    intersection.triangle().unwrap().v1.z as f64,
-                ),
-                Vector3D::new(
-                    intersection.triangle().unwrap().v2.x as f64,
-                    intersection.triangle().unwrap().v2.y as f64,
-                    intersection.triangle().unwrap().v2.z as f64,
-                ),
+                Vector3D::new(t.v0.x.into(), t.v0.y.into(), t.v0.z.into()),
+                Vector3D::new(t.v1.x.into(), t.v1.y.into(), t.v1.z.into()),
+                Vector3D::new(t.v2.x.into(), t.v2.y.into(), t.v2.z.into()),
             ]
             .into_iter()
             .sorted_by(|a, b| {
@@ -557,44 +617,9 @@ fn raycast(
                 })
                 .collect_vec();
 
-            let line = DrawableLine::from_vertex(
-                mesh_resmut.mesh.position(triangle_ids[0]),
-                mesh_resmut.mesh.vert_normal(triangle_ids[0]),
-                0.1,
-                configuration.translation,
-                configuration.scale,
-            );
-            gizmos_cache
-                .raycast
-                .push((line.u, line.v, hutspot::color::ROODT.into()));
-
-            let line = DrawableLine::from_vertex(
-                mesh_resmut.mesh.position(triangle_ids[1]),
-                mesh_resmut.mesh.vert_normal(triangle_ids[1]),
-                0.01,
-                configuration.translation,
-                configuration.scale,
-            );
-            gizmos_cache
-                .raycast
-                .push((line.u, line.v, hutspot::color::GRIJS.into()));
-
-            let line = DrawableLine::from_vertex(
-                mesh_resmut.mesh.position(triangle_ids[2]),
-                mesh_resmut.mesh.vert_normal(triangle_ids[2]),
-                0.01,
-                configuration.translation,
-                configuration.scale,
-            );
-            gizmos_cache
-                .raycast
-                .push((line.u, line.v, hutspot::color::GRIJS.into()));
-
-            let nearest_face = mesh_resmut.mesh.face_with_verts(&triangle_ids).unwrap();
-
-            let (edge1, edge2) = mesh_resmut
+            let (e1, e2) = mesh_resmut
                 .mesh
-                .edges(nearest_face)
+                .edges(mesh_resmut.mesh.face_with_verts(&triangle_ids).unwrap())
                 .into_iter()
                 .filter(|&edge| {
                     let (u, v) = mesh_resmut.mesh.endpoints(edge);
@@ -603,27 +628,28 @@ fn raycast(
                 .collect_tuple()
                 .unwrap();
 
+            let edge_to_path_map = solution.dual.get_edgepair_to_path_map();
+
+            // filter out all edges that are already used in the solution
+            let nfunction = |edgepair: (EdgeID, EdgeID)| {
+                if edge_to_path_map.contains_key(&edgepair) {
+                    vec![]
+                } else {
+                    mesh_resmut.mesh.neighbor_function_edgepairgraph()(edgepair)
+                }
+            };
+
+            let wfunction = mesh_resmut.mesh.weight_function_angle_edgepairs_aligned(
+                5,
+                5,
+                configuration.direction.to_vector(),
+            );
+
+            let cache_ref = &mut cache.cache[configuration.direction as usize];
+
             let total_path = [
-                hutspot::graph::find_shortest_cycle(
-                    (edge1, edge2),
-                    mesh_resmut.mesh.neighbor_function_edgepairgraph(),
-                    mesh_resmut.mesh.weight_function_angle_edgepairs_aligned(
-                        5,
-                        5,
-                        configuration.direction.to_vector(),
-                    ),
-                    &mut cache.cache[configuration.direction as usize],
-                ),
-                hutspot::graph::find_shortest_cycle(
-                    (edge2, edge1),
-                    mesh_resmut.mesh.neighbor_function_edgepairgraph(),
-                    mesh_resmut.mesh.weight_function_angle_edgepairs_aligned(
-                        5,
-                        5,
-                        configuration.direction.to_vector(),
-                    ),
-                    &mut cache.cache[configuration.direction as usize],
-                ),
+                hutspot::graph::find_shortest_cycle((e1, e2), nfunction, &wfunction, cache_ref),
+                hutspot::graph::find_shortest_cycle((e2, e1), nfunction, &wfunction, cache_ref),
             ]
             .into_iter()
             .flatten()
@@ -632,13 +658,41 @@ fn raycast(
             .unwrap_or_default()
             .0;
 
-            let color = match configuration.direction {
-                PrincipalDirection::X => hutspot::color::PURPL.into(),
-                PrincipalDirection::Y => hutspot::color::GREEN.into(),
-                PrincipalDirection::Z => hutspot::color::ORANG.into(),
-            };
+            if total_path.is_empty() {
+                return;
+            }
 
-            for &edge in &total_path {
+            let path_id = solution.dual.paths.insert(Path {
+                edges: total_path,
+                direction: configuration.direction,
+            });
+
+            println!("Adding path {:?}", path_id);
+
+            if !solution.dual.verify_nonoverlap() {
+                println!("Path {:?} overlaps with existing paths", path_id);
+                solution.dual.paths.remove(path_id);
+                return;
+            }
+
+            if solution
+                .dual
+                .paths
+                .values()
+                .unique_by(|x| x.direction)
+                .count()
+                >= 3
+                && solution.dual.intersections().is_none()
+            {
+                println!(
+                    "Path {:?} has invalid intersections with existing paths",
+                    path_id
+                );
+                solution.dual.paths.remove(path_id);
+                return;
+            }
+
+            for &edge in &solution.dual.paths.get(path_id).unwrap().edges {
                 let u = mesh_resmut.mesh.midpoint(edge.0);
                 let v = mesh_resmut.mesh.midpoint(edge.1);
                 let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge.0));
@@ -647,23 +701,62 @@ fn raycast(
                     v,
                     n,
                     0.9,
+                    mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge.0)) * 0.001,
                     configuration.translation,
                     configuration.scale,
                 ) {
-                    gizmos_cache.raycast.push((line.u, line.v, color));
+                    gizmos_cache.raycast.push((
+                        line.u,
+                        line.v,
+                        dir_to_color(configuration.direction),
+                    ));
                 }
             }
 
-            if mouse.just_pressed(MouseButton::Left) {
-                println!("Adding loop to solution.");
-                let path = total_path.into_iter().map(|edge| edge.0).collect_vec();
-                println!("{path:?}");
+            // for face_id in solution.dual.new_mesh.faces.keys() {
+            //     let mut labels = vec![];
+            //     let mut paths = vec![];
 
-                solution.dual.paths.push(Path {
-                    edges: path,
-                    direction: configuration.direction,
-                    order_token: 0.0,
-                });
+            //     for edge_id in solution.dual.new_mesh.edges(face_id) {
+            //         let (x0, x1) = solution.dual.new_mesh.endpoints(edge_id);
+            //         let path_id = solution
+            //             .dual
+            //             .get_path_between_intersections(x0, x1)
+            //             .unwrap();
+            //         let path = solution.dual.paths.get(path_id).unwrap();
+            //         let direction = path.direction;
+
+            //         labels.push(direction);
+            //         paths.push(path_id);
+            //     }
+
+            //     let count_x = labels
+            //         .iter()
+            //         .filter(|&&x| x == PrincipalDirection::X)
+            //         .count();
+            //     let count_y = labels
+            //         .iter()
+            //         .filter(|&&x| x == PrincipalDirection::Y)
+            //         .count();
+            //     let count_z = labels
+            //         .iter()
+            //         .filter(|&&x| x == PrincipalDirection::Z)
+            //         .count();
+            //     let unique = paths.iter().unique().count();
+
+            //     println!(
+            //         "Face {:?} has {:?} loops: X:{:?} Y:{:?} Z:{:?}",
+            //         face_id, unique, count_x, count_y, count_z
+            //     );
+            // }
+
+            if mouse.just_pressed(MouseButton::Left) || mouse.just_released(MouseButton::Left) {
+                mouse.clear_just_pressed(MouseButton::Left);
+                mouse.clear_just_released(MouseButton::Left);
+                return;
+            } else {
+                solution.dual.paths.remove(path_id);
+                return;
             }
         }
     }

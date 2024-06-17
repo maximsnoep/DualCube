@@ -1023,6 +1023,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bevy_toon_shader"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16e5efccd92bdcc004f215d16b35a481f8ede8c0654fba9e762370129f05dee6"
+dependencies = [
+ "bevy",
+]
+
+[[package]]
 name = "bevy_transform"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1671,6 +1680,7 @@ dependencies = [
  "bevy",
  "bevy_egui",
  "bevy_mod_raycast",
+ "bevy_toon_shader",
  "douconel",
  "hutspot",
  "itertools 0.12.1",

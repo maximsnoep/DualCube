@@ -1,6 +1,6 @@
 #![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::cargo)]
 
-use crate::{dual::PrincipalDirection, ActionEvent, Configuration};
+use crate::{dual::PrincipalDirection, ActionEvent, Configuration, RenderType};
 use bevy::prelude::*;
 use bevy_egui::egui::{emath::Numeric, Slider, TopBottomPanel, Ui};
 
@@ -8,6 +8,7 @@ pub fn ui(
     mut egui_ctx: bevy_egui::EguiContexts,
     mut ev_w: EventWriter<ActionEvent>,
     mut conf: ResMut<Configuration>,
+    mut mesh_resmut: ResMut<crate::MeshResource>,
 ) {
     TopBottomPanel::top("panel").show(egui_ctx.ctx_mut(), |ui| {
         sep(ui);
@@ -21,17 +22,48 @@ pub fn ui(
                 }
             }
 
-            if !conf.source.is_empty() {
+            if conf.source.is_empty() {
+                ui.label("No file yet loaded.");
+            } else {
                 ui.label(format!(
                     "\tLoaded: {}\t\t(v: {}, e: {}, f: {})",
                     conf.source, conf.nr_of_vertices, conf.nr_of_edges, conf.nr_of_faces
                 ));
-            } else {
-                ui.label("No file yet loaded.");
             }
         });
 
         ui.add_space(10.);
+
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.checkbox(&mut conf.interactive, "interactive");
+            });
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("Visualize");
+            if ui
+                .radio(
+                    conf.render_type == RenderType::Original,
+                    "Input mesh".to_string(),
+                )
+                .clicked()
+            {
+                conf.render_type = RenderType::Original;
+
+                mesh_resmut.as_mut();
+            }
+            if ui
+                .radio(
+                    conf.render_type == RenderType::RegionsMesh,
+                    "Loop structure".to_string(),
+                )
+                .clicked()
+            {
+                conf.render_type = RenderType::RegionsMesh;
+                mesh_resmut.as_mut();
+            }
+        });
 
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
