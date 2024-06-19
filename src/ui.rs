@@ -37,35 +37,10 @@ pub fn ui(
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 ui.checkbox(&mut conf.interactive, "interactive");
+                ui.checkbox(&mut conf.region_selection, "region selection");
+                ui.checkbox(&mut conf.zone_selection, "zone selection");
             });
-        });
 
-        ui.horizontal(|ui| {
-            ui.label("Visualize");
-            if ui
-                .radio(
-                    conf.render_type == RenderType::Original,
-                    "Input mesh".to_string(),
-                )
-                .clicked()
-            {
-                conf.render_type = RenderType::Original;
-
-                mesh_resmut.as_mut();
-            }
-            if ui
-                .radio(
-                    conf.render_type == RenderType::RegionsMesh,
-                    "Loop structure".to_string(),
-                )
-                .clicked()
-            {
-                conf.render_type = RenderType::RegionsMesh;
-                mesh_resmut.as_mut();
-            }
-        });
-
-        ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 ui.checkbox(&mut conf.draw_wireframe, "graph");
                 ui.checkbox(&mut conf.draw_vertices, "vertices");

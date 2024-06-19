@@ -14,7 +14,7 @@ use bevy_mod_raycast::prelude::*;
 use bevy_toon_shader::{ToonShaderMainCamera, ToonShaderMaterial, ToonShaderPlugin, ToonShaderSun};
 use douconel::douconel::{Douconel, EdgeID, VertID};
 use douconel::douconel_embedded::EmbeddedVertex;
-use dual::{Dual, Path};
+use dual::{Dual, Loop};
 use hutspot::draw::DrawableLine;
 use hutspot::geom::Vector3D;
 use itertools::Itertools;
@@ -80,6 +80,8 @@ pub struct Configuration {
     pub translation: Vector3D,
 
     pub interactive: bool,
+    pub region_selection: bool,
+    pub zone_selection: bool,
 
     pub draw_wireframe: bool,
     pub draw_vertices: bool,
@@ -139,9 +141,11 @@ pub struct GizmosCache {
     debug: Vec<(Vec3, Vec3, Color)>,
 }
 
+type EmbeddedMesh = Douconel<EmbeddedVertex, (), ()>;
+
 #[derive(Default, Resource)]
 pub struct MeshResource {
-    mesh: Arc<Douconel<EmbeddedVertex, (), ()>>,
+    mesh: Arc<EmbeddedMesh>,
 
     vertex_lookup: TreeD,
     keys: Vec<VertID>,
@@ -209,7 +213,7 @@ fn main() {
         .add_systems(Update, handle_events)
         .add_systems(Update, draw_gizmos)
         .add_systems(Update, update_mesh)
-        .add_systems(Update, raycast.run_if(on_timer(Duration::from_millis(50))))
+        .add_systems(Update, raycast)
         .add_event::<ActionEvent>()
         .run();
 }
@@ -515,9 +519,10 @@ fn draw_gizmos(
         gizmos.line(u, v, c);
     }
 
-    for (path_id, path) in &solution.dual.paths {
-        let color = dir_to_color(path.direction);
-        for edge in &path.edges {
+    // Draw all loops
+    for (_, l) in solution.dual.get_loops() {
+        let color = dir_to_color(l.direction);
+        for edge in &l.edges {
             let u = mesh_resmut.mesh.midpoint(edge.0);
             let v = mesh_resmut.mesh.midpoint(edge.1);
             let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge.0));
@@ -531,6 +536,76 @@ fn draw_gizmos(
                 configuration.scale,
             ) {
                 gizmos.line(line.u, line.v, color);
+            }
+        }
+    }
+
+    // Draw all faces
+    let ls = solution.dual.get_loop_structure();
+    for (face_id, _) in ls.faces.iter().take(2) {
+        // Get the "edges" (loop segments) of this face.
+        let loop_segments = ls.edges(face_id);
+
+        // Get the original edges corresponding to these "edges" (loop segments)
+        for loop_segment in loop_segments {
+            let root = ls.root(loop_segment);
+            let toor = ls.toor(loop_segment);
+
+            let intersection_root = ls.verts[root].this[0];
+            let intersection_toor = ls.verts[toor].this[0];
+
+            // Get the corresponding loop
+            let loop_id = ls.edges[loop_segment].loop_id;
+            let bounds = ls.edges[loop_segment].edges;
+
+            // Get edges of the loop segment
+            let root_bound = bounds[0];
+            let toor_bound = bounds[1];
+
+            let between_a = solution
+                .dual
+                .get_loop(loop_id)
+                .unwrap()
+                .between(root_bound, toor_bound);
+            let between_b = solution
+                .dual
+                .get_loop(loop_id)
+                .unwrap()
+                .between(toor_bound, root_bound);
+
+            let between = if between_a
+                .iter()
+                .filter(|&&(e1, e2)| e1 == intersection_root || e2 == intersection_root)
+                .count()
+                == 0
+            {
+                between_a
+            } else {
+                assert!(
+                    between_b
+                        .iter()
+                        .filter(|&&(e1, e2)| e1 == intersection_root || e2 == intersection_root)
+                        .count()
+                        == 0
+                );
+                between_b
+            };
+
+            for edge in &between {
+                let u = mesh_resmut.mesh.midpoint(edge.0);
+                let v = mesh_resmut.mesh.midpoint(edge.1);
+                let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge.0));
+                for line in DrawableLine::from_arrow(
+                    u,
+                    v,
+                    n,
+                    0.9,
+                    mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge.0)) * 0.001,
+                    configuration.translation,
+                    configuration.scale,
+                ) {
+                    gizmos.line(line.u, line.v, hutspot::color::WHITE.into());
+                }
             }
         }
     }
@@ -628,11 +703,11 @@ fn raycast(
                 .collect_tuple()
                 .unwrap();
 
-            let edge_to_path_map = solution.dual.get_edgepair_to_path_map();
+            let edge_to_loop_map = solution.dual.get_edgepair_to_loop_map();
 
             // filter out all edges that are already used in the solution
             let nfunction = |edgepair: (EdgeID, EdgeID)| {
-                if edge_to_path_map.contains_key(&edgepair) {
+                if edge_to_loop_map.contains_key(&edgepair) {
                     vec![]
                 } else {
                     mesh_resmut.mesh.neighbor_function_edgepairgraph()(edgepair)
@@ -662,101 +737,41 @@ fn raycast(
                 return;
             }
 
-            let path_id = solution.dual.paths.insert(Path {
+            if let Some(loop_id) = solution.dual.add_loop(Loop {
                 edges: total_path,
                 direction: configuration.direction,
-            });
+            }) {
+                println!("Added path {:?}", loop_id);
 
-            println!("Adding path {:?}", path_id);
-
-            if !solution.dual.verify_nonoverlap() {
-                println!("Path {:?} overlaps with existing paths", path_id);
-                solution.dual.paths.remove(path_id);
-                return;
-            }
-
-            if solution
-                .dual
-                .paths
-                .values()
-                .unique_by(|x| x.direction)
-                .count()
-                >= 3
-                && solution.dual.intersections().is_none()
-            {
-                println!(
-                    "Path {:?} has invalid intersections with existing paths",
-                    path_id
-                );
-                solution.dual.paths.remove(path_id);
-                return;
-            }
-
-            for &edge in &solution.dual.paths.get(path_id).unwrap().edges {
-                let u = mesh_resmut.mesh.midpoint(edge.0);
-                let v = mesh_resmut.mesh.midpoint(edge.1);
-                let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge.0));
-                for line in DrawableLine::from_arrow(
-                    u,
-                    v,
-                    n,
-                    0.9,
-                    mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge.0)) * 0.001,
-                    configuration.translation,
-                    configuration.scale,
-                ) {
-                    gizmos_cache.raycast.push((
-                        line.u,
-                        line.v,
-                        dir_to_color(configuration.direction),
-                    ));
+                for &edge in &solution.dual.get_loop(loop_id).unwrap().edges {
+                    let u = mesh_resmut.mesh.midpoint(edge.0);
+                    let v = mesh_resmut.mesh.midpoint(edge.1);
+                    let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge.0));
+                    for line in DrawableLine::from_arrow(
+                        u,
+                        v,
+                        n,
+                        0.9,
+                        mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge.0)) * 0.001,
+                        configuration.translation,
+                        configuration.scale,
+                    ) {
+                        gizmos_cache.raycast.push((
+                            line.u,
+                            line.v,
+                            dir_to_color(configuration.direction),
+                        ));
+                    }
                 }
-            }
 
-            // for face_id in solution.dual.new_mesh.faces.keys() {
-            //     let mut labels = vec![];
-            //     let mut paths = vec![];
-
-            //     for edge_id in solution.dual.new_mesh.edges(face_id) {
-            //         let (x0, x1) = solution.dual.new_mesh.endpoints(edge_id);
-            //         let path_id = solution
-            //             .dual
-            //             .get_path_between_intersections(x0, x1)
-            //             .unwrap();
-            //         let path = solution.dual.paths.get(path_id).unwrap();
-            //         let direction = path.direction;
-
-            //         labels.push(direction);
-            //         paths.push(path_id);
-            //     }
-
-            //     let count_x = labels
-            //         .iter()
-            //         .filter(|&&x| x == PrincipalDirection::X)
-            //         .count();
-            //     let count_y = labels
-            //         .iter()
-            //         .filter(|&&x| x == PrincipalDirection::Y)
-            //         .count();
-            //     let count_z = labels
-            //         .iter()
-            //         .filter(|&&x| x == PrincipalDirection::Z)
-            //         .count();
-            //     let unique = paths.iter().unique().count();
-
-            //     println!(
-            //         "Face {:?} has {:?} loops: X:{:?} Y:{:?} Z:{:?}",
-            //         face_id, unique, count_x, count_y, count_z
-            //     );
-            // }
-
-            if mouse.just_pressed(MouseButton::Left) || mouse.just_released(MouseButton::Left) {
-                mouse.clear_just_pressed(MouseButton::Left);
-                mouse.clear_just_released(MouseButton::Left);
-                return;
-            } else {
-                solution.dual.paths.remove(path_id);
-                return;
+                if mouse.just_pressed(MouseButton::Left) || mouse.just_released(MouseButton::Left) {
+                    mouse.clear_just_pressed(MouseButton::Left);
+                    mouse.clear_just_released(MouseButton::Left);
+                    return;
+                } else {
+                    solution.dual.del_loop(loop_id);
+                    return;
+                }
             }
         }
     }

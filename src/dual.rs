@@ -13,12 +13,14 @@ use slotmap::SlotMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::EmbeddedMesh;
+
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Hash, Default, Serialize, Deserialize)]
 pub enum PrincipalDirection {
     #[default]
-    X = 0,
-    Y = 1,
-    Z = 2,
+    X,
+    Y,
+    Z,
 }
 impl PrincipalDirection {
     #[inline]
@@ -31,123 +33,189 @@ impl PrincipalDirection {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Path {
-    // A path is defined by a sequence of half-edges.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Loop {
+    // A loop is defined by a sequence of half-edges.
     pub edges: Vec<(EdgeID, EdgeID)>,
-    // the direction or labeling associated with the path
+    // the direction or labeling associated with the loop
     pub direction: PrincipalDirection,
 }
 
-// #[derive(Default, Clone, Debug, Serialize, Deserialize)]
-// pub struct Vertex {
-//     pub some_edge: Option<usize>,
+impl Loop {
+    pub fn find_edge(&self, edge: EdgeID) -> (usize, usize) {
+        (
+            self.edges
+                .iter()
+                .position(|&(_, right)| right == edge)
+                .unwrap(),
+            self.edges
+                .iter()
+                .position(|&(left, _)| left == edge)
+                .unwrap(),
+        )
+    }
 
-//     // Auxiliary data
-//     pub position: Vec3,
-//     pub normal: Vec3,
-//     pub original_face_id: FaceID,
-//     pub ordering: Vec<(usize, EdgeID)>,
-// }
+    pub fn left(&self, edge: EdgeID) -> EdgeID {
+        self.edges[self.find_edge(edge).0].0
+    }
 
-// #[derive(Default, Clone, Debug, Serialize, Deserialize)]
-// pub struct Face {
-//     pub some_edge: Option<usize>,
+    pub fn right(&self, edge: EdgeID) -> EdgeID {
+        self.edges[self.find_edge(edge).1].1
+    }
 
-//     // Auxiliary data
-//     pub color: Color,
-//     pub normal: Vec3,
-//     pub dual_position: Option<Vec3>,
-//     pub dual_normal: Option<Vec3>,
-//     pub original_face: Option<usize>,
-// }
+    pub fn between(&self, start: EdgeID, end: EdgeID) -> Vec<(EdgeID, EdgeID)> {
+        let start_pos = self.find_edge(start).1;
+        let end_pos = self.find_edge(end).0;
 
-// #[derive(Default, Clone, Debug, Serialize, Deserialize)]
-// pub struct Edge {
-//     pub root: usize,
-//     pub face: Option<usize>,
-//     pub next: Option<usize>,
-//     pub twin: Option<usize>,
+        let mut seq = vec![];
+        if start_pos < end_pos {
+            // if start_pos < end_pos, we return [start...end]
+            seq.extend(self.edges[start_pos..=end_pos].iter());
+        } else {
+            // if start_pos > end_pos, we return [start...MAX] + [0...end]
+            seq.extend(self.edges[start_pos..].iter());
+            seq.extend(self.edges[..=end_pos].iter());
+        }
+        seq
+    }
+}
 
-//     // Auxiliary data
-//     pub label: Option<usize>,
-//     pub part_of_path: Option<usize>,
-//     pub edges_between: Option<Vec<EdgeID>>,
-//     pub edges_between_endpoints: Option<(usize, usize)>,
-//     pub direction: Option<PrincipalDirection>,
-// }
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct LoopSegment {
+    // A loop segment is defined by a reference to a loop (id)
+    pub loop_id: LoopID,
+    // And a reference to the two half-edges that limit the segment
+    pub edges: [EdgeID; 2],
+}
+
+type LoopStructure = Douconel<Intersection, LoopSegment, ()>;
+
+slotmap::new_key_type! {
+    pub struct LoopID;
+    pub struct IntersectionID;
+}
 
 // Dual structure is an "ABSTRACT PATH REPRESENTATION"
-// TODO: turn this into its own struct, then DUAL inherits this
-// TODO: maybe give paths actual IDs for robust removal etc?
 #[derive(Clone, Debug, Default)]
 pub struct Dual {
-    pub paths: SlotMap<PathID, Path>,
-    pub mesh_ref: Arc<Douconel<EmbeddedVertex, (), ()>>,
-    pub new_mesh: Douconel<Intersection, (), ()>,
+    mesh_ref: Arc<EmbeddedMesh>,
+    loops: SlotMap<LoopID, Loop>,
+    loop_structure: LoopStructure,
+}
+
+#[derive(Debug, Default, Copy, Clone)]
+pub struct Intersection {
+    // An intersection is defined by the midpoint of two half-edges. At this point, two loops intersect.
+    pub this: [EdgeID; 2],
+    // The two loops come from the four half-edges adjacent to `this`.
+    // The next local edge (adjacent to `this`), the loop, and the intersection (defined by an EdgeID) that is reached by following the loop into the direction of the local edge. The direction is either 1 or -1.
+    pub next: [(EdgeID, LoopID, EdgeID, i32); 4],
 }
 
 impl Dual {
-    pub fn new(mesh_ref: Arc<Douconel<EmbeddedVertex, (), ()>>) -> Self {
+    pub fn new(mesh_ref: Arc<EmbeddedMesh>) -> Self {
         Self {
-            paths: SlotMap::with_key(),
             mesh_ref,
-            new_mesh: Douconel::default(),
+            loops: SlotMap::with_key(),
+            loop_structure: Douconel::default(),
         }
     }
 
+    pub fn get_mesh_ref(&self) -> &Arc<EmbeddedMesh> {
+        &self.mesh_ref
+    }
+
+    pub fn get_loop_structure(&self) -> &LoopStructure {
+        &self.loop_structure
+    }
+
+    pub fn get_loop(&self, loop_id: LoopID) -> Option<&Loop> {
+        self.loops.get(loop_id)
+    }
+
+    pub fn get_loops(&self) -> impl Iterator<Item = (LoopID, &Loop)> {
+        self.loops.iter()
+    }
+
+    pub fn del_loop(&mut self, loop_id: LoopID) -> Option<Loop> {
+        self.loops.remove(loop_id)
+    }
+
+    pub fn add_loop(&mut self, l: Loop) -> Option<LoopID> {
+        let loop_id = self.loops.insert(l);
+
+        if !self.verify_nonoverlap() || !self.build_loop_structure() {
+            self.del_loop(loop_id);
+            return None;
+        }
+
+        Some(loop_id)
+    }
+
     pub fn verify_nonoverlap(&self) -> bool {
-        let edge_to_paths = self.get_edge_to_paths_map();
-        for paths in edge_to_paths.values() {
-            if paths.len() > 2 {
+        let edge_to_loops = self.get_edge_to_loops_map();
+        for l in edge_to_loops.values() {
+            if l.len() > 2 {
                 return false;
             }
         }
         true
     }
 
-    pub fn get_edge_to_paths_map(&self) -> HashMap<EdgeID, Vec<PathID>> {
+    pub fn get_edge_to_loops_map(&self) -> HashMap<EdgeID, Vec<LoopID>> {
         let mut map = HashMap::new();
-        for (path_id, path) in &self.paths {
-            for &(e0, e1) in &path.edges {
-                map.entry(e0).or_insert(Vec::new()).push(path_id);
-                map.entry(e1).or_insert(Vec::new()).push(path_id);
+        for (loop_id, l) in &self.loops {
+            for &(e0, e1) in &l.edges {
+                map.entry(e0).or_insert(Vec::new()).push(loop_id);
+                map.entry(e1).or_insert(Vec::new()).push(loop_id);
             }
         }
         map
     }
 
-    pub fn get_edgepair_to_path_map(&self) -> HashMap<(EdgeID, EdgeID), PathID> {
+    pub fn get_edgepair_to_loop_map(&self) -> HashMap<(EdgeID, EdgeID), LoopID> {
         let mut map = HashMap::new();
-        for (path_id, path) in &self.paths {
-            for &(e0, e1) in &path.edges {
+        for (loop_id, l) in &self.loops {
+            for &(e0, e1) in &l.edges {
                 assert!(!map.contains_key(&(e0, e1)) && !map.contains_key(&(e1, e0)));
-                map.insert((e0, e1), path_id);
-                map.insert((e1, e0), path_id);
+                map.insert((e0, e1), loop_id);
+                map.insert((e1, e0), loop_id);
             }
         }
         map
     }
 
-    pub fn intersections(&mut self) -> Option<()> {
+    pub fn count_loops_in_direction(&self, direction: PrincipalDirection) -> usize {
+        self.loops
+            .iter()
+            .filter(|(_, l)| l.direction == direction)
+            .count()
+    }
+
+    pub fn build_loop_structure(&mut self) -> bool {
         // Create the following "map"
         // List of all intersections
         // At each intersection, list all path segments that intersect there
         // We define both: the "next" intersection, and the local "next" edge
         // Using this information, we should be able to create an embedded graph (HEDS)
 
-        if self.paths.len() < 3 {
-            return Some(());
+        if self.count_loops_in_direction(PrincipalDirection::X) == 0
+            || self.count_loops_in_direction(PrincipalDirection::Y) == 0
+            || self.count_loops_in_direction(PrincipalDirection::Z) == 0
+        {
+            return true;
         }
 
-        let edge_to_paths = self.get_edge_to_paths_map();
+        let edge_to_paths = self.get_edge_to_loops_map();
 
-        // For each path, find all its intersections (in order of the path edges)
-        let path_to_intersections: HashMap<PathID, Vec<([EdgeID; 2], [PathID; 2])>> = self
-            .paths
+        println!("Finding loop to intersections...");
+
+        // For each loop, find all its intersections (in order of the loop edges)
+        let loop_to_intersections: HashMap<LoopID, Vec<([EdgeID; 2], [LoopID; 2])>> = self
+            .loops
             .iter()
-            .map(|(path_id, path)| {
-                let path_intersections = path
+            .map(|(loop_id, l)| {
+                let path_intersections = l
                     .edges
                     .clone()
                     .into_iter()
@@ -165,15 +233,17 @@ impl Dual {
                         None
                     })
                     .collect_vec();
-                (path_id, path_intersections)
+                (loop_id, path_intersections)
             })
             .collect();
 
         // TODO: if two path segments with exact same intersections ( a face of degree 2 ), we cannot do it.
+        // TODO: return false if graph is not connected
+        // TODO: return false if intersections are not transversal.
 
         let mut intersections = HashMap::new();
-        for path_intersections in path_to_intersections.values() {
-            for &(edges, [path1, path2]) in path_intersections {
+        for loop_intersections in loop_to_intersections.values() {
+            for &(edges, [l1, l2]) in loop_intersections {
                 let intersection_id = edges[0];
 
                 let next_edges = [
@@ -184,54 +254,66 @@ impl Dual {
                 ];
 
                 // Intersection TODO: when is it invalid?, filter out (early return) on invalid intersections. (or faces)
-                let nexts = next_edges.map(|(intersection_edge, next_edge)| {
-                    let (next_path, direction) = if self.paths[path1]
-                        .edges
-                        .contains(&(intersection_edge, next_edge))
-                    {
-                        (path1, 1)
-                    } else if self.paths[path1]
-                        .edges
-                        .contains(&(next_edge, intersection_edge))
-                    {
-                        (path1, -1)
-                    } else if self.paths[path2]
-                        .edges
-                        .contains(&(intersection_edge, next_edge))
-                    {
-                        (path2, 1)
-                    } else if self.paths[path2]
-                        .edges
-                        .contains(&(next_edge, intersection_edge))
-                    {
-                        (path2, -1)
-                    } else {
-                        panic!("Invalid intersection!");
-                    };
-                    let next_path_intersections = path_to_intersections.get(&next_path).unwrap();
-                    let nr_of_intersections = next_path_intersections.len();
-                    let this_intersection = next_path_intersections
-                        .iter()
-                        .position(|(edges, _)| edges[0] == intersection_id)
-                        .unwrap()
-                        + nr_of_intersections;
+                let nexts = next_edges
+                    .into_iter()
+                    .map(|(intersection_edge, next_edge)| {
+                        if let Some((next_loop, direction)) = if self.loops[l1]
+                            .edges
+                            .contains(&(intersection_edge, next_edge))
+                        {
+                            Some((l1, 1))
+                        } else if self.loops[l1]
+                            .edges
+                            .contains(&(next_edge, intersection_edge))
+                        {
+                            Some((l1, -1))
+                        } else if self.loops[l2]
+                            .edges
+                            .contains(&(intersection_edge, next_edge))
+                        {
+                            Some((l2, 1))
+                        } else if self.loops[l2]
+                            .edges
+                            .contains(&(next_edge, intersection_edge))
+                        {
+                            Some((l2, -1))
+                        } else {
+                            None
+                        } {
+                            let next_loop_intersections =
+                                loop_to_intersections.get(&next_loop).unwrap();
+                            let nr_of_intersections = next_loop_intersections.len();
+                            let this_intersection = next_loop_intersections
+                                .iter()
+                                .position(|(edges, _)| edges[0] == intersection_id)
+                                .unwrap()
+                                + nr_of_intersections;
+                            let next_intersection =
+                                next_loop_intersections[(this_intersection as i32 + direction)
+                                    as usize
+                                    % nr_of_intersections]
+                                    .0[0];
 
-                    (
-                        next_edge,
-                        next_path,
-                        next_path_intersections
-                            [(this_intersection as i32 + direction) as usize % nr_of_intersections]
-                            .0[0],
-                    )
-                });
+                            Some((next_edge, next_loop, next_intersection, direction))
+                        } else {
+                            None
+                        }
+                    })
+                    .filter(|x| x.is_some())
+                    .map(|x| x.unwrap())
+                    .collect_vec();
 
-                intersections.insert(
-                    intersection_id,
-                    Intersection {
-                        this: edges,
-                        next: nexts,
-                    },
-                );
+                if nexts.len() != 4 {
+                    return false;
+                } else {
+                    intersections.insert(
+                        intersection_id,
+                        Intersection {
+                            this: edges,
+                            next: [nexts[0], nexts[1], nexts[2], nexts[3]],
+                        },
+                    );
+                }
             }
         }
 
@@ -244,23 +326,27 @@ impl Dual {
                 intersection
                     .next
                     .iter()
-                    .map(|&(_, _, next_id)| (this_id, next_id))
+                    .map(|&(_, _, next_id, _)| (this_id, next_id))
                     .collect_vec()
             })
             .collect_vec();
 
         // Given an edge (this_x, next_x), find the next edge (next_x, next_next_x)
-        let mut path_to_next = HashMap::new();
+        let mut loop_to_next = HashMap::new();
         for &(this_x, next_x) in &edges {
             let candidates = intersections.get(&next_x).unwrap().next.into_iter();
 
             // Find the local edge that connects this_x and next_x
-            let edge_to_this = candidates.clone().find(|&(_, _, x)| x == this_x).unwrap().0;
+            let edge_to_this = candidates
+                .clone()
+                .find(|&(_, _, x, _)| x == this_x)
+                .unwrap()
+                .0;
 
             // Find the local edge that connects next_x and next_next_x (the one with the smallest clockwise angle)
             let next_next_x = candidates
-                .filter(|&(candidate_edge, _, _)| candidate_edge != edge_to_this)
-                .map(|(candidate_edge, _, candidate_x)| {
+                .filter(|&(candidate_edge, _, _, _)| candidate_edge != edge_to_this)
+                .map(|(candidate_edge, _, candidate_x, _)| {
                     let clockwise_angle = hutspot::geom::calculate_clockwise_angle(
                         self.mesh_ref.midpoint(next_x),
                         self.mesh_ref.midpoint(edge_to_this),
@@ -274,22 +360,28 @@ impl Dual {
                 .unwrap()
                 .0;
 
-            path_to_next.insert((this_x, next_x), (next_x, next_next_x));
+            loop_to_next.insert((this_x, next_x), (next_x, next_next_x));
         }
 
         // Construct all faces
         let mut faces = vec![];
         let mut edges_copy = edges.clone();
         while let Some(start) = edges_copy.pop() {
+            let mut counter = 0;
             let mut face = vec![];
             let mut this = start;
             loop {
                 face.push(intersection_ids.iter().position(|&x| x == this.0).unwrap());
-                this = path_to_next.get(&this).unwrap().clone();
+                this = loop_to_next.get(&this).unwrap().clone();
+                edges_copy.retain(|&e| e != this);
                 if this == start {
                     break;
                 }
-                edges_copy.retain(|&e| e != this);
+                counter += 1;
+                if counter > 100 {
+                    // Malformed face
+                    return false;
+                }
             }
             faces.push(face);
         }
@@ -301,52 +393,84 @@ impl Dual {
         //     .collect_vec();
 
         // Create douconel based on these faces
-        let (mut new_mesh, vmap, _) = Douconel::<Intersection, (), ()>::from_faces(&faces).unwrap();
+        if let Ok((loop_structure, vmap, _)) = LoopStructure::from_faces(&faces) {
+            self.loop_structure = loop_structure;
+            for (vertex_id, vertex_obj) in &mut self.loop_structure.verts {
+                let intersection_id =
+                    intersection_ids[vmap.get_by_right(&vertex_id).unwrap().to_owned()];
+                *vertex_obj = intersections.get(&intersection_id).unwrap().to_owned();
+            }
 
-        for (vertex_id, vertex_obj) in &mut new_mesh.verts {
-            let intersection_id =
-                intersection_ids[vmap.get_by_right(&vertex_id).unwrap().to_owned()];
-            *vertex_obj = intersections.get(&intersection_id).unwrap().to_owned();
+            let mut edge_to_loop_segment = HashMap::new();
+
+            for (edge_id, _) in &self.loop_structure.edges {
+                let root = self.loop_structure.root(edge_id);
+                let toor = self.loop_structure.toor(edge_id);
+
+                let root_next = self.loop_structure.verts[root]
+                    .next
+                    .into_iter()
+                    .find(|&(_, _, next_intersection_id, _)| {
+                        next_intersection_id == self.loop_structure.verts[toor].this[0]
+                    })
+                    .unwrap();
+
+                let toor_next = self.loop_structure.verts[toor]
+                    .next
+                    .into_iter()
+                    .find(|&(_, _, next_intersection_id, _)| {
+                        next_intersection_id == self.loop_structure.verts[root].this[0]
+                    })
+                    .unwrap();
+
+                assert!(root_next.1 == toor_next.1);
+
+                let loop_id = root_next.1;
+                let local_edges = (root_next.0, toor_next.0);
+
+                edge_to_loop_segment.insert(
+                    edge_id,
+                    LoopSegment {
+                        loop_id,
+                        edges: [local_edges.0, local_edges.1],
+                    },
+                );
+            }
+
+            for (edge_id, loop_segment) in edge_to_loop_segment {
+                self.loop_structure.edges[edge_id] = loop_segment;
+            }
+
+            return true;
+        } else {
+            return false;
         }
-
-        self.new_mesh = new_mesh;
-
-        return Some(());
     }
 
     pub fn get_intersection(&self, intersection_id: VertID) -> &Intersection {
-        self.new_mesh.verts.get(intersection_id).unwrap()
+        self.loop_structure.verts.get(intersection_id).unwrap()
     }
 
-    pub fn get_paths_at_intersection(&self, intersection_id: VertID) -> Vec<PathID> {
+    pub fn get_paths_at_intersection(&self, intersection_id: VertID) -> Vec<LoopID> {
         self.get_intersection(intersection_id)
             .next
             .iter()
-            .map(|&(_, path, _)| path)
+            .map(|&(_, path, _, _)| path)
             .collect()
     }
 
-    pub fn get_path_between_intersections(&self, start: VertID, end: VertID) -> Option<PathID> {
+    pub fn get_path_between_intersections(&self, start: VertID, end: VertID) -> Option<LoopID> {
         let start_intersection = self.get_intersection(start);
         let end_intersection = self.get_intersection(end);
-        start_intersection.next.iter().find_map(|&(_, path, next)| {
-            if end_intersection.this.contains(&next) {
-                Some(path)
-            } else {
-                None
-            }
-        })
+        start_intersection
+            .next
+            .iter()
+            .find_map(|&(_, path, next, _)| {
+                if end_intersection.this.contains(&next) {
+                    Some(path)
+                } else {
+                    None
+                }
+            })
     }
-}
-
-slotmap::new_key_type! {
-    pub struct PathID;
-    pub struct IntersectionID;
-}
-
-#[derive(Debug, Default, Copy, Clone)]
-pub struct Intersection {
-    pub this: [EdgeID; 2],
-    // The next local edge,, the path that follows, and the next intersection
-    pub next: [(EdgeID, PathID, EdgeID); 4],
 }
