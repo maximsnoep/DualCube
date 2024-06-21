@@ -7,7 +7,6 @@ use crate::dual::PrincipalDirection;
 use crate::ui::ui;
 use bevy::diagnostic::LogDiagnosticsPlugin;
 use bevy::prelude::*;
-use bevy::time::common_conditions::on_timer;
 use bevy::window::WindowMode;
 use bevy_egui::EguiPlugin;
 use bevy_mod_raycast::prelude::*;
@@ -26,13 +25,10 @@ use smooth_bevy_cameras::controllers::orbit::{
     OrbitCameraBundle, OrbitCameraController, OrbitCameraPlugin,
 };
 use smooth_bevy_cameras::LookTransformPlugin;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::f32::consts::PI;
-use std::hash::Hash;
-use std::hash::RandomState;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 const BACKGROUND_COLOR: bevy::prelude::Color =
     bevy::prelude::Color::rgb(27. / 255., 27. / 255., 27. / 255.);
@@ -64,7 +60,7 @@ pub struct Rules {
 pub enum RenderType {
     #[default]
     Original,
-    RegionsMesh,
+    Polycube,
 }
 
 #[derive(Default, Resource, Clone)]
@@ -461,7 +457,7 @@ fn update_mesh(
 
     let mesh = match configuration.render_type {
         RenderType::Original => mesh_resmut.mesh.bevy(&color_map),
-        RenderType::RegionsMesh => mesh_resmut.mesh.bevy(&color_map),
+        RenderType::Polycube => solution.dual.primal.bevy(&color_map),
     };
 
     // Spawn new mesh
@@ -541,31 +537,6 @@ fn draw_gizmos(
             }
         }
     }
-
-    // Draw all faces
-    let ls = solution.dual.get_loop_structure();
-    for (face_id, _) in ls.faces.iter() {
-        // Get the "edges" (loop segments) of this face.
-        let loop_segments = ls.edges(face_id);
-
-        // Get the original edges corresponding to these "edges" (loop segments)
-        for loop_segment in loop_segments {
-            // Get the corresponding loop segment edges
-            let between = &ls.edges[loop_segment].between;
-            for &edge in between.iter().take((between.len() as f32 / 3.) as usize) {
-                let u = mesh_resmut.mesh.midpoint(edge);
-                let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge));
-                let line = DrawableLine::from_vertex(
-                    u,
-                    n,
-                    0.05,
-                    configuration.translation,
-                    configuration.scale,
-                );
-                gizmos.line(line.u, line.v, ls.faces[face_id].color);
-            }
-        }
-    }
 }
 
 fn raycast(
@@ -578,7 +549,10 @@ fn raycast(
     mut gizmos_cache: ResMut<GizmosCache>,
     configuration: Res<Configuration>,
 ) {
-    if !configuration.interactive && !configuration.region_selection {
+    if !configuration.interactive
+        && !configuration.region_selection
+        && !configuration.zone_selection
+    {
         gizmos_cache.raycast.clear();
         return;
     }
@@ -672,6 +646,47 @@ fn raycast(
                         gizmos_cache
                             .raycast
                             .push((line.u, line.v, ls.faces[face_id].color));
+                    }
+                }
+            } else if configuration.zone_selection {
+                let selected_vert = triangle_ids[0];
+
+                let ls = solution.dual.get_loop_structure();
+                for zone in &solution.dual.zones {
+                    let dir = solution
+                        .dual
+                        .get_loop(ls.edges[*zone.boundary.iter().next().unwrap()].loop_id)
+                        .unwrap()
+                        .direction;
+
+                    if dir != configuration.direction {
+                        continue;
+                    }
+
+                    let zone_verts: HashSet<_> = zone
+                        .subsurfaces
+                        .iter()
+                        .flat_map(|&subsurface| ls.faces[subsurface].verts.iter().copied())
+                        .collect();
+
+                    if !zone_verts.contains(&selected_vert) {
+                        continue;
+                    }
+
+                    for &vert_id in &zone_verts {
+                        let p = mesh_resmut.mesh.position(vert_id);
+                        let n = mesh_resmut.mesh.vert_normal(vert_id);
+                        let line = DrawableLine::from_vertex(
+                            p,
+                            n,
+                            0.05,
+                            configuration.translation,
+                            configuration.scale,
+                        );
+
+                        gizmos_cache
+                            .raycast
+                            .push((line.u, line.v, dir_to_color(dir)));
                     }
                 }
             } else if configuration.interactive {

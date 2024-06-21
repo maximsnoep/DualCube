@@ -61,6 +61,14 @@ pub fn ui(
                 }
             });
 
+            ui.vertical(|ui| {
+                for render_type in [RenderType::Original, RenderType::Polycube] {
+                    if radio(ui, &mut conf.render_type, render_type) {
+                        mesh_resmut.as_mut();
+                    }
+                }
+            });
+
             ui.add_space(10.);
 
             ui.vertical(|ui| {
@@ -101,8 +109,10 @@ fn button(ui: &mut Ui, label: &str, ev_writer: &mut EventWriter<ActionEvent>, ev
     }
 }
 
-fn radio<T: PartialEq<T> + std::fmt::Debug>(ui: &mut Ui, item: &mut T, value: T) {
+fn radio<T: PartialEq<T> + std::fmt::Debug>(ui: &mut Ui, item: &mut T, value: T) -> bool {
     if ui.radio(*item == value, format!("{value:?}")).clicked() {
         *item = value;
+        return true;
     }
+    false
 }

@@ -3,7 +3,9 @@
 use bevy::prelude::*;
 use douconel::douconel::Douconel;
 use douconel::douconel::EdgeID;
+use douconel::douconel::FaceID;
 use douconel::douconel::VertID;
+use douconel::douconel_embedded::EmbeddedVertex;
 use hutspot::geom::Vector3D;
 use itertools::Itertools;
 use serde::Deserialize;
@@ -91,10 +93,22 @@ pub struct LoopSegment {
 pub struct Subsurface {
     // A subsurface is defined by a set of vertices
     pub verts: Vec<VertID>,
+    // Random color for visualization
     pub color: Color,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct Zone {
+    // Bounded by loop segments (identified through edge ids)
+    pub boundary: HashSet<EdgeID>,
+    // All subsurfaces that are part of the zone (identified through face ids)
+    pub subsurfaces: HashSet<FaceID>,
+    // Coordinate
+    pub coordinate: f64,
+}
+
 type LoopStructure = Douconel<Intersection, LoopSegment, Subsurface>;
+type Polycube = Douconel<EmbeddedVertex, (), ()>;
 
 slotmap::new_key_type! {
     pub struct LoopID;
@@ -109,6 +123,8 @@ pub struct Dual {
     occupied: HashMap<EdgeID, Vec<LoopID>>,
     loop_structure: LoopStructure,
     pub intersections: HashMap<EdgeID, Intersection>,
+    pub zones: Vec<Zone>,
+    pub primal: Polycube,
 }
 
 #[derive(Debug, Default, Copy, Clone)]
@@ -128,6 +144,8 @@ impl Dual {
             loop_structure: Douconel::default(),
             occupied: HashMap::new(),
             intersections: HashMap::new(),
+            zones: vec![],
+            primal: Douconel::default(),
         }
     }
 
@@ -228,6 +246,12 @@ impl Dual {
             .iter()
             .filter(|(_, l)| l.direction == direction)
             .count()
+    }
+
+    pub fn zone_to_direction(&self, zone: &Zone) -> PrincipalDirection {
+        self.get_loop(self.loop_structure.edges[*zone.boundary.iter().next().unwrap()].loop_id)
+            .unwrap()
+            .direction
     }
 
     pub fn build_loop_structure(&mut self) -> bool {
@@ -616,6 +640,128 @@ impl Dual {
             for (face_id, subsurface) in face_to_subsurface {
                 self.loop_structure.faces[face_id] = subsurface;
             }
+
+            // Create zones
+            self.zones = vec![];
+            // Do this for each direction
+            for direction in [
+                PrincipalDirection::X,
+                PrincipalDirection::Y,
+                PrincipalDirection::Z,
+            ] {
+                let loop_segments = self
+                    .loop_structure
+                    .edges
+                    .iter()
+                    .filter(|(_, ls)| self.loops[ls.loop_id].direction == direction)
+                    .map(|(id, _)| id);
+
+                let blocked: HashSet<EdgeID> = loop_segments
+                    .clone()
+                    .map(|edge_id| self.loop_structure.edges[edge_id].clone())
+                    .flat_map(|ls| [ls.between, vec![ls.start, ls.end]].concat())
+                    .collect();
+
+                // Make a neighborhood function that blocks all edges that are part of the loop segments of this face
+                let nfunction = |vertex: VertID| {
+                    self.mesh_ref.neighbor_function_primal()(vertex)
+                        .into_iter()
+                        .filter(|&neighbor| {
+                            let edge = self.mesh_ref.edge_between_verts(vertex, neighbor).unwrap();
+                            !blocked.contains(&edge.0) && !blocked.contains(&edge.1)
+                        })
+                        .collect()
+                };
+
+                // Find the connected components (should be 2!)
+                let ccs =
+                    hutspot::graph::find_ccs(&self.mesh_ref.verts.keys().collect_vec(), nfunction);
+
+                for cc in ccs {
+                    let zone = Zone {
+                        boundary: loop_segments.clone().collect(),
+                        subsurfaces: cc
+                            .iter()
+                            .map(|&v| {
+                                self.loop_structure
+                                    .faces
+                                    .iter()
+                                    .find(|(_, f)| f.verts.contains(&v))
+                                    .unwrap()
+                                    .0
+                            })
+                            .collect(),
+                        coordinate: hutspot::math::calculate_average_f64(
+                            cc.iter().map(|&v| self.mesh_ref.position(v)),
+                        )[direction as usize],
+                    };
+                    self.zones.push(zone);
+                }
+            }
+
+            // Each face to an int
+            let face_to_int: HashMap<FaceID, usize> = self
+                .loop_structure
+                .faces
+                .keys()
+                .enumerate()
+                .map(|(i, f)| (f, i))
+                .collect();
+
+            // Create the dual (primal)
+            // By creating the primal faces
+            let primal_faces = self
+                .loop_structure
+                .verts
+                .iter()
+                .map(|(id, _)| {
+                    self.loop_structure
+                        .star(id)
+                        .iter()
+                        .map(|f| face_to_int.get(f).unwrap().to_owned())
+                        .rev()
+                        .collect_vec()
+                })
+                .collect_vec();
+
+            let vertex_positions = self
+                .loop_structure
+                .faces
+                .iter()
+                .map(|(subsurface_id, _)| {
+                    // Find the three zones that this subsurface is part of (X/Y/Z)
+                    let zone_x = self
+                        .zones
+                        .iter()
+                        .find(|&z| {
+                            z.subsurfaces.contains(&subsurface_id)
+                                && self.zone_to_direction(z) == PrincipalDirection::X
+                        })
+                        .unwrap();
+                    let zone_y = self
+                        .zones
+                        .iter()
+                        .find(|&z| {
+                            z.subsurfaces.contains(&subsurface_id)
+                                && self.zone_to_direction(z) == PrincipalDirection::Y
+                        })
+                        .unwrap();
+                    let zone_z = self
+                        .zones
+                        .iter()
+                        .find(|&z| {
+                            z.subsurfaces.contains(&subsurface_id)
+                                && self.zone_to_direction(z) == PrincipalDirection::Z
+                        })
+                        .unwrap();
+
+                    Vector3D::new(zone_x.coordinate, zone_y.coordinate, zone_z.coordinate)
+                })
+                .collect_vec();
+
+            self.primal = Polycube::from_embedded_faces(&primal_faces, &vertex_positions)
+                .unwrap()
+                .0;
 
             return true;
         } else {
