@@ -28,6 +28,8 @@ use smooth_bevy_cameras::controllers::orbit::{
 use smooth_bevy_cameras::LookTransformPlugin;
 use std::collections::HashMap;
 use std::f32::consts::PI;
+use std::hash::Hash;
+use std::hash::RandomState;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -124,7 +126,7 @@ impl Default for TreeD {
 
 #[derive(Default, Resource)]
 pub struct CacheResource {
-    cache: [HashMap<(EdgeID, EdgeID), Vec<((EdgeID, EdgeID), OrderedFloat<f64>)>>; 3],
+    cache: [HashMap<[EdgeID; 2], Vec<([EdgeID; 2], OrderedFloat<f64>)>>; 3],
 }
 
 #[derive(Copy, Clone)]
@@ -520,18 +522,18 @@ fn draw_gizmos(
     }
 
     // Draw all loops
-    for (_, l) in solution.dual.get_loops() {
+    for (loop_id, l) in solution.dual.get_loops() {
         let color = dir_to_color(l.direction);
-        for edge in &l.edges {
-            let u = mesh_resmut.mesh.midpoint(edge.0);
-            let v = mesh_resmut.mesh.midpoint(edge.1);
-            let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge.0));
+        for edge in &solution.dual.get_pairs_of_loop(loop_id) {
+            let u = mesh_resmut.mesh.midpoint(edge[0]);
+            let v = mesh_resmut.mesh.midpoint(edge[1]);
+            let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge[0]));
             for line in DrawableLine::from_arrow(
                 u,
                 v,
                 n,
                 0.9,
-                mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge.0)) * 0.001,
+                mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge[0])) * 0.001,
                 configuration.translation,
                 configuration.scale,
             ) {
@@ -542,70 +544,25 @@ fn draw_gizmos(
 
     // Draw all faces
     let ls = solution.dual.get_loop_structure();
-    for (face_id, _) in ls.faces.iter().take(2) {
+    for (face_id, _) in ls.faces.iter() {
         // Get the "edges" (loop segments) of this face.
         let loop_segments = ls.edges(face_id);
 
         // Get the original edges corresponding to these "edges" (loop segments)
         for loop_segment in loop_segments {
-            let root = ls.root(loop_segment);
-            let toor = ls.toor(loop_segment);
-
-            let intersection_root = ls.verts[root].this[0];
-            let intersection_toor = ls.verts[toor].this[0];
-
-            // Get the corresponding loop
-            let loop_id = ls.edges[loop_segment].loop_id;
-            let bounds = ls.edges[loop_segment].edges;
-
-            // Get edges of the loop segment
-            let root_bound = bounds[0];
-            let toor_bound = bounds[1];
-
-            let between_a = solution
-                .dual
-                .get_loop(loop_id)
-                .unwrap()
-                .between(root_bound, toor_bound);
-            let between_b = solution
-                .dual
-                .get_loop(loop_id)
-                .unwrap()
-                .between(toor_bound, root_bound);
-
-            let between = if between_a
-                .iter()
-                .filter(|&&(e1, e2)| e1 == intersection_root || e2 == intersection_root)
-                .count()
-                == 0
-            {
-                between_a
-            } else {
-                assert!(
-                    between_b
-                        .iter()
-                        .filter(|&&(e1, e2)| e1 == intersection_root || e2 == intersection_root)
-                        .count()
-                        == 0
-                );
-                between_b
-            };
-
-            for edge in &between {
-                let u = mesh_resmut.mesh.midpoint(edge.0);
-                let v = mesh_resmut.mesh.midpoint(edge.1);
-                let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge.0));
-                for line in DrawableLine::from_arrow(
+            // Get the corresponding loop segment edges
+            let between = &ls.edges[loop_segment].between;
+            for &edge in between.iter().take((between.len() as f32 / 3.) as usize) {
+                let u = mesh_resmut.mesh.midpoint(edge);
+                let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge));
+                let line = DrawableLine::from_vertex(
                     u,
-                    v,
                     n,
-                    0.9,
-                    mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge.0)) * 0.001,
+                    0.05,
                     configuration.translation,
                     configuration.scale,
-                ) {
-                    gizmos.line(line.u, line.v, hutspot::color::WHITE.into());
-                }
+                );
+                gizmos.line(line.u, line.v, ls.faces[face_id].color);
             }
         }
     }
@@ -621,7 +578,7 @@ fn raycast(
     mut gizmos_cache: ResMut<GizmosCache>,
     configuration: Res<Configuration>,
 ) {
-    if !configuration.interactive {
+    if !configuration.interactive && !configuration.region_selection {
         gizmos_cache.raycast.clear();
         return;
     }
@@ -692,85 +649,207 @@ fn raycast(
                 })
                 .collect_vec();
 
-            let (e1, e2) = mesh_resmut
-                .mesh
-                .edges(mesh_resmut.mesh.face_with_verts(&triangle_ids).unwrap())
-                .into_iter()
-                .filter(|&edge| {
-                    let (u, v) = mesh_resmut.mesh.endpoints(edge);
-                    u == triangle_ids[0] || v == triangle_ids[0]
-                })
-                .collect_tuple()
-                .unwrap();
+            if configuration.region_selection {
+                let selected_vert = triangle_ids[0];
 
-            let edge_to_loop_map = solution.dual.get_edgepair_to_loop_map();
+                let ls = solution.dual.get_loop_structure();
+                for (face_id, _) in ls.faces.iter() {
+                    if !ls.faces[face_id].verts.contains(&selected_vert) {
+                        continue;
+                    }
 
-            // filter out all edges that are already used in the solution
-            let nfunction = |edgepair: (EdgeID, EdgeID)| {
-                if edge_to_loop_map.contains_key(&edgepair) {
-                    vec![]
-                } else {
-                    mesh_resmut.mesh.neighbor_function_edgepairgraph()(edgepair)
-                }
-            };
+                    for &vert_id in &ls.faces[face_id].verts {
+                        let p = mesh_resmut.mesh.position(vert_id);
+                        let n = mesh_resmut.mesh.vert_normal(vert_id);
+                        let line = DrawableLine::from_vertex(
+                            p,
+                            n,
+                            0.05,
+                            configuration.translation,
+                            configuration.scale,
+                        );
 
-            let wfunction = mesh_resmut.mesh.weight_function_angle_edgepairs_aligned(
-                5,
-                5,
-                configuration.direction.to_vector(),
-            );
-
-            let cache_ref = &mut cache.cache[configuration.direction as usize];
-
-            let total_path = [
-                hutspot::graph::find_shortest_cycle((e1, e2), nfunction, &wfunction, cache_ref),
-                hutspot::graph::find_shortest_cycle((e2, e1), nfunction, &wfunction, cache_ref),
-            ]
-            .into_iter()
-            .flatten()
-            .sorted_by(|&(_, a), &(_, b)| a.cmp(&b))
-            .next()
-            .unwrap_or_default()
-            .0;
-
-            if total_path.is_empty() {
-                return;
-            }
-
-            if let Some(loop_id) = solution.dual.add_loop(Loop {
-                edges: total_path,
-                direction: configuration.direction,
-            }) {
-                println!("Added path {:?}", loop_id);
-
-                for &edge in &solution.dual.get_loop(loop_id).unwrap().edges {
-                    let u = mesh_resmut.mesh.midpoint(edge.0);
-                    let v = mesh_resmut.mesh.midpoint(edge.1);
-                    let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge.0));
-                    for line in DrawableLine::from_arrow(
-                        u,
-                        v,
-                        n,
-                        0.9,
-                        mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge.0)) * 0.001,
-                        configuration.translation,
-                        configuration.scale,
-                    ) {
-                        gizmos_cache.raycast.push((
-                            line.u,
-                            line.v,
-                            dir_to_color(configuration.direction),
-                        ));
+                        gizmos_cache
+                            .raycast
+                            .push((line.u, line.v, ls.faces[face_id].color));
                     }
                 }
+            } else if configuration.interactive {
+                let (e1, e2) = mesh_resmut
+                    .mesh
+                    .edges(mesh_resmut.mesh.face_with_verts(&triangle_ids).unwrap())
+                    .into_iter()
+                    .filter(|&edge| {
+                        let (u, v) = mesh_resmut.mesh.endpoints(edge);
+                        u == triangle_ids[0] || v == triangle_ids[0]
+                    })
+                    .collect_tuple()
+                    .unwrap();
 
-                if mouse.just_pressed(MouseButton::Left) || mouse.just_released(MouseButton::Left) {
-                    mouse.clear_just_pressed(MouseButton::Left);
-                    mouse.clear_just_released(MouseButton::Left);
+                // filter out all edges that are already used in the solution
+                let nfunction = |edgepair: [EdgeID; 2]| {
+                    if solution.dual.is_occupied(edgepair).is_some() {
+                        vec![]
+                    } else {
+                        mesh_resmut.mesh.neighbor_function_edgepairgraph()(edgepair)
+                    }
+                };
+
+                let wfunction = mesh_resmut.mesh.weight_function_angle_edgepairs_aligned(
+                    5,
+                    5,
+                    configuration.direction.to_vector(),
+                );
+
+                let cache_ref = &mut cache.cache[configuration.direction as usize];
+
+                let total_path = [
+                    hutspot::graph::find_shortest_cycle([e1, e2], nfunction, &wfunction, cache_ref),
+                    hutspot::graph::find_shortest_cycle([e2, e1], nfunction, &wfunction, cache_ref),
+                ]
+                .into_iter()
+                .flatten()
+                .sorted_by(|&(_, a), &(_, b)| a.cmp(&b))
+                .next()
+                .unwrap_or_default()
+                .0
+                .into_iter()
+                .flatten()
+                .collect_vec();
+
+                if total_path.is_empty() {
                     return;
-                } else {
-                    solution.dual.del_loop(loop_id);
-                    return;
+                }
+
+                if let Some(loop_id) = solution.dual.add_loop(Loop {
+                    edges: total_path,
+                    direction: configuration.direction,
+                }) {
+                    for intersection in &solution.dual.intersections {
+                        let u = mesh_resmut.mesh.midpoint(*intersection.0);
+                        let n = mesh_resmut
+                            .mesh
+                            .normal(mesh_resmut.mesh.face(*intersection.0));
+                        let line = DrawableLine::from_vertex(
+                            u,
+                            n,
+                            0.9,
+                            configuration.translation,
+                            configuration.scale,
+                        );
+                        gizmos_cache
+                            .raycast
+                            .push((line.u, line.v, hutspot::color::GRIJS.into()));
+
+                        for &nexts in &intersection.1.next {
+                            let v = mesh_resmut.mesh.midpoint(nexts.0);
+                            let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(nexts.0));
+                            let line = DrawableLine::from_vertex(
+                                v,
+                                n,
+                                0.9,
+                                configuration.translation,
+                                configuration.scale,
+                            );
+                            gizmos_cache.raycast.push((
+                                line.u,
+                                line.v,
+                                hutspot::color::ROODT.into(),
+                            ));
+                        }
+                    }
+
+                    for &edge in &solution.dual.get_pairs_of_loop(loop_id) {
+                        let u = mesh_resmut.mesh.midpoint(edge[0]);
+                        let v = mesh_resmut.mesh.midpoint(edge[1]);
+                        let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge[0]));
+                        for line in DrawableLine::from_arrow(
+                            u,
+                            v,
+                            n,
+                            0.9,
+                            mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge[0])) * 0.001,
+                            configuration.translation,
+                            configuration.scale,
+                        ) {
+                            gizmos_cache.raycast.push((
+                                line.u,
+                                line.v,
+                                dir_to_color(configuration.direction),
+                            ));
+                        }
+                    }
+
+                    let ls = solution.dual.get_loop_structure();
+
+                    for face in &ls.faces {
+                        // Get the edges of the face
+                        let edges = ls.edges(face.0);
+                        // All loops must be unique
+                        let unique = edges.len()
+                            == edges
+                                .iter()
+                                .map(|&edge| ls.edges[edge].loop_id)
+                                .unique()
+                                .count();
+
+                        // At most 2 loops per color
+                        let x_count = edges
+                            .iter()
+                            .map(|&edge| ls.edges[edge].loop_id)
+                            .filter(|&loop_id| {
+                                solution.dual.get_loop(loop_id).unwrap().direction
+                                    == PrincipalDirection::X
+                            })
+                            .count();
+
+                        let y_count = edges
+                            .iter()
+                            .map(|&edge| ls.edges[edge].loop_id)
+                            .filter(|&loop_id| {
+                                solution.dual.get_loop(loop_id).unwrap().direction
+                                    == PrincipalDirection::Y
+                            })
+                            .count();
+
+                        let z_count = edges
+                            .iter()
+                            .map(|&edge| ls.edges[edge].loop_id)
+                            .filter(|&loop_id| {
+                                solution.dual.get_loop(loop_id).unwrap().direction
+                                    == PrincipalDirection::Z
+                            })
+                            .count();
+
+                        // Atleast 3 loops
+
+                        // if !(edges.len() >= 3
+                        //     && unique
+                        //     && x_count <= 2
+                        //     && y_count <= 2
+                        //     && z_count <= 2)
+                        // {
+                        //     println!("oopsie:::)");
+                        //     solution.dual.del_loop(loop_id);
+                        //     return;
+                        // }
+
+                        // TODO: same colors not allowed to intersect
+
+                        // TODO: loop must be connected..
+                    }
+
+                    if mouse.just_pressed(MouseButton::Left)
+                        || mouse.just_released(MouseButton::Left)
+                    {
+                        mouse.clear_just_pressed(MouseButton::Left);
+                        mouse.clear_just_released(MouseButton::Left);
+
+                        return;
+                    } else {
+                        solution.dual.del_loop(loop_id);
+                        return;
+                    }
                 }
             }
         }
