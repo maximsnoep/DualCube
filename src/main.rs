@@ -10,7 +10,6 @@ use bevy::prelude::*;
 use bevy::window::WindowMode;
 use bevy_egui::EguiPlugin;
 use bevy_mod_raycast::prelude::*;
-use bevy_toon_shader::{ToonShaderMainCamera, ToonShaderMaterial, ToonShaderPlugin, ToonShaderSun};
 use douconel::douconel::{Douconel, EdgeID, VertID};
 use douconel::douconel_embedded::EmbeddedVertex;
 use dual::{Dual, Loop};
@@ -26,7 +25,6 @@ use smooth_bevy_cameras::controllers::orbit::{
 };
 use smooth_bevy_cameras::LookTransformPlugin;
 use std::collections::{HashMap, HashSet};
-use std::f32::consts::PI;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -185,6 +183,10 @@ fn main() {
         .init_resource::<SolutionResource>()
         .init_resource::<Configuration>()
         .insert_resource(ClearColor(BACKGROUND_COLOR))
+        .insert_resource(AmbientLight {
+            brightness: 1.0,
+            ..default()
+        })
         // Load default plugins
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
@@ -202,11 +204,8 @@ fn main() {
         // Plugin for smooth camera
         .add_plugins(LookTransformPlugin)
         .add_plugins(OrbitCameraPlugin::default())
-        // Toon shading
-        .add_plugins(ToonShaderPlugin)
         // User specified
         .add_systems(Startup, setup)
-        .add_systems(Update, update)
         .add_systems(Update, ui)
         .add_systems(Update, handle_events)
         .add_systems(Update, draw_gizmos)
@@ -218,32 +217,14 @@ fn main() {
 
 /// Set up
 fn setup(mut commands: Commands, mut egui_ctx: bevy_egui::EguiContexts) {
-    commands.spawn(Camera3dBundle::default()).insert((
-        OrbitCameraBundle::new(
+    commands
+        .spawn(Camera3dBundle::default())
+        .insert((OrbitCameraBundle::new(
             OrbitCameraController::default(),
             Vec3::new(0.0, 5.0, 20.0),
             Vec3::new(0., 0., 0.),
             Vec3::Y,
-        ),
-        (ToonShaderMainCamera),
-    ));
-
-    commands.spawn((
-        DirectionalLightBundle {
-            directional_light: DirectionalLight {
-                shadows_enabled: true,
-                illuminance: 0.00001,
-                ..default()
-            },
-            ..default()
-        },
-        ToonShaderSun,
-    ));
-
-    commands.insert_resource(AmbientLight {
-        color: Color::BLACK,
-        brightness: 10.,
-    });
+        ),));
 
     let mut fonts = bevy_egui::egui::FontDefinitions::default();
     fonts.font_data.insert(
@@ -277,23 +258,15 @@ pub fn dir_to_color(direction: PrincipalDirection) -> Color {
     }
 }
 
-// Update directional and ambient light
-pub fn update(
-    mut directional_lights: Query<(&DirectionalLight, &mut Transform), With<ToonShaderSun>>,
-    mut ambient_light: ResMut<AmbientLight>,
-    configuration: Res<Configuration>,
-) {
-    for (_, mut transform) in &mut directional_lights {
-        transform.rotation = match configuration.direction {
-            PrincipalDirection::X => Quat::from_euler(EulerRot::XYZ, 0., -PI / 2., 0.),
-            PrincipalDirection::Y => Quat::from_euler(EulerRot::XYZ, -PI / 2., 0., 0.),
-            PrincipalDirection::Z => Quat::from_euler(EulerRot::XYZ, 0., 0., 0.),
-        };
+pub fn dir_to_color2(direction: PrincipalDirection, label: crate::dual::Label) -> Color {
+    match (direction, label) {
+        (PrincipalDirection::X, crate::dual::Label::Plus) => hutspot::color::GREEN.into(),
+        (PrincipalDirection::X, crate::dual::Label::Minus) => hutspot::color::GREEN_L.into(),
+        (PrincipalDirection::Y, crate::dual::Label::Plus) => hutspot::color::ORANG.into(),
+        (PrincipalDirection::Y, crate::dual::Label::Minus) => hutspot::color::ORANG_L.into(),
+        (PrincipalDirection::Z, crate::dual::Label::Plus) => hutspot::color::PURPL.into(),
+        (PrincipalDirection::Z, crate::dual::Label::Minus) => hutspot::color::PURPL_L.into(),
     }
-
-    //ambient_light.color = dir_to_color(configuration.direction);
-
-    ambient_light.color = Color::BLACK;
 }
 
 pub fn handle_events(
@@ -427,8 +400,6 @@ fn update_mesh(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 
-    mut toon_materials: ResMut<Assets<ToonShaderMaterial>>,
-
     mesh_resmut: Res<MeshResource>,
     solution: Res<SolutionResource>,
     configuration: Res<Configuration>,
@@ -450,14 +421,41 @@ fn update_mesh(
         return;
     }
 
-    let color_map = HashMap::new();
-
-    //let material = toon_materials.add(ToonShaderMaterial::default());
-    let material = materials.add(StandardMaterial::default());
-
     let mesh = match configuration.render_type {
-        RenderType::Original => mesh_resmut.mesh.bevy(&color_map),
-        RenderType::Polycube => solution.dual.primal.bevy(&color_map),
+        RenderType::Original => {
+            let color_map = HashMap::new();
+            mesh_resmut.mesh.bevy(&color_map)
+        }
+        RenderType::Polycube => {
+            let mut color_map = HashMap::new();
+            for (face_id, face_obj) in &solution.dual.primal.faces {
+                // let dirs = face_obj
+                //     .next
+                //     .iter()
+                //     .map(|&(_, loop_id, _, _)| solution.dual.get_loop(loop_id).unwrap().direction)
+                //     .unique()
+                //     .collect_tuple();
+
+                // let color = match dirs {
+                //     Some((PrincipalDirection::Y, PrincipalDirection::Z))
+                //     | Some((PrincipalDirection::Z, PrincipalDirection::Y)) => {
+                //         hutspot::color::ROODT.into()
+                //     }
+                //     Some((PrincipalDirection::X, PrincipalDirection::Z))
+                //     | Some((PrincipalDirection::Z, PrincipalDirection::X)) => {
+                //         hutspot::color::BLAUW.into()
+                //     }
+                //     Some((PrincipalDirection::X, PrincipalDirection::Y))
+                //     | Some((PrincipalDirection::Y, PrincipalDirection::X)) => {
+                //         hutspot::color::YELLO.into()
+                //     }
+                //     _ => hutspot::color::BLACK.into(),
+                // };
+
+                // color_map.insert(face_id, color);
+            }
+            solution.dual.primal.bevy(&color_map)
+        }
     };
 
     // Spawn new mesh
@@ -473,7 +471,10 @@ fn update_mesh(
                 rotation: Quat::from_rotation_z(0f32),
                 scale: Vec3::splat(configuration.scale),
             },
-            material,
+            material: materials.add(StandardMaterial {
+                perceptual_roughness: 0.9,
+                ..default()
+            }),
             ..default()
         },
         RenderedMesh,
@@ -518,22 +519,132 @@ fn draw_gizmos(
     }
 
     // Draw all loops
-    for (loop_id, l) in solution.dual.get_loops() {
-        let color = dir_to_color(l.direction);
-        for edge in &solution.dual.get_pairs_of_loop(loop_id) {
-            let u = mesh_resmut.mesh.midpoint(edge[0]);
-            let v = mesh_resmut.mesh.midpoint(edge[1]);
-            let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge[0]));
-            for line in DrawableLine::from_arrow(
-                u,
-                v,
-                n,
-                0.9,
-                mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge[0])) * 0.001,
-                configuration.translation,
-                configuration.scale,
-            ) {
-                gizmos.line(line.u, line.v, color);
+    // for (loop_id, l) in solution.dual.get_loops() {
+    //     let color = dir_to_color(l.direction);
+    //     for edge in &solution.dual.get_pairs_of_loop(loop_id) {
+    //         let u = mesh_resmut.mesh.midpoint(edge[0]);
+    //         let v = mesh_resmut.mesh.midpoint(edge[1]);
+    //         let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge[0]));
+    //         for line in DrawableLine::from_arrow(
+    //             u,
+    //             v,
+    //             n,
+    //             0.9,
+    //             mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge[0])) * 0.001,
+    //             configuration.translation,
+    //             configuration.scale,
+    //         ) {
+    //             gizmos.line(line.u, line.v, color);
+    //         }
+    //     }
+    // }
+
+    // Draw all loop segments
+    if configuration.render_type != RenderType::Polycube {
+        let loopstruct = solution.dual.get_loop_structure();
+        for (ls_id, ls) in &loopstruct.edges {
+            let edges_between = &loopstruct.edges[ls_id].between;
+            let pairs_between = solution.dual.get_pairs_of_sequence(
+                &[vec![ls.start], edges_between.clone(), vec![ls.end]].concat(),
+            );
+
+            let dir = solution.dual.get_loop(ls.loop_id).unwrap().direction;
+
+            let adjacent_face = loopstruct.face(ls_id);
+            let centroid = hutspot::math::calculate_average_f64(
+                loopstruct.faces[adjacent_face]
+                    .verts
+                    .iter()
+                    .map(|&vert| mesh_resmut.mesh.position(vert)),
+            );
+
+            for edge in pairs_between {
+                let vector0_to_centroid =
+                    (centroid - mesh_resmut.mesh.midpoint(edge[0])).normalize();
+                let vector1_to_centroid =
+                    (centroid - mesh_resmut.mesh.midpoint(edge[1])).normalize();
+
+                let u = mesh_resmut.mesh.midpoint(edge[0]) + vector0_to_centroid * 0.02;
+                let v = mesh_resmut.mesh.midpoint(edge[1]) + vector1_to_centroid * 0.02;
+                let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge[0]));
+                for line in DrawableLine::from_arrow(
+                    u,
+                    v,
+                    n,
+                    0.9,
+                    mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge[0])) * 0.2,
+                    configuration.translation,
+                    configuration.scale,
+                ) {
+                    gizmos.line(
+                        line.u,
+                        line.v,
+                        dir_to_color2(dir, ls.labeling.clone().unwrap()),
+                    );
+                }
+            }
+        }
+    }
+
+    if configuration.render_type == RenderType::Polycube {
+        // Draw all loop segments / faces axis aligned.
+
+        for (face_id, face_obj) in &solution.dual.primal.faces {
+            let this_centroid = solution.dual.primal.centroid(face_id);
+            let this_orientation = match face_obj
+                .next
+                .iter()
+                .map(|&(_, loop_id, _, _)| solution.dual.get_loop(loop_id).unwrap().direction)
+                .unique()
+                .collect_tuple()
+            {
+                Some((PrincipalDirection::X, PrincipalDirection::Y))
+                | Some((PrincipalDirection::Y, PrincipalDirection::X)) => PrincipalDirection::Z,
+                Some((PrincipalDirection::X, PrincipalDirection::Z))
+                | Some((PrincipalDirection::Z, PrincipalDirection::X)) => PrincipalDirection::Y,
+                Some((PrincipalDirection::Y, PrincipalDirection::Z))
+                | Some((PrincipalDirection::Z, PrincipalDirection::Y)) => PrincipalDirection::X,
+                _ => PrincipalDirection::X,
+            };
+
+            for &neighbor_id in &solution.dual.primal.fneighbors(face_id) {
+                let neighbor_obj = &solution.dual.primal.faces[neighbor_id];
+
+                let loop_id = face_obj
+                    .next
+                    .iter()
+                    .find(|&&(_, _, next_id, _)| next_id == neighbor_obj.this)
+                    .unwrap()
+                    .1;
+                let direction = solution.dual.get_loop(loop_id).unwrap().direction;
+
+                let mut next_centroid = solution.dual.primal.centroid(neighbor_id);
+                next_centroid[this_orientation as usize] = this_centroid[this_orientation as usize];
+
+                let line = DrawableLine::from_line(
+                    this_centroid,
+                    next_centroid,
+                    Vector3D::new(0., 0., 0.),
+                    configuration.translation,
+                    configuration.scale,
+                );
+
+                gizmos.line(line.u, line.v, dir_to_color(direction));
+            }
+        }
+
+        for (vert_id, _) in solution.dual.primal.verts.iter() {
+            for &neighbor_id in &solution.dual.primal.vneighbors(vert_id) {
+                let u = mesh_resmut.mesh.position(vert_id);
+                let v = mesh_resmut.mesh.position(neighbor_id);
+                let line = DrawableLine::from_line(
+                    u,
+                    v,
+                    Vector3D::new(0., 0., 0.),
+                    configuration.translation,
+                    configuration.scale,
+                );
+                gizmos.line(line.u, line.v, hutspot::color::WHITE.into());
             }
         }
     }

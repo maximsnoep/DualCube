@@ -78,6 +78,12 @@ impl Loop {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum Label {
+    Plus,
+    Minus,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct LoopSegment {
     // A loop segment is defined by a reference to a loop (id)
@@ -87,6 +93,8 @@ pub struct LoopSegment {
     pub end: EdgeID,
     // And a sequence of half-edges that define the segment of the loop (inbetween start and end)
     pub between: Vec<EdgeID>,
+    // Labeling
+    pub labeling: Option<Label>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -108,7 +116,7 @@ pub struct Zone {
 }
 
 type LoopStructure = Douconel<Intersection, LoopSegment, Subsurface>;
-type Polycube = Douconel<EmbeddedVertex, (), ()>;
+type Polycube = Douconel<EmbeddedVertex, (), Intersection>;
 
 slotmap::new_key_type! {
     pub struct LoopID;
@@ -133,7 +141,7 @@ pub struct Intersection {
     pub this: EdgeID,
     // The two loops come from the four half-edges adjacent to `this`.
     // The next local edge (adjacent to `this`), the loop, and the intersection (defined by an EdgeID) that is reached by following the loop into the direction of the local edge. The direction is either 1 or -1.
-    pub next: [(EdgeID, LoopID, EdgeID); 4],
+    pub next: [(EdgeID, LoopID, EdgeID, i32); 4],
 }
 
 impl Dual {
@@ -162,9 +170,11 @@ impl Dual {
     }
 
     pub fn get_pairs_of_loop(&self, loop_id: LoopID) -> Vec<[EdgeID; 2]> {
-        self.get_loop(loop_id)
-            .unwrap()
-            .edges
+        self.get_pairs_of_sequence(&self.get_loop(loop_id).unwrap().edges)
+    }
+
+    pub fn get_pairs_of_sequence(&self, sequence: &[EdgeID]) -> Vec<[EdgeID; 2]> {
+        sequence
             .windows(2)
             .filter_map(|w| {
                 if self.mesh_ref.twin(w[0]) != w[1] {
@@ -300,10 +310,11 @@ impl Dual {
             })
             .collect();
 
-        // TODO: if two path segments with exact same intersections ( a face of degree 2 ), we cannot do it.
-        // TODO: return false if graph is not connected
-        // TODO: return false if intersections are not transversal.
-        // Intersection TODO: when is it invalid?, filter out (early return) on invalid intersections. (or faces)
+        // Each loop must have at least two intersections.
+        //   If a loop does not have at least two intersection, then the loop structure is disconnected.
+        if loop_to_intersections.values().any(|v| v.len() < 2) {
+            return false;
+        }
 
         // For each intersection:
         //   We find its (4) next intersections by following its associated loops
@@ -366,7 +377,7 @@ impl Dual {
                             % follow_loop_intersections.len()]
                         .edge;
 
-                        (next_edge, follow_loop, next_intersection)
+                        (next_edge, follow_loop, next_intersection, direction)
                     })
                     .collect_vec();
 
@@ -396,18 +407,26 @@ impl Dual {
             .intersections
             .iter()
             .flat_map(|(this_id, intersection)| {
-                intersection.next.iter().map(|(_, loop_id, next_id)| {
-                    (this_id.clone(), next_id.clone(), loop_id.clone())
-                })
+                intersection
+                    .next
+                    .iter()
+                    .map(|(_, loop_id, next_id, direction)| {
+                        (
+                            this_id.clone(),
+                            next_id.clone(),
+                            loop_id.clone(),
+                            direction.clone(),
+                        )
+                    })
             })
-            .map(|(this_id, next_id, loop_id)| {
+            .map(|(this_id, next_id, loop_id, direction)| {
                 let this_intersection = self.intersections.get(&this_id).unwrap();
                 let next_intersection = self.intersections.get(&next_id).unwrap();
 
                 let this_intersection_pointer_to_next = this_intersection
                     .next
                     .into_iter()
-                    .find(|&(_, next_loop_id, next_intersection_id)| {
+                    .find(|&(_, next_loop_id, next_intersection_id, _)| {
                         next_intersection_id == next_id && next_loop_id == loop_id
                     })
                     .unwrap();
@@ -415,45 +434,28 @@ impl Dual {
                 let next_intersection_pointer_to_this = next_intersection
                     .next
                     .into_iter()
-                    .find(|&(_, next_loop_id, next_intersection_id)| {
+                    .find(|&(_, next_loop_id, next_intersection_id, _)| {
                         next_intersection_id == this_id && next_loop_id == loop_id
                     })
                     .unwrap();
 
                 assert!(this_intersection_pointer_to_next.1 == next_intersection_pointer_to_this.1);
 
-                let between_a = self.get_loop(loop_id).unwrap().between(
-                    this_intersection_pointer_to_next.0,
-                    next_intersection_pointer_to_this.0,
-                );
-                let between_b = self
-                    .get_loop(loop_id)
-                    .unwrap()
-                    .between(
-                        next_intersection_pointer_to_this.0,
+                let between = if direction == 1 {
+                    self.get_loop(loop_id).unwrap().between(
                         this_intersection_pointer_to_next.0,
+                        next_intersection_pointer_to_this.0,
                     )
-                    .into_iter()
-                    .rev()
-                    .collect_vec();
-
-                let assert_a = between_a
-                    .iter()
-                    .filter(|&&e| e == this_id || e == next_id)
-                    .count()
-                    == 0;
-                let assert_b = between_b
-                    .iter()
-                    .filter(|&&e| e == this_id || e == next_id)
-                    .count()
-                    == 0;
-
-                assert!(assert_a ^ assert_b);
-
-                let between = match (assert_a, assert_b) {
-                    (true, false) => between_a,
-                    (false, true) => between_b,
-                    _ => unreachable!(),
+                } else {
+                    self.get_loop(loop_id)
+                        .unwrap()
+                        .between(
+                            next_intersection_pointer_to_this.0,
+                            this_intersection_pointer_to_next.0,
+                        )
+                        .into_iter()
+                        .rev()
+                        .collect_vec()
                 };
 
                 LoopSegment {
@@ -461,6 +463,7 @@ impl Dual {
                     start: this_id,
                     end: next_id,
                     between,
+                    labeling: None,
                 }
             })
             .collect_vec();
@@ -475,12 +478,16 @@ impl Dual {
             let candidates = self.intersections.get(&next_x).unwrap().next.into_iter();
 
             // Find the local edge that connects this_x and next_x
-            let edge_to_this = candidates.clone().find(|&(_, _, x)| x == this_x).unwrap().0;
+            let edge_to_this = candidates
+                .clone()
+                .find(|&(_, _, x, _)| x == this_x)
+                .unwrap()
+                .0;
 
             // Find the local edge that connects next_x and next_next_x (the one with the smallest clockwise angle)
             let next_next_x = candidates
-                .filter(|&(candidate_edge, _, _)| candidate_edge != edge_to_this)
-                .map(|(candidate_edge, _, candidate_x)| {
+                .filter(|&(candidate_edge, _, _, _)| candidate_edge != edge_to_this)
+                .map(|(candidate_edge, _, candidate_x, _)| {
                     let clockwise_angle = hutspot::geom::calculate_clockwise_angle(
                         self.mesh_ref.midpoint(next_x),
                         self.mesh_ref.midpoint(edge_to_this),
@@ -500,6 +507,23 @@ impl Dual {
                     loop_segment_to_next.insert(loop_segment, next_loop_segment);
                     break;
                 }
+            }
+        }
+
+        for (this, next) in &loop_segment_to_next {
+            // A face with degree 2 is not allowed
+            if this.start == next.end {
+                return false;
+            }
+            // A transversal intersection is not allowed
+            if this.loop_id == next.loop_id {
+                return false;
+            }
+            // An intersection with its own direction is not allowed
+            if self.get_loop(this.loop_id).unwrap().direction
+                == self.get_loop(next.loop_id).unwrap().direction
+            {
+                return false;
             }
         }
 
@@ -536,6 +560,18 @@ impl Dual {
         // Create douconel based on these faces
         if let Ok((loop_structure, vmap, _)) = LoopStructure::from_faces(&faces) {
             self.loop_structure = loop_structure.clone();
+
+            // Graph must be connected (exactly one connected component)
+            if hutspot::graph::find_ccs(
+                &self.loop_structure.verts.keys().collect_vec(),
+                self.loop_structure.neighbor_function_primal(),
+            )
+            .len()
+                != 1
+            {
+                return false;
+            }
+
             for (vertex_id, vertex_obj) in &mut self.loop_structure.verts {
                 let intersection_id =
                     intersection_ids[vmap.get_by_right(&vertex_id).unwrap().to_owned()];
@@ -639,6 +675,67 @@ impl Dual {
 
             for (face_id, subsurface) in face_to_subsurface {
                 self.loop_structure.faces[face_id] = subsurface;
+            }
+
+            // Characterization
+
+            // First we assign to each loop segment a direction
+            // We do this by first: building a bipartite graph of loop segment adjacency.
+            // Then we find a labeling that is consistent and acyclic, using loop adjacency.
+
+            // Create a bipartite graph of loop segment adjacency (for X/Y/Z)
+            // Create a graph with a vertex for each loop segment
+            // If the loop segments share a face (are adjacent), we add an edge between the two vertices
+            for direction in &[
+                PrincipalDirection::X,
+                PrincipalDirection::Y,
+                PrincipalDirection::Z,
+            ] {
+                let mut bipartite_graph = HashMap::new();
+
+                for (ls_id, ls) in self
+                    .loop_structure
+                    .edges
+                    .iter()
+                    .filter(|(_, ls)| self.loops[ls.loop_id].direction == *direction)
+                {
+                    let face = self.loop_structure.face(ls_id);
+                    let neighbors = self
+                        .loop_structure
+                        .edges(face)
+                        .into_iter()
+                        .filter(|&f| f != ls_id);
+                    let neighbors_of_direction = neighbors
+                        .filter(|&f| {
+                            self.loops[self.loop_structure.edges[f].loop_id].direction == *direction
+                        })
+                        .collect_vec();
+
+                    let twin = self.loop_structure.twin(ls_id);
+
+                    let neighbors = [neighbors_of_direction, vec![twin]].concat();
+
+                    bipartite_graph.insert(ls_id, neighbors);
+                }
+
+                // Find a labeling that is consistent and acyclic
+                // We do this by finding a topological ordering of the bipartite graph
+
+                let nfunc = |vertex: EdgeID| bipartite_graph[&vertex].clone();
+
+                let two_coloring = hutspot::graph::two_color::<EdgeID>(
+                    &bipartite_graph.keys().copied().collect_vec(),
+                    nfunc,
+                )
+                .unwrap();
+
+                for edge_id in two_coloring.0 {
+                    self.loop_structure.edges[edge_id].labeling = Some(Label::Plus);
+                }
+
+                for edge_id in two_coloring.1 {
+                    self.loop_structure.edges[edge_id].labeling = Some(Label::Minus);
+                }
             }
 
             // Create zones
@@ -759,9 +856,15 @@ impl Dual {
                 })
                 .collect_vec();
 
-            self.primal = Polycube::from_embedded_faces(&primal_faces, &vertex_positions)
-                .unwrap()
-                .0;
+            let fmap;
+            (self.primal, _, fmap) =
+                Polycube::from_embedded_faces(&primal_faces, &vertex_positions).unwrap();
+
+            for (face_id, face_obj) in &mut self.primal.faces {
+                *face_obj =
+                    self.loop_structure.verts[self.loop_structure.verts.keys().collect_vec()
+                        [fmap.get_by_right(&face_id).unwrap().to_owned()]];
+            }
 
             return true;
         } else {
@@ -777,19 +880,24 @@ impl Dual {
         self.get_intersection(intersection_id)
             .next
             .iter()
-            .map(|&(_, path, _)| path)
+            .map(|&(_, path, _, _)| path)
             .collect()
     }
 
     pub fn get_path_between_intersections(&self, start: VertID, end: VertID) -> Option<LoopID> {
         let start_intersection = self.get_intersection(start);
         let end_intersection = self.get_intersection(end);
-        start_intersection.next.iter().find_map(|&(_, path, next)| {
-            if end_intersection.this == next || self.mesh_ref.twin(end_intersection.this) == next {
-                Some(path)
-            } else {
-                None
-            }
-        })
+        start_intersection
+            .next
+            .iter()
+            .find_map(|&(_, path, next, _)| {
+                if end_intersection.this == next
+                    || self.mesh_ref.twin(end_intersection.this) == next
+                {
+                    Some(path)
+                } else {
+                    None
+                }
+            })
     }
 }
