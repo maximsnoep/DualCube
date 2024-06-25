@@ -112,7 +112,7 @@ pub struct Zone {
     // All subsurfaces that are part of the zone (identified through face ids)
     pub subsurfaces: HashSet<FaceID>,
     // Coordinate
-    pub coordinate: f64,
+    pub coordinate: Option<f64>,
 }
 
 type LoopStructure = Douconel<Intersection, LoopSegment, Subsurface>;
@@ -686,6 +686,7 @@ impl Dual {
             // Create a bipartite graph of loop segment adjacency (for X/Y/Z)
             // Create a graph with a vertex for each loop segment
             // If the loop segments share a face (are adjacent), we add an edge between the two vertices
+            // Also add edge for: twin, loop segments of other side of this loop
             for direction in &[
                 PrincipalDirection::X,
                 PrincipalDirection::Y,
@@ -711,23 +712,85 @@ impl Dual {
                         })
                         .collect_vec();
 
-                    let twin = self.loop_structure.twin(ls_id);
+                    assert!(neighbors_of_direction.len() <= 1);
 
-                    let neighbors = [neighbors_of_direction, vec![twin]].concat();
+                    // let twin = self.loop_structure.twin(ls_id);
 
-                    bipartite_graph.insert(ls_id, neighbors);
+                    let next_of_same_color = |id: EdgeID| {
+                        let cand = self
+                            .loop_structure
+                            .outgoing(self.loop_structure.toor(id))
+                            .iter()
+                            .flat_map(|&x| {
+                                vec![
+                                    (
+                                        x,
+                                        self.loops[self.loop_structure.edges[x].loop_id].direction,
+                                    ),
+                                    (
+                                        self.loop_structure.twin(x),
+                                        self.loops[self.loop_structure.edges
+                                            [self.loop_structure.twin(x)]
+                                        .loop_id]
+                                            .direction,
+                                    ),
+                                ]
+                            })
+                            .collect_vec();
+                        let cur_pos = cand.iter().position(|&(x, _)| x == id).unwrap();
+
+                        cand.iter()
+                            .cycle()
+                            .skip(cur_pos + 1)
+                            .find(|&&(x, dir)| dir == *direction)
+                            .unwrap()
+                            .to_owned()
+                            .0
+                    };
+
+                    let mut this_side = vec![ls_id];
+                    let mut next_seg = next_of_same_color(ls_id);
+                    while next_seg != ls_id {
+                        this_side.push(next_seg);
+                        next_seg = next_of_same_color(next_seg);
+                    }
+
+                    let other_side = this_side
+                        .iter()
+                        .map(|&x| self.loop_structure.twin(x))
+                        .collect_vec();
+
+                    println!("\n\ndir: {:?}", direction);
+                    println!("this: {:?}", ls_id);
+                    println!("this_side: {:?}", this_side);
+                    println!("other_side: {:?}", other_side);
+                    println!("neighbors_of_direction: {:?}", neighbors_of_direction);
+
+                    let neighbors = [neighbors_of_direction, other_side].concat();
+
+                    bipartite_graph.insert(ls_id, neighbors.clone());
+
+                    // insert or update
+                    for neighbor in neighbors {
+                        let entry = bipartite_graph.entry(neighbor).or_insert(vec![]);
+                        entry.push(ls_id);
+                    }
                 }
 
                 // Find a labeling that is consistent and acyclic
                 // We do this by finding a topological ordering of the bipartite graph
 
-                let nfunc = |vertex: EdgeID| bipartite_graph[&vertex].clone();
+                println!("bipartite_graph: {:?}", bipartite_graph);
+
+                let nfunc = |e: EdgeID| bipartite_graph[&e].clone();
 
                 let two_coloring = hutspot::graph::two_color::<EdgeID>(
                     &bipartite_graph.keys().copied().collect_vec(),
                     nfunc,
                 )
                 .unwrap();
+
+                println!("two_coloring: {:?}", two_coloring);
 
                 for edge_id in two_coloring.0 {
                     self.loop_structure.edges[edge_id].labeling = Some(Label::Plus);
@@ -736,11 +799,24 @@ impl Dual {
                 for edge_id in two_coloring.1 {
                     self.loop_structure.edges[edge_id].labeling = Some(Label::Minus);
                 }
+
+                for (edge, neighbors) in bipartite_graph {
+                    let edge_label = self.loop_structure.edges[edge].labeling.clone().unwrap();
+                    for neighbor in neighbors {
+                        let neighbor_label = self.loop_structure.edges[neighbor]
+                            .labeling
+                            .clone()
+                            .unwrap();
+                        assert!(edge_label != neighbor_label, "{:?} (label: {:?}) and {:?} (label: {:?}) are adjacent and have the same label", edge, edge_label, neighbor, neighbor_label);
+                    }
+                }
             }
 
             // Create zones
             self.zones = vec![];
+
             // Do this for each direction
+
             for direction in [
                 PrincipalDirection::X,
                 PrincipalDirection::Y,
@@ -788,12 +864,78 @@ impl Dual {
                                     .0
                             })
                             .collect(),
-                        coordinate: hutspot::math::calculate_average_f64(
-                            cc.iter().map(|&v| self.mesh_ref.position(v)),
-                        )[direction as usize],
+                        coordinate: Some(
+                            hutspot::math::calculate_average_f64(
+                                cc.iter().map(|&v| self.mesh_ref.position(v)),
+                            )[direction as usize],
+                        ),
+                        // coordinate: None,
                     };
                     self.zones.push(zone);
                 }
+            }
+
+            // Create a directed graph on the zones
+            for direction in [
+                PrincipalDirection::X,
+                PrincipalDirection::Y,
+                PrincipalDirection::Z,
+            ] {
+                let zones_of_this_dir = self
+                    .zones
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, z)| self.zone_to_direction(z) == direction)
+                    .collect_vec();
+
+                let mut adjacency = HashMap::new();
+
+                for (zone_id, zone) in &zones_of_this_dir {
+                    // Get all Plus loop segments of the zone
+                    let plus_loop_segments = zone
+                        .subsurfaces
+                        .iter()
+                        .flat_map(|&face_id| self.loop_structure.edges(face_id))
+                        .filter(|&edge_id| {
+                            self.loop_structure.edges[edge_id].labeling == Some(Label::Plus)
+                                && self.loops[self.loop_structure.edges[edge_id].loop_id].direction
+                                    == direction
+                        });
+
+                    println!(" zone_id: {:?} (zone: {:?})", zone_id, zone);
+
+                    let twins_of_plus_loop_segments = plus_loop_segments
+                        .clone()
+                        .map(|ls| self.loop_structure.twin(ls))
+                        .collect_vec();
+
+                    println!("plus_loop_segments: {:?}", plus_loop_segments.collect_vec());
+                    println!(
+                        "twins_of_plus_loop_segments: {:?}",
+                        twins_of_plus_loop_segments
+                    );
+
+                    let neighbor_zones: HashSet<usize> = twins_of_plus_loop_segments
+                        .into_iter()
+                        .map(|ls| {
+                            self.zones
+                                .iter()
+                                .enumerate()
+                                .find(|(i, z)| {
+                                    z.subsurfaces.contains(&self.loop_structure.face(ls))
+                                        && zones_of_this_dir.iter().find(|(j, z)| i == j).is_some()
+                                })
+                                .unwrap()
+                                .0
+                        })
+                        .collect();
+
+                    println!("neighbor_zones: {:?}", neighbor_zones);
+
+                    adjacency.insert(zone_id, neighbor_zones);
+                }
+
+                println!("adjacency: {:?}", adjacency);
             }
 
             // Each face to an int
@@ -852,7 +994,11 @@ impl Dual {
                         })
                         .unwrap();
 
-                    Vector3D::new(zone_x.coordinate, zone_y.coordinate, zone_z.coordinate)
+                    Vector3D::new(
+                        zone_x.coordinate.unwrap(),
+                        zone_y.coordinate.unwrap(),
+                        zone_z.coordinate.unwrap(),
+                    )
                 })
                 .collect_vec();
 
