@@ -18,7 +18,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 type LoopStructure = Douconel<Intersection, LoopSegment, Subsurface>;
-type Polycube = Douconel<EmbeddedVertex, (), Intersection>;
+type Polycube = Douconel<EmbeddedVertex, (), VertID>;
 
 slotmap::new_key_type! {
     pub struct LoopID;
@@ -33,7 +33,7 @@ pub struct Dual {
     loops: SlotMap<LoopID, Loop>,
     occupied: HashMap<EdgeID, Vec<LoopID>>,
     loop_structure: LoopStructure,
-    pub zones: SlotMap<ZoneID, Zone>,
+    pub side_ccs: [Vec<HashSet<EdgeID>>; 3],
 }
 
 #[derive(Debug)]
@@ -58,7 +58,7 @@ impl Dual {
             loops: SlotMap::with_key(),
             loop_structure: Douconel::default(),
             occupied: HashMap::new(),
-            zones: SlotMap::with_key(),
+            side_ccs: [vec![], vec![], vec![]],
         }
     }
 
@@ -163,32 +163,6 @@ impl Dual {
         self.loop_structure.edges[segment].loop_id
     }
 
-    pub fn segment_to_zone(&self, segment: EdgeID) -> ZoneID {
-        self.zones
-            .iter()
-            .find(|(_, z)| {
-                z.subsurfaces.contains(&self.loop_structure.face(segment))
-                    && z.direction == self.segment_to_direction(segment)
-            })
-            .unwrap()
-            .0
-    }
-
-    pub fn subsurface_to_zones(&self, subsurface: FaceID) -> [ZoneID; 3] {
-        [
-            PrincipalDirection::X,
-            PrincipalDirection::Y,
-            PrincipalDirection::Z,
-        ]
-        .map(|d| {
-            self.zones
-                .iter()
-                .find(|(_, z)| z.subsurfaces.contains(&subsurface) && z.direction == d)
-                .unwrap()
-                .0
-        })
-    }
-
     pub fn segment_to_edges(&self, segment: EdgeID) -> Vec<EdgeID> {
         [
             vec![self.loop_structure.edges[segment].start],
@@ -202,8 +176,19 @@ impl Dual {
         self.loop_to_direction(self.segment_to_loop(segment))
     }
 
-    pub fn segment_to_side(&self, segment: EdgeID) -> Side {
-        self.loop_structure.edges[segment].side.clone().unwrap()
+    pub fn segment_to_side(&self, segment: EdgeID, mask: [u32; 3]) -> Side {
+        let cc = self.side_ccs[self.segment_to_direction(segment) as usize]
+            .iter()
+            .position(|cc| cc.contains(&segment))
+            .unwrap() as u8;
+
+        let side = self.loop_structure.edges[segment].side.clone().unwrap();
+
+        if mask[self.segment_to_direction(segment) as usize] & (1 << cc) == 1 {
+            side.flip()
+        } else {
+            side
+        }
     }
 
     pub fn filter_direction(
@@ -222,7 +207,159 @@ impl Dual {
         self.filter_direction(&self.loop_structure.edge_ids(), direction)
     }
 
-    pub fn primal(&self) -> Polycube {
+    pub fn primal(&self, side_mask: [u32; 3]) -> Option<Polycube> {
+        // Create zones
+        let mut zones: SlotMap<ZoneID, Zone> = SlotMap::with_key();
+
+        // Do this for each direction
+
+        for direction in [
+            PrincipalDirection::X,
+            PrincipalDirection::Y,
+            PrincipalDirection::Z,
+        ] {
+            let blocked: HashSet<EdgeID> = self
+                .segments_of_direction(direction)
+                .into_iter()
+                .flat_map(|segment| self.segment_to_edges(segment))
+                .collect();
+
+            // Make a neighborhood function that blocks all edges that are part of the loop segments of this face
+            let blocked_function = |vertex: VertID| {
+                self.mesh_ref.neighbor_function_primal()(vertex)
+                    .into_iter()
+                    .filter(|&neighbor| {
+                        let edge = self.mesh_ref.edge_between_verts(vertex, neighbor).unwrap();
+                        !blocked.contains(&edge.0) && !blocked.contains(&edge.1)
+                    })
+                    .collect()
+            };
+
+            // Find the connected components (should be 2!)
+            let ccs = hutspot::graph::find_ccs(&self.mesh_ref.vert_ids(), blocked_function);
+
+            for cc in ccs {
+                let zone = Zone {
+                    direction,
+                    subsurfaces: cc
+                        .iter()
+                        .map(|&v| {
+                            self.loop_structure
+                                .faces
+                                .iter()
+                                .find(|(_, f)| f.verts.contains(&v))
+                                .unwrap()
+                                .0
+                        })
+                        .collect(),
+                    // coordinate: Some(
+                    //     hutspot::math::calculate_average_f64(
+                    //         cc.iter().map(|&v| self.mesh_ref.position(v)),
+                    //     )[direction as usize],
+                    // ),
+                    coordinate: None,
+                };
+                zones.insert(zone);
+            }
+        }
+
+        // Create a directed graph on the zones
+        for direction in [
+            PrincipalDirection::X,
+            PrincipalDirection::Y,
+            PrincipalDirection::Z,
+        ] {
+            let zones_of_dir = zones
+                .iter()
+                .filter(|(_, z)| z.direction == direction)
+                .collect_vec();
+
+            let mut adjacency = HashMap::new();
+            let mut adjacency_backwards = HashMap::new();
+
+            for &(zone_id, zone) in &zones_of_dir {
+                // Get all Plus loop segments of the zone
+                let upper_segments = zone
+                    .subsurfaces
+                    .iter()
+                    .flat_map(|&face_id| self.loop_structure.edges(face_id))
+                    .filter(|&segment| {
+                        self.segment_to_side(segment, side_mask) == Side::Upper
+                            && self.segment_to_direction(segment) == direction
+                    });
+
+                let adjacent_segments = upper_segments
+                    .clone()
+                    .map(|segment| self.loop_structure.twin(segment))
+                    .collect_vec();
+
+                let adjacent_zones: HashSet<ZoneID> = adjacent_segments
+                    .into_iter()
+                    .map(|segment| {
+                        zones
+                            .iter()
+                            .find(|(_, z)| {
+                                z.subsurfaces.contains(&self.loop_structure.face(segment))
+                                    && z.direction == self.segment_to_direction(segment)
+                            })
+                            .unwrap()
+                            .0
+                    })
+                    .collect();
+
+                adjacency.insert(zone_id, adjacent_zones.clone());
+
+                for &adjacent_zone in &adjacent_zones {
+                    let entry = adjacency_backwards
+                        .entry(adjacent_zone)
+                        .or_insert(HashSet::new());
+                    entry.insert(zone_id);
+                }
+            }
+
+            println!("adjacency: {:?}", adjacency);
+
+            let topological_sort = hutspot::graph::topological_sort::<ZoneID>(
+                &zones_of_dir.into_iter().map(|(id, _)| id).collect_vec(),
+                |z| {
+                    adjacency
+                        .get(&z)
+                        .cloned()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .collect_vec()
+                },
+            );
+
+            println!("topological_sort: {:?}", topological_sort);
+
+            if topological_sort.is_none() {
+                return None;
+            }
+
+            for zone_id in topological_sort.unwrap() {
+                let dependencies = adjacency_backwards
+                    .get(&zone_id)
+                    .cloned()
+                    .unwrap_or_default()
+                    .iter()
+                    .flat_map(|&z| zones[z].coordinate)
+                    .collect_vec();
+
+                zones[zone_id].coordinate = if dependencies.is_empty() {
+                    Some(0.0)
+                } else {
+                    Some(
+                        dependencies
+                            .iter()
+                            .max_by(|a, b| a.partial_cmp(b).unwrap())
+                            .unwrap()
+                            + 1.0,
+                    )
+                };
+            }
+        }
+
         // Each face to an int
         let face_to_int: HashMap<FaceID, usize> = self
             .loop_structure
@@ -254,12 +391,23 @@ impl Dual {
             .iter()
             .map(|(subsurface_id, _)| {
                 // Find the three zones that this subsurface is part of (X/Y/Z)
-                let zones = self.subsurface_to_zones(subsurface_id);
+                let this_zones = [
+                    PrincipalDirection::X,
+                    PrincipalDirection::Y,
+                    PrincipalDirection::Z,
+                ]
+                .map(|d| {
+                    zones
+                        .iter()
+                        .find(|(_, z)| z.subsurfaces.contains(&subsurface_id) && z.direction == d)
+                        .unwrap()
+                        .0
+                });
 
                 Vector3D::new(
-                    self.zones[zones[0]].coordinate.unwrap(),
-                    self.zones[zones[1]].coordinate.unwrap(),
-                    self.zones[zones[2]].coordinate.unwrap(),
+                    zones[this_zones[0]].coordinate.unwrap(),
+                    zones[this_zones[1]].coordinate.unwrap(),
+                    zones[this_zones[2]].coordinate.unwrap(),
                 )
             })
             .collect_vec();
@@ -268,11 +416,11 @@ impl Dual {
             Polycube::from_embedded_faces(&primal_faces, &vertex_positions).unwrap();
 
         for (face_id, face_obj) in &mut primal.faces {
-            *face_obj = self.loop_structure.verts[self.loop_structure.verts.keys().collect_vec()
-                [fmap.get_by_right(&face_id).unwrap().to_owned()]];
+            *face_obj = self.loop_structure.verts.keys().collect_vec()
+                [fmap.get_by_right(&face_id).unwrap().to_owned()];
         }
 
-        primal
+        Some(primal)
     }
 
     pub fn intersections(&self) -> Option<HashMap<EdgeID, Intersection>> {
@@ -796,164 +944,34 @@ impl Dual {
                 }
             }
 
-            // Find a labeling that is consistent and acyclic
-            // We do this by finding a twocoloring of the bipartite graph
-            let two_coloring = hutspot::graph::two_color::<EdgeID>(
+            self.side_ccs[direction as usize] = hutspot::graph::find_ccs(
                 &sides_graph.keys().copied().collect_vec(),
                 |e: EdgeID| sides_graph[&e].clone(),
-            )
-            .unwrap();
-
-            for edge_id in two_coloring.0 {
-                self.loop_structure.edges[edge_id].side = Some(Side::Upper);
-            }
-
-            for edge_id in two_coloring.1 {
-                self.loop_structure.edges[edge_id].side = Some(Side::Lower);
-            }
-        }
-
-        // Create zones
-        self.zones = SlotMap::with_key();
-
-        // Do this for each direction
-
-        for direction in [
-            PrincipalDirection::X,
-            PrincipalDirection::Y,
-            PrincipalDirection::Z,
-        ] {
-            let blocked: HashSet<EdgeID> = self
-                .segments_of_direction(direction)
-                .into_iter()
-                .flat_map(|segment| self.segment_to_edges(segment))
-                .collect();
-
-            // Make a neighborhood function that blocks all edges that are part of the loop segments of this face
-            let blocked_function = |vertex: VertID| {
-                self.mesh_ref.neighbor_function_primal()(vertex)
-                    .into_iter()
-                    .filter(|&neighbor| {
-                        let edge = self.mesh_ref.edge_between_verts(vertex, neighbor).unwrap();
-                        !blocked.contains(&edge.0) && !blocked.contains(&edge.1)
-                    })
-                    .collect()
-            };
-
-            // Find the connected components (should be 2!)
-            let ccs = hutspot::graph::find_ccs(&self.mesh_ref.vert_ids(), blocked_function);
-
-            for cc in ccs {
-                let zone = Zone {
-                    direction,
-                    subsurfaces: cc
-                        .iter()
-                        .map(|&v| {
-                            self.loop_structure
-                                .faces
-                                .iter()
-                                .find(|(_, f)| f.verts.contains(&v))
-                                .unwrap()
-                                .0
-                        })
-                        .collect(),
-                    // coordinate: Some(
-                    //     hutspot::math::calculate_average_f64(
-                    //         cc.iter().map(|&v| self.mesh_ref.position(v)),
-                    //     )[direction as usize],
-                    // ),
-                    coordinate: None,
-                };
-                self.zones.insert(zone);
-            }
-        }
-
-        // Create a directed graph on the zones
-        for direction in [
-            PrincipalDirection::X,
-            PrincipalDirection::Y,
-            PrincipalDirection::Z,
-        ] {
-            let zones_of_dir = self
-                .zones
-                .iter()
-                .filter(|(_, z)| z.direction == direction)
-                .collect_vec();
-
-            let mut adjacency = HashMap::new();
-            let mut adjacency_backwards = HashMap::new();
-
-            for &(zone_id, zone) in &zones_of_dir {
-                // Get all Plus loop segments of the zone
-                let upper_segments = zone
-                    .subsurfaces
-                    .iter()
-                    .flat_map(|&face_id| self.loop_structure.edges(face_id))
-                    .filter(|&segment| {
-                        self.segment_to_side(segment) == Side::Upper
-                            && self.segment_to_direction(segment) == direction
-                    });
-
-                let adjacent_segments = upper_segments
-                    .clone()
-                    .map(|segment| self.loop_structure.twin(segment))
-                    .collect_vec();
-
-                let adjacent_zones: HashSet<ZoneID> = adjacent_segments
-                    .into_iter()
-                    .map(|segment| self.segment_to_zone(segment))
-                    .collect();
-
-                adjacency.insert(zone_id, adjacent_zones.clone());
-
-                for &adjacent_zone in &adjacent_zones {
-                    let entry = adjacency_backwards
-                        .entry(adjacent_zone)
-                        .or_insert(HashSet::new());
-                    entry.insert(zone_id);
-                }
-            }
-
-            println!("adjacency: {:?}", adjacency);
-
-            let topological_sort = hutspot::graph::topological_sort::<ZoneID>(
-                &zones_of_dir.into_iter().map(|(id, _)| id).collect_vec(),
-                |z| {
-                    adjacency
-                        .get(&z)
-                        .cloned()
-                        .unwrap_or_default()
-                        .into_iter()
-                        .collect_vec()
-                },
             );
 
-            println!("topological_sort: {:?}", topological_sort);
+            for component in &self.side_ccs[direction as usize] {
+                // Find a labeling that is consistent and acyclic
+                // We do this by finding a twocoloring of the bipartite graph
+                if let Some(two_coloring) = hutspot::graph::two_color::<EdgeID>(
+                    &component.iter().copied().collect_vec(),
+                    |e: EdgeID| sides_graph[&e].clone(),
+                ) {
+                    for edge_id in two_coloring.0 {
+                        self.loop_structure.edges[edge_id].side = Some(Side::Upper);
+                    }
 
-            if topological_sort.is_none() {
-                return false;
-            }
-            for zone_id in topological_sort.unwrap() {
-                let dependencies = adjacency_backwards
-                    .get(&zone_id)
-                    .cloned()
-                    .unwrap_or_default()
-                    .iter()
-                    .flat_map(|&z| self.zones[z].coordinate)
-                    .collect_vec();
-
-                self.zones[zone_id].coordinate = if dependencies.is_empty() {
-                    Some(0.0)
+                    for edge_id in two_coloring.1 {
+                        self.loop_structure.edges[edge_id].side = Some(Side::Lower);
+                    }
                 } else {
-                    Some(
-                        dependencies
-                            .iter()
-                            .max_by(|a, b| a.partial_cmp(b).unwrap())
-                            .unwrap()
-                            + 1.0,
-                    )
-                };
+                    return false;
+                }
             }
+        }
+
+        let primal_res = self.primal([0, 0, 0]);
+        if primal_res.is_none() {
+            return false;
         }
 
         println!("done ! ");

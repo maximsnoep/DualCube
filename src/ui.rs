@@ -7,6 +7,7 @@ pub fn ui(
     mut ev_w: EventWriter<ActionEvent>,
     mut conf: ResMut<Configuration>,
     mut mesh_resmut: ResMut<crate::MeshResource>,
+    solution: Res<crate::SolutionResource>,
 ) {
     TopBottomPanel::top("panel").show(egui_ctx.ctx_mut(), |ui| {
         sep(ui);
@@ -30,7 +31,7 @@ pub fn ui(
             }
         });
 
-        ui.add_space(10.);
+        ui.add_space(15.);
 
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
@@ -45,9 +46,7 @@ pub fn ui(
                 ui.checkbox(&mut conf.draw_normals, "normals");
             });
 
-            ui.add_space(10.);
-
-            ui.add_space(10.);
+            ui.add_space(15.);
 
             ui.vertical(|ui| {
                 for direction in [
@@ -64,6 +63,8 @@ pub fn ui(
                 }
             });
 
+            ui.add_space(15.);
+
             ui.vertical(|ui| {
                 for render_type in [RenderType::Original, RenderType::Polycube] {
                     if radio(
@@ -77,23 +78,36 @@ pub fn ui(
                 }
             });
 
-            ui.add_space(10.);
+            ui.add_space(15.);
 
             ui.vertical(|ui| {
-                slider(ui, "angle", &mut conf.angle_filter, 0.0..=180.0);
-                slider(ui, "samples", &mut conf.samples, 1..=2000);
-            });
-
-            ui.vertical(|ui| {
-                ui.horizontal(|ui| {
-                    if ui.button("<<").clicked() {
-                        conf.id_selector -= 1;
-                    };
-                    ui.label(format!("  id {}  ", conf.id_selector));
-                    if ui.button(">>").clicked() {
-                        conf.id_selector += 1;
-                    };
-                });
+                if stepper(
+                    ui,
+                    "X sublabels",
+                    &mut conf.sides_mask[0],
+                    0,
+                    2_u32.pow(solution.dual.side_ccs[0].len() as u32) - 1,
+                ) {
+                    mesh_resmut.as_mut();
+                }
+                if stepper(
+                    ui,
+                    "Y sublabels",
+                    &mut conf.sides_mask[1],
+                    0,
+                    2_u32.pow(solution.dual.side_ccs[1].len() as u32) - 1,
+                ) {
+                    mesh_resmut.as_mut();
+                }
+                if stepper(
+                    ui,
+                    "Z sublabels",
+                    &mut conf.sides_mask[2],
+                    0,
+                    2_u32.pow(solution.dual.side_ccs[2].len() as u32) - 1,
+                ) {
+                    mesh_resmut.as_mut();
+                }
             });
         });
         sep(ui);
@@ -110,10 +124,30 @@ fn slider<T: Numeric>(ui: &mut Ui, label: &str, value: &mut T, range: std::ops::
     ui.add(Slider::new(value, range).text(label));
 }
 
-fn button(ui: &mut Ui, label: &str, ev_writer: &mut EventWriter<ActionEvent>, ev: ActionEvent) {
-    if ui.button(label).clicked() {
-        ev_writer.send(ev);
-    }
+fn stepper(ui: &mut Ui, label: &str, value: &mut u32, min: u32, max: u32) -> bool {
+    ui.horizontal(|ui| {
+        if ui.button("<<").clicked() {
+            let new_value = *value - 1;
+            if new_value >= min && new_value <= max {
+                *value = new_value;
+            } else {
+                *value = max;
+            };
+            return true;
+        }
+        ui.label(format!("{label}: {value} [{min}-{max}]"));
+        if ui.button(">>").clicked() {
+            let new_value = *value + 1;
+            if new_value <= max && new_value >= min {
+                *value = new_value;
+            } else {
+                *value = min;
+            };
+            return true;
+        }
+        return false;
+    })
+    .inner
 }
 
 fn radio<T: PartialEq<T>>(ui: &mut Ui, item: &mut T, value: T, label: &str) -> bool {

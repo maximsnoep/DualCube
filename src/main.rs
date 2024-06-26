@@ -71,6 +71,8 @@ pub struct Configuration {
 
     pub direction: Option<PrincipalDirection>,
 
+    pub sides_mask: [u32; 3],
+
     pub render_type: RenderType,
 
     pub scale: f32,
@@ -388,7 +390,12 @@ fn update_mesh(
         }
         RenderType::Polycube => {
             let mut color_map = HashMap::new();
-            for (face_id, face_obj) in &solution.dual.primal().faces {
+            for (face_id, face_obj) in &solution
+                .dual
+                .primal(configuration.sides_mask)
+                .unwrap()
+                .faces
+            {
                 // let dirs = face_obj
                 //     .next
                 //     .iter()
@@ -414,7 +421,11 @@ fn update_mesh(
 
                 // color_map.insert(face_id, color);
             }
-            solution.dual.primal().bevy(&color_map)
+            solution
+                .dual
+                .primal(configuration.sides_mask)
+                .unwrap()
+                .bevy(&color_map)
         }
     };
 
@@ -535,7 +546,9 @@ fn draw_gizmos(
                     configuration.translation,
                     configuration.scale,
                 ) {
-                    let side = solution.dual.segment_to_side(segment);
+                    let side = solution
+                        .dual
+                        .segment_to_side(segment, configuration.sides_mask);
                     gizmos.line(line.u, line.v, dir.to_dual_color_sided(side));
                 }
             }
@@ -545,10 +558,22 @@ fn draw_gizmos(
     if configuration.render_type == RenderType::Polycube {
         // Draw all loop segments / faces axis aligned.
 
-        let primal = solution.dual.primal();
+        let primal = solution.dual.primal(configuration.sides_mask).unwrap();
 
-        for (face_id, face_obj) in &primal.faces {
+        for (face_id, original_id) in &primal.faces {
             let this_centroid = primal.centroid(face_id);
+
+            let face_obj = solution.dual.get_loop_structure().verts[*original_id];
+
+            // In clockwise or counterclockwise ordeR (not sure);;
+            let this_directions = face_obj
+                .next
+                .iter()
+                .map(|&(_, loop_id, next_id, _)| {
+                    (solution.dual.get_loop(loop_id).unwrap().direction, next_id)
+                })
+                .collect_vec();
+
             let this_orientation = match face_obj
                 .next
                 .iter()
@@ -565,36 +590,65 @@ fn draw_gizmos(
                 _ => PrincipalDirection::X,
             };
 
-            for &neighbor_id in &primal.fneighbors(face_id) {
-                let neighbor_obj = &primal.faces[neighbor_id];
+            println!("{face_id} {this_orientation:?}");
 
-                let loop_id = face_obj
-                    .next
-                    .iter()
-                    .find(|&&(_, _, next_id, _)| next_id == neighbor_obj.this)
+            for &neighbor_id in &primal.fneighbors(face_id) {
+                let next_original_id = &primal.faces[neighbor_id];
+                let next_obj = solution.dual.get_loop_structure().verts[*next_original_id];
+
+                let edge_between = primal.edge_between_faces(face_id, neighbor_id).unwrap().0;
+                let root = primal.root(edge_between);
+                let root_pos = primal.position(root);
+
+                let segment = solution
+                    .dual
+                    .get_loop_structure()
+                    .edge_between_verts(*original_id, *next_original_id)
                     .unwrap()
-                    .1;
-                let direction = solution.dual.loop_to_direction(loop_id);
+                    .0;
+                let loop_id = solution.dual.segment_to_loop(segment);
+                let direction = solution.dual.segment_to_direction(segment);
+                let side = solution
+                    .dual
+                    .segment_to_side(segment, configuration.sides_mask);
+
+                let segment_direction = match (this_orientation, direction) {
+                    (PrincipalDirection::X, PrincipalDirection::Y) => PrincipalDirection::Z,
+                    (PrincipalDirection::Y, PrincipalDirection::X) => PrincipalDirection::Z,
+                    (PrincipalDirection::X, PrincipalDirection::Z) => PrincipalDirection::Y,
+                    (PrincipalDirection::Z, PrincipalDirection::X) => PrincipalDirection::Y,
+                    (PrincipalDirection::Y, PrincipalDirection::Z) => PrincipalDirection::X,
+                    (PrincipalDirection::Z, PrincipalDirection::Y) => PrincipalDirection::X,
+                    _ => PrincipalDirection::X,
+                };
 
                 let mut next_centroid = primal.centroid(neighbor_id);
                 next_centroid[this_orientation as usize] = this_centroid[this_orientation as usize];
 
+                let mut direction_vector = this_centroid;
+                direction_vector[segment_direction as usize] = root_pos[segment_direction as usize];
+
                 let line = DrawableLine::from_line(
                     this_centroid,
-                    next_centroid,
-                    Vector3D::new(0., 0., 0.),
+                    direction_vector,
+                    Vector3D::from(this_orientation) * 0.,
                     configuration.translation,
                     configuration.scale,
                 );
 
-                gizmos.line(line.u, line.v, direction.to_dual_color());
+                println!(
+                    "{direction} {side:?} -> {:?}",
+                    direction.to_dual_color_sided(side.clone())
+                );
+
+                gizmos.line(line.u, line.v, direction.to_dual_color_sided(side));
             }
         }
 
         for (vert_id, _) in primal.verts.iter() {
             for &neighbor_id in &primal.vneighbors(vert_id) {
-                let u = mesh_resmut.mesh.position(vert_id);
-                let v = mesh_resmut.mesh.position(neighbor_id);
+                let u = primal.position(vert_id);
+                let v = primal.position(neighbor_id);
                 let line = DrawableLine::from_line(
                     u,
                     v,
@@ -717,41 +771,6 @@ fn raycast(
                         gizmos_cache
                             .raycast
                             .push((line.u, line.v, ls.faces[face_id].color.into()));
-                    }
-                }
-            } else if configuration.zone_selection {
-                let selected_vert = triangle_ids[0];
-
-                let ls = solution.dual.get_loop_structure();
-                for (_, zone) in &solution.dual.zones {
-                    if zone.direction != direction {
-                        continue;
-                    }
-
-                    let zone_verts: HashSet<_> = zone
-                        .subsurfaces
-                        .iter()
-                        .flat_map(|&subsurface| ls.faces[subsurface].verts.iter().copied())
-                        .collect();
-
-                    if !zone_verts.contains(&selected_vert) {
-                        continue;
-                    }
-
-                    for &vert_id in &zone_verts {
-                        let p = mesh_resmut.mesh.position(vert_id);
-                        let n = mesh_resmut.mesh.vert_normal(vert_id);
-                        let line = DrawableLine::from_vertex(
-                            p,
-                            n,
-                            0.05,
-                            configuration.translation,
-                            configuration.scale,
-                        );
-
-                        gizmos_cache
-                            .raycast
-                            .push((line.u, line.v, zone.direction.to_dual_color()));
                     }
                 }
             } else if configuration.interactive {

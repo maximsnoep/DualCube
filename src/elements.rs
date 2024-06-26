@@ -107,6 +107,15 @@ pub enum Side {
     Lower,
 }
 
+impl Side {
+    pub fn flip(&self) -> Self {
+        match self {
+            Side::Upper => Side::Lower,
+            Side::Lower => Side::Upper,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct LoopSegment {
     // A loop segment is defined by a reference to a loop (id)
