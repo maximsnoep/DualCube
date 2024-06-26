@@ -1,9 +1,10 @@
 #![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::cargo)]
 #![allow(clippy::missing_panics_doc, clippy::missing_errors_doc)]
 mod dual;
+mod elements;
 mod ui;
 
-use crate::dual::PrincipalDirection;
+use crate::elements::PrincipalDirection;
 use crate::ui::ui;
 use bevy::diagnostic::LogDiagnosticsPlugin;
 use bevy::prelude::*;
@@ -12,7 +13,8 @@ use bevy_egui::EguiPlugin;
 use bevy_mod_raycast::prelude::*;
 use douconel::douconel::{Douconel, EdgeID, VertID};
 use douconel::douconel_embedded::EmbeddedVertex;
-use dual::{Dual, Loop};
+use dual::Dual;
+use elements::Loop;
 use hutspot::draw::DrawableLine;
 use hutspot::geom::Vector3D;
 use itertools::Itertools;
@@ -37,7 +39,6 @@ pub struct RenderedMesh;
 #[derive(Event, Debug)]
 pub enum ActionEvent {
     LoadFile(PathBuf),
-    AddLoop(PrincipalDirection),
 }
 
 #[derive(Default, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -54,7 +55,7 @@ pub struct Rules {
     pub loop_regions: bool,
 }
 
-#[derive(Default, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RenderType {
     #[default]
     Original,
@@ -68,7 +69,7 @@ pub struct Configuration {
     pub nr_of_edges: usize,
     pub nr_of_vertices: usize,
 
-    pub direction: PrincipalDirection,
+    pub direction: Option<PrincipalDirection>,
 
     pub render_type: RenderType,
 
@@ -156,25 +157,6 @@ pub struct SolutionResource {
     dual: Dual,
 }
 
-#[derive(Default, Debug, Copy, Clone, Serialize, Deserialize)]
-pub struct EdgeWithDirection {
-    direction: Option<PrincipalDirection>,
-}
-
-pub trait HasDirection {
-    fn direction(&self) -> Option<PrincipalDirection>;
-    fn set_direction(&mut self, direction: Option<PrincipalDirection>);
-}
-
-impl HasDirection for EdgeWithDirection {
-    fn direction(&self) -> Option<PrincipalDirection> {
-        self.direction
-    }
-    fn set_direction(&mut self, direction: Option<PrincipalDirection>) {
-        self.direction = direction;
-    }
-}
-
 fn main() {
     App::new()
         .init_resource::<MeshResource>()
@@ -216,7 +198,7 @@ fn main() {
 }
 
 /// Set up
-fn setup(mut commands: Commands, mut egui_ctx: bevy_egui::EguiContexts) {
+fn setup(mut commands: Commands, mut ui: bevy_egui::EguiContexts, mut conf: ResMut<Configuration>) {
     commands
         .spawn(Camera3dBundle::default())
         .insert((OrbitCameraBundle::new(
@@ -243,30 +225,8 @@ fn setup(mut commands: Commands, mut egui_ctx: bevy_egui::EguiContexts) {
         .entry(bevy_egui::egui::FontFamily::Monospace)
         .or_default()
         .push("my_font".to_owned());
-    egui_ctx.ctx_mut().set_fonts(fonts);
-    egui_ctx
-        .ctx_mut()
-        .set_visuals(bevy_egui::egui::Visuals::dark());
-}
-
-#[must_use]
-pub fn dir_to_color(direction: PrincipalDirection) -> Color {
-    match direction {
-        PrincipalDirection::X => hutspot::color::GREEN.into(),
-        PrincipalDirection::Y => hutspot::color::ORANG.into(),
-        PrincipalDirection::Z => hutspot::color::PURPL.into(),
-    }
-}
-
-pub fn dir_to_color2(direction: PrincipalDirection, label: crate::dual::Label) -> Color {
-    match (direction, label) {
-        (PrincipalDirection::X, crate::dual::Label::Plus) => hutspot::color::GREEN.into(),
-        (PrincipalDirection::X, crate::dual::Label::Minus) => hutspot::color::GREEN_L.into(),
-        (PrincipalDirection::Y, crate::dual::Label::Plus) => hutspot::color::ORANG.into(),
-        (PrincipalDirection::Y, crate::dual::Label::Minus) => hutspot::color::ORANG_L.into(),
-        (PrincipalDirection::Z, crate::dual::Label::Plus) => hutspot::color::PURPL.into(),
-        (PrincipalDirection::Z, crate::dual::Label::Minus) => hutspot::color::PURPL_L.into(),
-    }
+    ui.ctx_mut().set_fonts(fonts);
+    ui.ctx_mut().set_visuals(bevy_egui::egui::Visuals::dark());
 }
 
 pub fn handle_events(
@@ -298,6 +258,7 @@ pub fn handle_events(
 
                 *configuration = Configuration::default();
                 configuration.source = String::from(path.to_str().unwrap());
+                configuration.direction = Some(PrincipalDirection::X);
 
                 configuration.nr_of_vertices = mesh_resmut.mesh.nr_verts();
                 configuration.nr_of_edges = mesh_resmut.mesh.nr_edges() / 2; // dcel -> single edge
@@ -389,7 +350,6 @@ pub fn handle_events(
                     }
                 }
             }
-            ActionEvent::AddLoop(dir) => {}
         }
     }
 }
@@ -428,7 +388,7 @@ fn update_mesh(
         }
         RenderType::Polycube => {
             let mut color_map = HashMap::new();
-            for (face_id, face_obj) in &solution.dual.primal.faces {
+            for (face_id, face_obj) in &solution.dual.primal().faces {
                 // let dirs = face_obj
                 //     .next
                 //     .iter()
@@ -454,7 +414,7 @@ fn update_mesh(
 
                 // color_map.insert(face_id, color);
             }
-            solution.dual.primal.bevy(&color_map)
+            solution.dual.primal().bevy(&color_map)
         }
     };
 
@@ -542,15 +502,14 @@ fn draw_gizmos(
     // Draw all loop segments
     if configuration.render_type != RenderType::Polycube {
         let loopstruct = solution.dual.get_loop_structure();
-        for (ls_id, ls) in &loopstruct.edges {
-            let edges_between = &loopstruct.edges[ls_id].between;
-            let pairs_between = solution.dual.get_pairs_of_sequence(
-                &[vec![ls.start], edges_between.clone(), vec![ls.end]].concat(),
-            );
+        for segment in loopstruct.edge_ids() {
+            let pairs_between = solution
+                .dual
+                .get_pairs_of_sequence(&solution.dual.segment_to_edges(segment));
 
-            let dir = solution.dual.get_loop(ls.loop_id).unwrap().direction;
+            let dir = solution.dual.segment_to_direction(segment);
 
-            let adjacent_face = loopstruct.face(ls_id);
+            let adjacent_face = loopstruct.face(segment);
             let centroid = hutspot::math::calculate_average_f64(
                 loopstruct.faces[adjacent_face]
                     .verts
@@ -576,11 +535,8 @@ fn draw_gizmos(
                     configuration.translation,
                     configuration.scale,
                 ) {
-                    gizmos.line(
-                        line.u,
-                        line.v,
-                        dir_to_color2(dir, ls.labeling.clone().unwrap()),
-                    );
+                    let side = solution.dual.segment_to_side(segment);
+                    gizmos.line(line.u, line.v, dir.to_dual_color_sided(side));
                 }
             }
         }
@@ -589,8 +545,10 @@ fn draw_gizmos(
     if configuration.render_type == RenderType::Polycube {
         // Draw all loop segments / faces axis aligned.
 
-        for (face_id, face_obj) in &solution.dual.primal.faces {
-            let this_centroid = solution.dual.primal.centroid(face_id);
+        let primal = solution.dual.primal();
+
+        for (face_id, face_obj) in &primal.faces {
+            let this_centroid = primal.centroid(face_id);
             let this_orientation = match face_obj
                 .next
                 .iter()
@@ -607,8 +565,8 @@ fn draw_gizmos(
                 _ => PrincipalDirection::X,
             };
 
-            for &neighbor_id in &solution.dual.primal.fneighbors(face_id) {
-                let neighbor_obj = &solution.dual.primal.faces[neighbor_id];
+            for &neighbor_id in &primal.fneighbors(face_id) {
+                let neighbor_obj = &primal.faces[neighbor_id];
 
                 let loop_id = face_obj
                     .next
@@ -616,9 +574,9 @@ fn draw_gizmos(
                     .find(|&&(_, _, next_id, _)| next_id == neighbor_obj.this)
                     .unwrap()
                     .1;
-                let direction = solution.dual.get_loop(loop_id).unwrap().direction;
+                let direction = solution.dual.loop_to_direction(loop_id);
 
-                let mut next_centroid = solution.dual.primal.centroid(neighbor_id);
+                let mut next_centroid = primal.centroid(neighbor_id);
                 next_centroid[this_orientation as usize] = this_centroid[this_orientation as usize];
 
                 let line = DrawableLine::from_line(
@@ -629,12 +587,12 @@ fn draw_gizmos(
                     configuration.scale,
                 );
 
-                gizmos.line(line.u, line.v, dir_to_color(direction));
+                gizmos.line(line.u, line.v, direction.to_dual_color());
             }
         }
 
-        for (vert_id, _) in solution.dual.primal.verts.iter() {
-            for &neighbor_id in &solution.dual.primal.vneighbors(vert_id) {
+        for (vert_id, _) in primal.verts.iter() {
+            for &neighbor_id in &primal.vneighbors(vert_id) {
                 let u = mesh_resmut.mesh.position(vert_id);
                 let v = mesh_resmut.mesh.position(neighbor_id);
                 let line = DrawableLine::from_line(
@@ -672,6 +630,8 @@ fn raycast(
         gizmos_cache.raycast.clear();
         return;
     }
+
+    let direction = configuration.direction.unwrap();
 
     if let Some(cursor_ray) = **cursor_ray {
         let intersections = raycast.cast_ray(cursor_ray, &default());
@@ -756,21 +716,15 @@ fn raycast(
 
                         gizmos_cache
                             .raycast
-                            .push((line.u, line.v, ls.faces[face_id].color));
+                            .push((line.u, line.v, ls.faces[face_id].color.into()));
                     }
                 }
             } else if configuration.zone_selection {
                 let selected_vert = triangle_ids[0];
 
                 let ls = solution.dual.get_loop_structure();
-                for zone in &solution.dual.zones {
-                    let dir = solution
-                        .dual
-                        .get_loop(ls.edges[*zone.boundary.iter().next().unwrap()].loop_id)
-                        .unwrap()
-                        .direction;
-
-                    if dir != configuration.direction {
+                for (_, zone) in &solution.dual.zones {
+                    if zone.direction != direction {
                         continue;
                     }
 
@@ -797,7 +751,7 @@ fn raycast(
 
                         gizmos_cache
                             .raycast
-                            .push((line.u, line.v, dir_to_color(dir)));
+                            .push((line.u, line.v, zone.direction.to_dual_color()));
                     }
                 }
             } else if configuration.interactive {
@@ -824,10 +778,10 @@ fn raycast(
                 let wfunction = mesh_resmut.mesh.weight_function_angle_edgepairs_aligned(
                     5,
                     5,
-                    configuration.direction.to_vector(),
+                    direction.into(),
                 );
 
-                let cache_ref = &mut cache.cache[configuration.direction as usize];
+                let cache_ref = &mut cache.cache[direction as usize];
 
                 let total_path = [
                     hutspot::graph::find_shortest_cycle([e1, e2], nfunction, &wfunction, cache_ref),
@@ -849,42 +803,8 @@ fn raycast(
 
                 if let Some(loop_id) = solution.dual.add_loop(Loop {
                     edges: total_path,
-                    direction: configuration.direction,
+                    direction: direction,
                 }) {
-                    for intersection in &solution.dual.intersections {
-                        let u = mesh_resmut.mesh.midpoint(*intersection.0);
-                        let n = mesh_resmut
-                            .mesh
-                            .normal(mesh_resmut.mesh.face(*intersection.0));
-                        let line = DrawableLine::from_vertex(
-                            u,
-                            n,
-                            0.9,
-                            configuration.translation,
-                            configuration.scale,
-                        );
-                        gizmos_cache
-                            .raycast
-                            .push((line.u, line.v, hutspot::color::GRIJS.into()));
-
-                        for &nexts in &intersection.1.next {
-                            let v = mesh_resmut.mesh.midpoint(nexts.0);
-                            let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(nexts.0));
-                            let line = DrawableLine::from_vertex(
-                                v,
-                                n,
-                                0.9,
-                                configuration.translation,
-                                configuration.scale,
-                            );
-                            gizmos_cache.raycast.push((
-                                line.u,
-                                line.v,
-                                hutspot::color::ROODT.into(),
-                            ));
-                        }
-                    }
-
                     for &edge in &solution.dual.get_pairs_of_loop(loop_id) {
                         let u = mesh_resmut.mesh.midpoint(edge[0]);
                         let v = mesh_resmut.mesh.midpoint(edge[1]);
@@ -898,71 +818,10 @@ fn raycast(
                             configuration.translation,
                             configuration.scale,
                         ) {
-                            gizmos_cache.raycast.push((
-                                line.u,
-                                line.v,
-                                dir_to_color(configuration.direction),
-                            ));
+                            gizmos_cache
+                                .raycast
+                                .push((line.u, line.v, direction.to_dual_color()));
                         }
-                    }
-
-                    let ls = solution.dual.get_loop_structure();
-
-                    for face in &ls.faces {
-                        // Get the edges of the face
-                        let edges = ls.edges(face.0);
-                        // All loops must be unique
-                        let unique = edges.len()
-                            == edges
-                                .iter()
-                                .map(|&edge| ls.edges[edge].loop_id)
-                                .unique()
-                                .count();
-
-                        // At most 2 loops per color
-                        let x_count = edges
-                            .iter()
-                            .map(|&edge| ls.edges[edge].loop_id)
-                            .filter(|&loop_id| {
-                                solution.dual.get_loop(loop_id).unwrap().direction
-                                    == PrincipalDirection::X
-                            })
-                            .count();
-
-                        let y_count = edges
-                            .iter()
-                            .map(|&edge| ls.edges[edge].loop_id)
-                            .filter(|&loop_id| {
-                                solution.dual.get_loop(loop_id).unwrap().direction
-                                    == PrincipalDirection::Y
-                            })
-                            .count();
-
-                        let z_count = edges
-                            .iter()
-                            .map(|&edge| ls.edges[edge].loop_id)
-                            .filter(|&loop_id| {
-                                solution.dual.get_loop(loop_id).unwrap().direction
-                                    == PrincipalDirection::Z
-                            })
-                            .count();
-
-                        // Atleast 3 loops
-
-                        // if !(edges.len() >= 3
-                        //     && unique
-                        //     && x_count <= 2
-                        //     && y_count <= 2
-                        //     && z_count <= 2)
-                        // {
-                        //     println!("oopsie:::)");
-                        //     solution.dual.del_loop(loop_id);
-                        //     return;
-                        // }
-
-                        // TODO: same colors not allowed to intersect
-
-                        // TODO: loop must be connected..
                     }
 
                     if mouse.just_pressed(MouseButton::Left)

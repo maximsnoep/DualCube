@@ -1,6 +1,4 @@
-#![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::cargo)]
-
-use crate::{dual::PrincipalDirection, ActionEvent, Configuration, RenderType};
+use crate::{elements::PrincipalDirection, ActionEvent, Configuration, RenderType};
 use bevy::prelude::*;
 use bevy_egui::egui::{emath::Numeric, Slider, TopBottomPanel, Ui};
 
@@ -57,13 +55,23 @@ pub fn ui(
                     PrincipalDirection::Y,
                     PrincipalDirection::Z,
                 ] {
-                    radio(ui, &mut conf.direction, direction);
+                    radio(
+                        ui,
+                        &mut conf.direction,
+                        Some(direction),
+                        &format!("{direction}"),
+                    );
                 }
             });
 
             ui.vertical(|ui| {
                 for render_type in [RenderType::Original, RenderType::Polycube] {
-                    if radio(ui, &mut conf.render_type, render_type) {
+                    if radio(
+                        ui,
+                        &mut conf.render_type,
+                        render_type,
+                        &format!("{render_type:?}"),
+                    ) {
                         mesh_resmut.as_mut();
                     }
                 }
@@ -74,7 +82,6 @@ pub fn ui(
             ui.vertical(|ui| {
                 slider(ui, "angle", &mut conf.angle_filter, 0.0..=180.0);
                 slider(ui, "samples", &mut conf.samples, 1..=2000);
-                button(ui, "add", &mut ev_w, ActionEvent::AddLoop(conf.direction));
             });
 
             ui.vertical(|ui| {
@@ -109,8 +116,8 @@ fn button(ui: &mut Ui, label: &str, ev_writer: &mut EventWriter<ActionEvent>, ev
     }
 }
 
-fn radio<T: PartialEq<T> + std::fmt::Debug>(ui: &mut Ui, item: &mut T, value: T) -> bool {
-    if ui.radio(*item == value, format!("{value:?}")).clicked() {
+fn radio<T: PartialEq<T>>(ui: &mut Ui, item: &mut T, value: T, label: &str) -> bool {
+    if ui.radio(*item == value, label).clicked() {
         *item = value;
         return true;
     }
