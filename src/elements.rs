@@ -1,16 +1,14 @@
 use crate::dual::LoopID;
 use bevy::render::color::Color;
-use douconel::douconel::EdgeID;
-use douconel::douconel::FaceID;
-use douconel::douconel::VertID;
+use douconel::douconel::{EdgeID, FaceID, VertID};
 use hutspot::geom::Vector3D;
-use serde::Deserialize;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fmt::Display;
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug, Hash, Serialize, Deserialize)]
+#[derive(Copy, Clone, Default, PartialEq, Eq, Debug, Hash, Serialize, Deserialize)]
 pub enum PrincipalDirection {
+    #[default]
     X,
     Y,
     Z,
@@ -19,9 +17,38 @@ pub enum PrincipalDirection {
 impl Display for PrincipalDirection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PrincipalDirection::X => write!(f, "X-axis"),
-            PrincipalDirection::Y => write!(f, "Y-axis"),
-            PrincipalDirection::Z => write!(f, "Z-axis"),
+            Self::X => write!(f, "X-axis"),
+            Self::Y => write!(f, "Y-axis"),
+            Self::Z => write!(f, "Z-axis"),
+        }
+    }
+}
+
+impl PrincipalDirection {
+    pub fn to_primal_color(self) -> Color {
+        match self {
+            Self::X => hutspot::color::ROODT.into(),
+            Self::Y => hutspot::color::BLAUW.into(),
+            Self::Z => hutspot::color::YELLO.into(),
+        }
+    }
+
+    pub fn to_dual_color(self) -> Color {
+        match self {
+            Self::X => hutspot::color::GREEN.into(),
+            Self::Y => hutspot::color::ORANG.into(),
+            Self::Z => hutspot::color::PURPL.into(),
+        }
+    }
+
+    pub fn to_dual_color_sided(self, s: Side) -> Color {
+        match (self, s) {
+            (Self::X, Side::Upper) => hutspot::color::GREEN.into(),
+            (Self::X, Side::Lower) => hutspot::color::GREEN_L.into(),
+            (Self::Y, Side::Upper) => hutspot::color::ORANG.into(),
+            (Self::Y, Side::Lower) => hutspot::color::ORANG_L.into(),
+            (Self::Z, Side::Upper) => hutspot::color::PURPL.into(),
+            (Self::Z, Side::Lower) => hutspot::color::PURPL_L.into(),
         }
     }
 }
@@ -29,38 +56,9 @@ impl Display for PrincipalDirection {
 impl From<PrincipalDirection> for Vector3D {
     fn from(dir: PrincipalDirection) -> Self {
         match dir {
-            PrincipalDirection::X => Vector3D::new(1., 0., 0.),
-            PrincipalDirection::Y => Vector3D::new(0., 1., 0.),
-            PrincipalDirection::Z => Vector3D::new(0., 0., 1.),
-        }
-    }
-}
-
-impl PrincipalDirection {
-    pub fn to_primal_color(&self) -> Color {
-        match self {
-            PrincipalDirection::X => hutspot::color::ROODT.into(),
-            PrincipalDirection::Y => hutspot::color::BLAUW.into(),
-            PrincipalDirection::Z => hutspot::color::YELLO.into(),
-        }
-    }
-
-    pub fn to_dual_color(&self) -> Color {
-        match self {
-            PrincipalDirection::X => hutspot::color::GREEN.into(),
-            PrincipalDirection::Y => hutspot::color::ORANG.into(),
-            PrincipalDirection::Z => hutspot::color::PURPL.into(),
-        }
-    }
-
-    pub fn to_dual_color_sided(&self, s: Side) -> Color {
-        match (self, s) {
-            (PrincipalDirection::X, Side::Upper) => hutspot::color::GREEN.into(),
-            (PrincipalDirection::X, Side::Lower) => hutspot::color::GREEN_L.into(),
-            (PrincipalDirection::Y, Side::Upper) => hutspot::color::ORANG.into(),
-            (PrincipalDirection::Y, Side::Lower) => hutspot::color::ORANG_L.into(),
-            (PrincipalDirection::Z, Side::Upper) => hutspot::color::PURPL.into(),
-            (PrincipalDirection::Z, Side::Lower) => hutspot::color::PURPL_L.into(),
+            PrincipalDirection::X => Self::new(1., 0., 0.),
+            PrincipalDirection::Y => Self::new(0., 1., 0.),
+            PrincipalDirection::Z => Self::new(0., 0., 1.),
         }
     }
 }
@@ -108,10 +106,10 @@ pub enum Side {
 }
 
 impl Side {
-    pub fn flip(&self) -> Self {
+    pub const fn flip(&self) -> Self {
         match self {
-            Side::Upper => Side::Lower,
-            Side::Lower => Side::Upper,
+            Self::Upper => Self::Lower,
+            Self::Lower => Self::Upper,
         }
     }
 }

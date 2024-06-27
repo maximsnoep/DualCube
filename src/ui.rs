@@ -38,6 +38,7 @@ pub fn ui(
                 ui.checkbox(&mut conf.interactive, "interactive");
                 ui.checkbox(&mut conf.region_selection, "region selection");
                 ui.checkbox(&mut conf.zone_selection, "zone selection");
+                ui.checkbox(&mut conf.black, "black toggle");
             });
 
             ui.vertical(|ui| {
@@ -54,12 +55,7 @@ pub fn ui(
                     PrincipalDirection::Y,
                     PrincipalDirection::Z,
                 ] {
-                    radio(
-                        ui,
-                        &mut conf.direction,
-                        Some(direction),
-                        &format!("{direction}"),
-                    );
+                    radio(ui, &mut conf.direction, direction);
                 }
             });
 
@@ -67,12 +63,7 @@ pub fn ui(
 
             ui.vertical(|ui| {
                 for render_type in [RenderType::Original, RenderType::Polycube] {
-                    if radio(
-                        ui,
-                        &mut conf.render_type,
-                        render_type,
-                        &format!("{render_type:?}"),
-                    ) {
+                    if radio(ui, &mut conf.render_type, render_type) {
                         mesh_resmut.as_mut();
                     }
                 }
@@ -81,32 +72,17 @@ pub fn ui(
             ui.add_space(15.);
 
             ui.vertical(|ui| {
-                if stepper(
-                    ui,
-                    "X sublabels",
-                    &mut conf.sides_mask[0],
-                    0,
-                    2_u32.pow(solution.dual.side_ccs[0].len() as u32) - 1,
-                ) {
-                    mesh_resmut.as_mut();
-                }
-                if stepper(
-                    ui,
-                    "Y sublabels",
-                    &mut conf.sides_mask[1],
-                    0,
-                    2_u32.pow(solution.dual.side_ccs[1].len() as u32) - 1,
-                ) {
-                    mesh_resmut.as_mut();
-                }
-                if stepper(
-                    ui,
-                    "Z sublabels",
-                    &mut conf.sides_mask[2],
-                    0,
-                    2_u32.pow(solution.dual.side_ccs[2].len() as u32) - 1,
-                ) {
-                    mesh_resmut.as_mut();
+                ui.label("Sublabels");
+                for i in 0..3 {
+                    if stepper(
+                        ui,
+                        ["X-loops", "Y-loops", "Z-loops"][i],
+                        &mut conf.sides_mask[i],
+                        0,
+                        2_u32.pow(solution.dual.side_ccs[i].len() as u32) - 1,
+                    ) {
+                        mesh_resmut.as_mut();
+                    }
                 }
             });
         });
@@ -145,15 +121,16 @@ fn stepper(ui: &mut Ui, label: &str, value: &mut u32, min: u32, max: u32) -> boo
             };
             return true;
         }
-        return false;
+        false
     })
     .inner
 }
 
-fn radio<T: PartialEq<T>>(ui: &mut Ui, item: &mut T, value: T, label: &str) -> bool {
-    if ui.radio(*item == value, label).clicked() {
+fn radio<T: PartialEq<T> + std::fmt::Display>(ui: &mut Ui, item: &mut T, value: T) -> bool {
+    if ui.radio(*item == value, format!("{value}")).clicked() {
         *item = value;
-        return true;
+        true
+    } else {
+        false
     }
-    false
 }

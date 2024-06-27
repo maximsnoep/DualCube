@@ -26,7 +26,7 @@ use smooth_bevy_cameras::controllers::orbit::{
     OrbitCameraBundle, OrbitCameraController, OrbitCameraPlugin,
 };
 use smooth_bevy_cameras::LookTransformPlugin;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -62,6 +62,15 @@ pub enum RenderType {
     Polycube,
 }
 
+impl std::fmt::Display for RenderType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Original => write!(f, "Original"),
+            Self::Polycube => write!(f, "Polycube"),
+        }
+    }
+}
+
 #[derive(Default, Resource, Clone)]
 pub struct Configuration {
     pub source: String,
@@ -69,9 +78,11 @@ pub struct Configuration {
     pub nr_of_edges: usize,
     pub nr_of_vertices: usize,
 
-    pub direction: Option<PrincipalDirection>,
+    pub direction: PrincipalDirection,
 
     pub sides_mask: [u32; 3],
+
+    pub black: bool,
 
     pub render_type: RenderType,
 
@@ -260,7 +271,6 @@ pub fn handle_events(
 
                 *configuration = Configuration::default();
                 configuration.source = String::from(path.to_str().unwrap());
-                configuration.direction = Some(PrincipalDirection::X);
 
                 configuration.nr_of_vertices = mesh_resmut.mesh.nr_verts();
                 configuration.nr_of_edges = mesh_resmut.mesh.nr_edges() / 2; // dcel -> single edge
@@ -565,15 +575,6 @@ fn draw_gizmos(
 
             let face_obj = solution.dual.get_loop_structure().verts[*original_id];
 
-            // In clockwise or counterclockwise ordeR (not sure);;
-            let this_directions = face_obj
-                .next
-                .iter()
-                .map(|&(_, loop_id, next_id, _)| {
-                    (solution.dual.get_loop(loop_id).unwrap().direction, next_id)
-                })
-                .collect_vec();
-
             let this_orientation = match face_obj
                 .next
                 .iter()
@@ -581,20 +582,25 @@ fn draw_gizmos(
                 .unique()
                 .collect_tuple()
             {
-                Some((PrincipalDirection::X, PrincipalDirection::Y))
-                | Some((PrincipalDirection::Y, PrincipalDirection::X)) => PrincipalDirection::Z,
-                Some((PrincipalDirection::X, PrincipalDirection::Z))
-                | Some((PrincipalDirection::Z, PrincipalDirection::X)) => PrincipalDirection::Y,
-                Some((PrincipalDirection::Y, PrincipalDirection::Z))
-                | Some((PrincipalDirection::Z, PrincipalDirection::Y)) => PrincipalDirection::X,
-                _ => PrincipalDirection::X,
+                Some(
+                    (PrincipalDirection::X, PrincipalDirection::Y)
+                    | (PrincipalDirection::Y, PrincipalDirection::X),
+                ) => PrincipalDirection::Z,
+                Some(
+                    (PrincipalDirection::X, PrincipalDirection::Z)
+                    | (PrincipalDirection::Z, PrincipalDirection::X),
+                ) => PrincipalDirection::Y,
+                Some(
+                    (PrincipalDirection::Y, PrincipalDirection::Z)
+                    | (PrincipalDirection::Z, PrincipalDirection::Y),
+                ) => PrincipalDirection::X,
+                _ => unreachable!(),
             };
 
             println!("{face_id} {this_orientation:?}");
 
             for &neighbor_id in &primal.fneighbors(face_id) {
                 let next_original_id = &primal.faces[neighbor_id];
-                let next_obj = solution.dual.get_loop_structure().verts[*next_original_id];
 
                 let edge_between = primal.edge_between_faces(face_id, neighbor_id).unwrap().0;
                 let root = primal.root(edge_between);
@@ -606,20 +612,20 @@ fn draw_gizmos(
                     .edge_between_verts(*original_id, *next_original_id)
                     .unwrap()
                     .0;
-                let loop_id = solution.dual.segment_to_loop(segment);
+
                 let direction = solution.dual.segment_to_direction(segment);
                 let side = solution
                     .dual
                     .segment_to_side(segment, configuration.sides_mask);
 
                 let segment_direction = match (this_orientation, direction) {
-                    (PrincipalDirection::X, PrincipalDirection::Y) => PrincipalDirection::Z,
-                    (PrincipalDirection::Y, PrincipalDirection::X) => PrincipalDirection::Z,
-                    (PrincipalDirection::X, PrincipalDirection::Z) => PrincipalDirection::Y,
-                    (PrincipalDirection::Z, PrincipalDirection::X) => PrincipalDirection::Y,
-                    (PrincipalDirection::Y, PrincipalDirection::Z) => PrincipalDirection::X,
-                    (PrincipalDirection::Z, PrincipalDirection::Y) => PrincipalDirection::X,
-                    _ => PrincipalDirection::X,
+                    (PrincipalDirection::X, PrincipalDirection::Y)
+                    | (PrincipalDirection::Y, PrincipalDirection::X) => PrincipalDirection::Z,
+                    (PrincipalDirection::X, PrincipalDirection::Z)
+                    | (PrincipalDirection::Z, PrincipalDirection::X) => PrincipalDirection::Y,
+                    (PrincipalDirection::Y, PrincipalDirection::Z)
+                    | (PrincipalDirection::Z, PrincipalDirection::Y) => PrincipalDirection::X,
+                    _ => unreachable!(),
                 };
 
                 let mut next_centroid = primal.centroid(neighbor_id);
@@ -645,7 +651,7 @@ fn draw_gizmos(
             }
         }
 
-        for (vert_id, _) in primal.verts.iter() {
+        for (vert_id, _) in &primal.verts {
             for &neighbor_id in &primal.vneighbors(vert_id) {
                 let u = primal.position(vert_id);
                 let v = primal.position(neighbor_id);
@@ -685,174 +691,188 @@ fn raycast(
         return;
     }
 
-    let direction = configuration.direction.unwrap();
+    let direction = configuration.direction;
 
-    if let Some(cursor_ray) = **cursor_ray {
-        let intersections = raycast.cast_ray(cursor_ray, &default());
-        if !intersections.is_empty() {
-            gizmos_cache.raycast.clear();
+    if mouse.pressed(MouseButton::Left) {
+        if let Some(cursor_ray) = **cursor_ray {
+            let intersections = raycast.cast_ray(cursor_ray, &default());
+            if !intersections.is_empty() {
+                gizmos_cache.raycast.clear();
 
-            let intersection = &raycast.cast_ray(cursor_ray, &default())[0].1;
+                let intersection = &raycast.cast_ray(cursor_ray, &default())[0].1;
 
-            let n = intersection.normal();
-            let p = intersection.position();
-            let normal = Vector3D::new(n.x.into(), n.y.into(), n.z.into());
-            let position_in_render = Vector3D::new(p.x.into(), p.y.into(), p.z.into());
+                let n = intersection.normal();
+                let p = intersection.position();
+                let normal = Vector3D::new(n.x.into(), n.y.into(), n.z.into());
+                let position_in_render = Vector3D::new(p.x.into(), p.y.into(), p.z.into());
 
-            let t = intersection.triangle().unwrap();
-            let triangle_in_render = [
-                Vector3D::new(t.v0.x.into(), t.v0.y.into(), t.v0.z.into()),
-                Vector3D::new(t.v1.x.into(), t.v1.y.into(), t.v1.z.into()),
-                Vector3D::new(t.v2.x.into(), t.v2.y.into(), t.v2.z.into()),
-            ]
-            .into_iter()
-            .sorted_by(|a, b| {
-                a.metric_distance(&position_in_render)
-                    .partial_cmp(&b.metric_distance(&position_in_render))
-                    .unwrap()
-            })
-            .collect_vec();
-
-            let position = hutspot::draw::invert_transform_coordinates(
-                position_in_render,
-                configuration.translation,
-                configuration.scale,
-            );
-
-            let line = DrawableLine::from_vertex(
-                position,
-                normal,
-                5.,
-                configuration.translation,
-                configuration.scale,
-            );
-            gizmos_cache
-                .raycast
-                .push((line.u, line.v, hutspot::color::ROODT.into()));
-
-            // v positions to mesh ids
-            let triangle_ids = triangle_in_render
+                let t = intersection.triangle().unwrap();
+                let triangle_in_render = [
+                    Vector3D::new(t.v0.x.into(), t.v0.y.into(), t.v0.z.into()),
+                    Vector3D::new(t.v1.x.into(), t.v1.y.into(), t.v1.z.into()),
+                    Vector3D::new(t.v2.x.into(), t.v2.y.into(), t.v2.z.into()),
+                ]
                 .into_iter()
-                .map(|position_in_render| {
-                    mesh_resmut.keys[mesh_resmut
-                        .vertex_lookup
-                        .nearest(
-                            &hutspot::draw::invert_transform_coordinates(
-                                position_in_render,
-                                configuration.translation,
-                                configuration.scale,
-                            )
-                            .into(),
-                        )
-                        .1]
+                .sorted_by(|a, b| {
+                    a.metric_distance(&position_in_render)
+                        .partial_cmp(&b.metric_distance(&position_in_render))
+                        .unwrap()
                 })
                 .collect_vec();
 
-            if configuration.region_selection {
-                let selected_vert = triangle_ids[0];
-
-                let ls = solution.dual.get_loop_structure();
-                for (face_id, _) in ls.faces.iter() {
-                    if !ls.faces[face_id].verts.contains(&selected_vert) {
-                        continue;
-                    }
-
-                    for &vert_id in &ls.faces[face_id].verts {
-                        let p = mesh_resmut.mesh.position(vert_id);
-                        let n = mesh_resmut.mesh.vert_normal(vert_id);
-                        let line = DrawableLine::from_vertex(
-                            p,
-                            n,
-                            0.05,
-                            configuration.translation,
-                            configuration.scale,
-                        );
-
-                        gizmos_cache
-                            .raycast
-                            .push((line.u, line.v, ls.faces[face_id].color.into()));
-                    }
-                }
-            } else if configuration.interactive {
-                let (e1, e2) = mesh_resmut
-                    .mesh
-                    .edges(mesh_resmut.mesh.face_with_verts(&triangle_ids).unwrap())
-                    .into_iter()
-                    .filter(|&edge| {
-                        let (u, v) = mesh_resmut.mesh.endpoints(edge);
-                        u == triangle_ids[0] || v == triangle_ids[0]
-                    })
-                    .collect_tuple()
-                    .unwrap();
-
-                // filter out all edges that are already used in the solution
-                let nfunction = |edgepair: [EdgeID; 2]| {
-                    if solution.dual.is_occupied(edgepair).is_some() {
-                        vec![]
-                    } else {
-                        mesh_resmut.mesh.neighbor_function_edgepairgraph()(edgepair)
-                    }
-                };
-
-                let wfunction = mesh_resmut.mesh.weight_function_angle_edgepairs_aligned(
-                    5,
-                    5,
-                    direction.into(),
+                let position = hutspot::draw::invert_transform_coordinates(
+                    position_in_render,
+                    configuration.translation,
+                    configuration.scale,
                 );
 
-                let cache_ref = &mut cache.cache[direction as usize];
+                let line = DrawableLine::from_vertex(
+                    position,
+                    normal,
+                    5.,
+                    configuration.translation,
+                    configuration.scale,
+                );
+                gizmos_cache
+                    .raycast
+                    .push((line.u, line.v, hutspot::color::ROODT.into()));
 
-                let total_path = [
-                    hutspot::graph::find_shortest_cycle([e1, e2], nfunction, &wfunction, cache_ref),
-                    hutspot::graph::find_shortest_cycle([e2, e1], nfunction, &wfunction, cache_ref),
-                ]
-                .into_iter()
-                .flatten()
-                .sorted_by(|&(_, a), &(_, b)| a.cmp(&b))
-                .next()
-                .unwrap_or_default()
-                .0
-                .into_iter()
-                .flatten()
-                .collect_vec();
+                // v positions to mesh ids
+                let triangle_ids = triangle_in_render
+                    .into_iter()
+                    .map(|position_in_render| {
+                        mesh_resmut.keys[mesh_resmut
+                            .vertex_lookup
+                            .nearest(
+                                &hutspot::draw::invert_transform_coordinates(
+                                    position_in_render,
+                                    configuration.translation,
+                                    configuration.scale,
+                                )
+                                .into(),
+                            )
+                            .1]
+                    })
+                    .collect_vec();
 
-                if total_path.is_empty() {
-                    return;
-                }
+                if configuration.region_selection {
+                    let selected_vert = triangle_ids[0];
 
-                if let Some(loop_id) = solution.dual.add_loop(Loop {
-                    edges: total_path,
-                    direction: direction,
-                }) {
-                    for &edge in &solution.dual.get_pairs_of_loop(loop_id) {
-                        let u = mesh_resmut.mesh.midpoint(edge[0]);
-                        let v = mesh_resmut.mesh.midpoint(edge[1]);
-                        let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge[0]));
-                        for line in DrawableLine::from_arrow(
-                            u,
-                            v,
-                            n,
-                            0.9,
-                            mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge[0])) * 0.001,
-                            configuration.translation,
-                            configuration.scale,
-                        ) {
+                    let ls = solution.dual.get_loop_structure();
+                    for (face_id, _) in &ls.faces {
+                        if !ls.faces[face_id].verts.contains(&selected_vert) {
+                            continue;
+                        }
+
+                        for &vert_id in &ls.faces[face_id].verts {
+                            let p = mesh_resmut.mesh.position(vert_id);
+                            let n = mesh_resmut.mesh.vert_normal(vert_id);
+                            let line = DrawableLine::from_vertex(
+                                p,
+                                n,
+                                0.05,
+                                configuration.translation,
+                                configuration.scale,
+                            );
+
                             gizmos_cache
                                 .raycast
-                                .push((line.u, line.v, direction.to_dual_color()));
+                                .push((line.u, line.v, ls.faces[face_id].color));
                         }
                     }
+                } else if configuration.interactive {
+                    let (e1, e2) = mesh_resmut
+                        .mesh
+                        .edges(mesh_resmut.mesh.face_with_verts(&triangle_ids).unwrap())
+                        .into_iter()
+                        .filter(|&edge| {
+                            let (u, v) = mesh_resmut.mesh.endpoints(edge);
+                            u == triangle_ids[0] || v == triangle_ids[0]
+                        })
+                        .collect_tuple()
+                        .unwrap();
 
-                    if mouse.just_pressed(MouseButton::Left)
-                        || mouse.just_released(MouseButton::Left)
-                    {
-                        mouse.clear_just_pressed(MouseButton::Left);
-                        mouse.clear_just_released(MouseButton::Left);
+                    // filter out all edges that are already used in the solution
+                    let nfunction = |edgepair: [EdgeID; 2]| {
+                        if solution.dual.is_occupied(edgepair).is_some() {
+                            vec![]
+                        } else {
+                            mesh_resmut.mesh.neighbor_function_edgepairgraph()(edgepair)
+                        }
+                    };
 
+                    let wfunction = mesh_resmut.mesh.weight_function_angle_edgepairs_aligned(
+                        5,
+                        5,
+                        direction.into(),
+                    );
+
+                    let cache_ref = &mut cache.cache[direction as usize];
+
+                    let total_path = [
+                        hutspot::graph::find_shortest_cycle(
+                            [e1, e2],
+                            nfunction,
+                            &wfunction,
+                            cache_ref,
+                        ),
+                        hutspot::graph::find_shortest_cycle(
+                            [e2, e1],
+                            nfunction,
+                            &wfunction,
+                            cache_ref,
+                        ),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .sorted_by(|&(_, a), &(_, b)| a.cmp(&b))
+                    .next()
+                    .unwrap_or_default()
+                    .0
+                    .into_iter()
+                    .flatten()
+                    .collect_vec();
+
+                    if total_path.is_empty() {
                         return;
-                    } else {
-                        solution.dual.del_loop(loop_id);
-                        return;
+                    }
+
+                    if let Some(loop_id) = solution.dual.add_loop(Loop {
+                        edges: total_path,
+                        direction: direction,
+                    }) {
+                        for &edge in &solution.dual.get_pairs_of_loop(loop_id) {
+                            let u = mesh_resmut.mesh.midpoint(edge[0]);
+                            let v = mesh_resmut.mesh.midpoint(edge[1]);
+                            let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge[0]));
+                            for line in DrawableLine::from_arrow(
+                                u,
+                                v,
+                                n,
+                                0.9,
+                                mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge[0])) * 0.001,
+                                configuration.translation,
+                                configuration.scale,
+                            ) {
+                                gizmos_cache.raycast.push((
+                                    line.u,
+                                    line.v,
+                                    direction.to_dual_color(),
+                                ));
+                            }
+                        }
+
+                        if mouse.just_pressed(MouseButton::Right)
+                            || mouse.just_released(MouseButton::Right)
+                        {
+                            mouse.clear_just_pressed(MouseButton::Right);
+                            mouse.clear_just_released(MouseButton::Right);
+
+                            return;
+                        } else {
+                            solution.dual.del_loop(loop_id);
+                            return;
+                        }
                     }
                 }
             }

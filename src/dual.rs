@@ -1,20 +1,11 @@
-use crate::elements::Loop;
-use crate::elements::LoopSegment;
-use crate::elements::PrincipalDirection;
-use crate::elements::Side;
-use crate::elements::Subsurface;
-use crate::elements::Zone;
+use crate::elements::{Loop, LoopSegment, PrincipalDirection, Side, Subsurface, Zone};
 use crate::EmbeddedMesh;
-use douconel::douconel::Douconel;
-use douconel::douconel::EdgeID;
-use douconel::douconel::FaceID;
-use douconel::douconel::VertID;
+use douconel::douconel::{Douconel, EdgeID, FaceID, VertID};
 use douconel::douconel_embedded::EmbeddedVertex;
 use hutspot::geom::Vector3D;
 use itertools::Itertools;
 use slotmap::SlotMap;
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 type LoopStructure = Douconel<Intersection, LoopSegment, Subsurface>;
@@ -104,7 +95,7 @@ impl Dual {
     }
 
     pub fn add_loop(&mut self, l: Loop) -> Option<LoopID> {
-        let loop_id = self.loops.insert(l.clone());
+        let loop_id = self.loops.insert(l);
 
         for e in self.get_loop(loop_id).unwrap().edges.clone() {
             self.occupied.entry(e).or_insert(vec![]).push(loop_id);
@@ -312,12 +303,10 @@ impl Dual {
                 for &adjacent_zone in &adjacent_zones {
                     let entry = adjacency_backwards
                         .entry(adjacent_zone)
-                        .or_insert(HashSet::new());
+                        .or_insert_with(HashSet::new);
                     entry.insert(zone_id);
                 }
             }
-
-            println!("adjacency: {:?}", adjacency);
 
             let topological_sort = hutspot::graph::topological_sort::<ZoneID>(
                 &zones_of_dir.into_iter().map(|(id, _)| id).collect_vec(),
@@ -331,8 +320,6 @@ impl Dual {
                 },
             );
 
-            println!("topological_sort: {:?}", topological_sort);
-
             if topological_sort.is_none() {
                 return None;
             }
@@ -343,7 +330,7 @@ impl Dual {
                     .cloned()
                     .unwrap_or_default()
                     .iter()
-                    .flat_map(|&z| zones[z].coordinate)
+                    .filter_map(|&z| zones[z].coordinate)
                     .collect_vec();
 
                 zones[zone_id].coordinate = if dependencies.is_empty() {
@@ -545,12 +532,7 @@ impl Dual {
                     .next
                     .iter()
                     .map(|(_, loop_id, next_id, direction)| {
-                        (
-                            this_id.clone(),
-                            next_id.clone(),
-                            loop_id.clone(),
-                            direction.clone(),
-                        )
+                        (*this_id, *next_id, *loop_id, *direction)
                     })
             })
             .map(|(this_id, next_id, loop_id, direction)| {
@@ -689,7 +671,7 @@ impl Dual {
         segments: &[LoopSegment],
     ) -> Option<LoopStructure> {
         // Create douconel based on these faces
-        if let Ok((mut loop_structure, vmap, _)) = LoopStructure::from_faces(&faces) {
+        if let Ok((mut loop_structure, vmap, _)) = LoopStructure::from_faces(faces) {
             // Graph must be connected (exactly one connected component)
             if !loop_structure.is_connected() {
                 return None;
