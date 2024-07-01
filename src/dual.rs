@@ -122,6 +122,10 @@ impl Dual {
         self.occupied.get(&edge).cloned()
     }
 
+    pub fn get_loops(&self) -> Vec<&Loop> {
+        self.loops.values().collect()
+    }
+
     pub fn is_occupied(&self, [e1, e2]: [EdgeID; 2]) -> Option<LoopID> {
         if let Some(l1) = self.occupied.get(&e1) {
             if let Some(l2) = self.occupied.get(&e2) {
@@ -806,6 +810,8 @@ impl Dual {
             return true;
         }
 
+        // Intersections
+        println!("Computing intersections...");
         let intersections_result = self.intersections();
         if intersections_result.is_none() {
             return false;
@@ -813,6 +819,7 @@ impl Dual {
         let intersections = intersections_result.unwrap();
 
         // Construct all faces
+        println!("Constructing faces...");
         let faces_result = self.loop_faces(&intersections);
         if faces_result.is_none() {
             return false;
@@ -827,7 +834,7 @@ impl Dual {
         self.loop_structure = loop_structure_res.unwrap();
 
         // Characterization
-
+        println!("Basic properties...");
         for face_id in self.loop_structure.face_ids() {
             let edges = self.loop_structure.edges(face_id);
 
@@ -851,6 +858,11 @@ impl Dual {
             }
         }
 
+        if self.loops.len() < 10 {
+            self.loop_structure = LoopStructure::default();
+            return true;
+        }
+
         // First we assign to each loop segment a direction
         // We do this by first: building a bipartite graph of loop segment adjacency.
         // Then we find a labeling that is consistent and acyclic, using loop adjacency.
@@ -859,6 +871,7 @@ impl Dual {
         // Create a graph with a vertex for each loop segment
         // If the loop segments share a face (are adjacent), we add an edge between the two vertices
         // Also add edge for: twin, loop segments of other side of this loop
+        println!("Assigning sides...");
         for direction in [
             PrincipalDirection::X,
             PrincipalDirection::Y,
@@ -869,7 +882,9 @@ impl Dual {
             for segment in self.segments_of_direction(direction) {
                 let neighbors = self.loop_structure.nexts(segment);
                 let neighbors_of_direction = self.filter_direction(&neighbors, direction);
-                assert!(neighbors_of_direction.len() <= 1);
+
+                // for genus=0 ?
+                // assert!(neighbors_of_direction.len() <= 1);
 
                 let next_of_same_color = |id: EdgeID| {
                     let cand = self
@@ -931,9 +946,16 @@ impl Dual {
                 |e: EdgeID| sides_graph[&e].clone(),
             );
 
+            println!(
+                "DIR: {}: {:?}",
+                direction, self.side_ccs[direction as usize]
+            );
+
             for component in &self.side_ccs[direction as usize] {
                 // Find a labeling that is consistent and acyclic
                 // We do this by finding a twocoloring of the bipartite graph
+                println!("cc: {}: {:?}", direction, component);
+
                 if let Some(two_coloring) = hutspot::graph::two_color::<EdgeID>(
                     &component.iter().copied().collect_vec(),
                     |e: EdgeID| sides_graph[&e].clone(),
@@ -946,17 +968,20 @@ impl Dual {
                         self.loop_structure.edges[edge_id].side = Some(Side::Lower);
                     }
                 } else {
+                    println!("No two-coloring found");
                     return false;
                 }
             }
         }
 
+        // Compute the primal (polycube)
+        println!("Computing primal...");
         let primal_res = self.primal([0, 0, 0]);
         if primal_res.is_none() {
             return false;
         }
 
-        println!("done ! ");
+        println!("Success !");
 
         return true;
     }

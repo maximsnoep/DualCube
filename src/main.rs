@@ -499,29 +499,25 @@ fn draw_gizmos(
         gizmos.line(u, v, c);
     }
 
-    // Draw all loops
-    // for (loop_id, l) in solution.dual.get_loops() {
-    //     let color = dir_to_color(l.direction);
-    //     for edge in &solution.dual.get_pairs_of_loop(loop_id) {
-    //         let u = mesh_resmut.mesh.midpoint(edge[0]);
-    //         let v = mesh_resmut.mesh.midpoint(edge[1]);
-    //         let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge[0]));
-    //         for line in DrawableLine::from_arrow(
-    //             u,
-    //             v,
-    //             n,
-    //             0.9,
-    //             mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge[0])) * 0.001,
-    //             configuration.translation,
-    //             configuration.scale,
-    //         ) {
-    //             gizmos.line(line.u, line.v, color);
-    //         }
-    //     }
-    // }
-
-    // Draw all loop segments
     if configuration.render_type != RenderType::Polycube {
+        // Draw all loops
+        for l in solution.dual.get_loops() {
+            for edge in &solution.dual.get_pairs_of_sequence(&l.edges) {
+                let u = mesh_resmut.mesh.midpoint(edge[0]);
+                let v = mesh_resmut.mesh.midpoint(edge[1]);
+                let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge[0]));
+                let line = DrawableLine::from_line(
+                    u,
+                    v,
+                    n * 0.01,
+                    configuration.translation,
+                    configuration.scale,
+                );
+                gizmos.line(line.u, line.v, l.direction.to_dual_color());
+            }
+        }
+
+        // Draw all loop segments
         let loopstruct = solution.dual.get_loop_structure();
         for segment in loopstruct.edge_ids() {
             let pairs_between = solution
