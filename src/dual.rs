@@ -1,15 +1,17 @@
 use crate::elements::{Loop, LoopSegment, PrincipalDirection, Side, Subsurface, Zone};
 use crate::EmbeddedMesh;
-use douconel::douconel::{Douconel, EdgeID, FaceID, VertID};
+use douconel::douconel::{Douconel, EdgeID, Empty, FaceID, VertID};
 use douconel::douconel_embedded::EmbeddedVertex;
 use hutspot::geom::Vector3D;
 use itertools::Itertools;
-use slotmap::SlotMap;
+use serde::{Deserialize, Serialize};
+use slotmap::{SecondaryMap, SlotMap};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+pub type Polycube = Douconel<EmbeddedVertex, Empty, VertID>;
+
 type LoopStructure = Douconel<Intersection, LoopSegment, Subsurface>;
-type Polycube = Douconel<EmbeddedVertex, (), VertID>;
 
 slotmap::new_key_type! {
     pub struct LoopID;
@@ -18,13 +20,24 @@ slotmap::new_key_type! {
 }
 
 // Dual structure is an "ABSTRACT PATH REPRESENTATION"
-#[derive(Clone, Debug, Default)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct Dual {
     mesh_ref: Arc<EmbeddedMesh>,
     loops: SlotMap<LoopID, Loop>,
-    occupied: HashMap<EdgeID, Vec<LoopID>>,
+    pub occupied: SecondaryMap<EdgeID, Vec<LoopID>>,
     loop_structure: LoopStructure,
+    pub properties: Properties,
     pub side_ccs: [Vec<HashSet<EdgeID>>; 3],
+}
+
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+pub struct Properties {
+    pub has_face_lower_degree: bool,
+    pub has_transversal_intersection: bool,
+    pub has_same_colored_intersection: bool,
+    pub has_no_two_coloring: bool,
+    pub has_incomplete_direction: bool,
+    pub has_malformed_face: bool,
 }
 
 #[derive(Debug)]
@@ -33,7 +46,7 @@ pub struct IntersectionMarker {
     loops: [LoopID; 2],
 }
 
-#[derive(Debug, Default, Copy, Clone)]
+#[derive(Debug, Default, Copy, Clone, Serialize, Deserialize)]
 pub struct Intersection {
     // An intersection is defined by the midpoint of two half-edges. At this point, two loops intersect. The intersection is defined by the lower half-edge.
     pub this: EdgeID,
@@ -48,12 +61,13 @@ impl Dual {
             mesh_ref,
             loops: SlotMap::with_key(),
             loop_structure: Douconel::default(),
-            occupied: HashMap::new(),
+            occupied: SecondaryMap::new(),
+            properties: Properties::default(),
             side_ccs: [vec![], vec![], vec![]],
         }
     }
 
-    pub fn get_loop_structure(&self) -> &LoopStructure {
+    pub const fn get_loop_structure(&self) -> &LoopStructure {
         &self.loop_structure
     }
 
@@ -68,58 +82,48 @@ impl Dual {
     pub fn get_pairs_of_sequence(&self, sequence: &[EdgeID]) -> Vec<[EdgeID; 2]> {
         sequence
             .windows(2)
-            .filter_map(|w| {
-                if self.mesh_ref.twin(w[0]) != w[1] {
-                    Some([w[0], w[1]])
-                } else {
-                    None
-                }
-            })
+            .filter_map(|w| if self.mesh_ref.twin(w[0]) == w[1] { None } else { Some([w[0], w[1]]) })
             .collect()
     }
 
     pub fn del_loop(&mut self, loop_id: LoopID) {
         for &e in &self.get_loop(loop_id).unwrap().edges.clone() {
-            self.occupied.entry(e).and_modify(|v| {
+            if let Some(v) = self.occupied.get_mut(e) {
                 v.retain(|&l| l != loop_id);
-            });
-            if let Some(r) = self.occupied.get(&e) {
-                if r.is_empty() {
-                    self.occupied.remove(&e);
+                if v.is_empty() {
+                    self.occupied.remove(e);
                 }
             }
         }
 
         self.loops.remove(loop_id);
-        self.build_loop_structure();
     }
 
-    pub fn add_loop(&mut self, l: Loop) -> Option<LoopID> {
+    pub fn add_loop(&mut self, l: Loop) -> LoopID {
         let loop_id = self.loops.insert(l);
 
         for e in self.get_loop(loop_id).unwrap().edges.clone() {
-            self.occupied.entry(e).or_insert(vec![]).push(loop_id);
+            if !self.occupied.contains_key(e) {
+                self.occupied.insert(e, vec![]);
+            }
+            self.occupied.get_mut(e).unwrap().push(loop_id);
         }
 
         for [e0, e1] in self.get_pairs_of_loop(loop_id) {
             if let Some(l) = self.is_occupied([e0, e1]) {
-                if l != loop_id {
-                    self.del_loop(loop_id);
-                    return None;
-                }
+                assert!(l == loop_id, "Loop: {loop_id:?} already occupied by {l:?} on edge {:?}", [e0, e1]);
             }
         }
 
-        if !self.build_loop_structure() {
-            self.del_loop(loop_id);
-            return None;
-        }
-
-        Some(loop_id)
+        loop_id
     }
 
     pub fn get_paths_in_edge(&self, edge: EdgeID) -> Option<Vec<LoopID>> {
-        self.occupied.get(&edge).cloned()
+        self.occupied.get(edge).cloned()
+    }
+
+    pub fn get_loop_ids(&self) -> Vec<LoopID> {
+        self.loops.keys().collect()
     }
 
     pub fn get_loops(&self) -> Vec<&Loop> {
@@ -127,27 +131,28 @@ impl Dual {
     }
 
     pub fn is_occupied(&self, [e1, e2]: [EdgeID; 2]) -> Option<LoopID> {
-        if let Some(l1) = self.occupied.get(&e1) {
-            if let Some(l2) = self.occupied.get(&e2) {
-                for &l in l1 {
-                    if l2.contains(&l) {
-                        if self.get_loop(l).unwrap().contains_pair((e1, e2))
-                            || self.get_loop(l).unwrap().contains_pair((e2, e1))
+        if let Some(loops_e1) = self.occupied.get(e1) {
+            if let Some(loops_e2) = self.occupied.get(e2) {
+                for &loop_e1 in loops_e1 {
+                    for &loop_e2 in loops_e2 {
+                        if loop_e1 == loop_e2
+                            && (self.get_loop(loop_e1).unwrap().contains_pair((e1, e2)) || self.get_loop(loop_e1).unwrap().contains_pair((e2, e1)))
                         {
-                            return Some(l);
+                            return Some(loop_e1);
                         }
                     }
                 }
             }
         }
-        return None;
+        None
+    }
+
+    pub fn loops_on_edge(&self, edge: EdgeID) -> Vec<LoopID> {
+        self.occupied.get(edge).cloned().unwrap_or_default()
     }
 
     pub fn count_loops_in_direction(&self, direction: PrincipalDirection) -> usize {
-        self.loops
-            .iter()
-            .filter(|(_, l)| l.direction == direction)
-            .count()
+        self.loops.iter().filter(|(_, l)| l.direction == direction).count()
     }
 
     pub fn loop_to_direction(&self, loop_id: LoopID) -> PrincipalDirection {
@@ -186,11 +191,7 @@ impl Dual {
         }
     }
 
-    pub fn filter_direction(
-        &self,
-        selection: &[EdgeID],
-        direction: PrincipalDirection,
-    ) -> Vec<EdgeID> {
+    pub fn filter_direction(&self, selection: &[EdgeID], direction: PrincipalDirection) -> Vec<EdgeID> {
         selection
             .iter()
             .filter(|&segment| self.segment_to_direction(*segment) == direction)
@@ -207,14 +208,9 @@ impl Dual {
         let mut zones: SlotMap<ZoneID, Zone> = SlotMap::with_key();
 
         // Do this for each direction
-
-        for direction in [
-            PrincipalDirection::X,
-            PrincipalDirection::Y,
-            PrincipalDirection::Z,
-        ] {
-            let blocked: HashSet<EdgeID> = self
-                .segments_of_direction(direction)
+        for this_direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
+            let edges_of_this_direction: HashSet<EdgeID> = self
+                .segments_of_direction(this_direction)
                 .into_iter()
                 .flat_map(|segment| self.segment_to_edges(segment))
                 .collect();
@@ -224,107 +220,80 @@ impl Dual {
                 self.mesh_ref.neighbor_function_primal()(vertex)
                     .into_iter()
                     .filter(|&neighbor| {
-                        let edge = self.mesh_ref.edge_between_verts(vertex, neighbor).unwrap();
-                        !blocked.contains(&edge.0) && !blocked.contains(&edge.1)
+                        let (edge1, edge2) = self.mesh_ref.edge_between_verts(vertex, neighbor).unwrap();
+                        !edges_of_this_direction.contains(&edge1) && !edges_of_this_direction.contains(&edge2)
                     })
                     .collect()
             };
 
-            // Find the connected components (should be 2!)
+            // Find the connected components (should more than 2(?)!)
             let ccs = hutspot::graph::find_ccs(&self.mesh_ref.vert_ids(), blocked_function);
+            if ccs.len() < 2 {
+                println!("Connected components less than 2 for direction {:?}", this_direction);
+                return None;
+            }
 
             for cc in ccs {
-                let zone = Zone {
-                    direction,
+                zones.insert(Zone {
+                    direction: this_direction,
                     subsurfaces: cc
                         .iter()
-                        .map(|&v| {
-                            self.loop_structure
-                                .faces
-                                .iter()
-                                .find(|(_, f)| f.verts.contains(&v))
-                                .unwrap()
-                                .0
-                        })
+                        .map(|&v| self.loop_structure.faces.iter().find(|(_, f)| f.verts.contains(&v)).unwrap().0)
                         .collect(),
-                    // coordinate: Some(
-                    //     hutspot::math::calculate_average_f64(
-                    //         cc.iter().map(|&v| self.mesh_ref.position(v)),
-                    //     )[direction as usize],
-                    // ),
                     coordinate: None,
-                };
-                zones.insert(zone);
+                });
             }
         }
 
+        let segment_to_zone_map = self
+            .loop_structure
+            .edge_ids()
+            .into_iter()
+            .map(|segment| {
+                let zone = zones
+                    .iter()
+                    .find(|(_, z)| z.subsurfaces.contains(&self.loop_structure.face(segment)) && z.direction == self.segment_to_direction(segment))
+                    .unwrap()
+                    .0;
+                (segment, zone)
+            })
+            .collect::<HashMap<_, _>>();
+
         // Create a directed graph on the zones
-        for direction in [
-            PrincipalDirection::X,
-            PrincipalDirection::Y,
-            PrincipalDirection::Z,
-        ] {
-            let zones_of_dir = zones
-                .iter()
-                .filter(|(_, z)| z.direction == direction)
-                .collect_vec();
+        for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
+            let zones_of_dir = zones.iter().filter(|(_, z)| z.direction == direction).collect_vec();
 
             let mut adjacency = HashMap::new();
             let mut adjacency_backwards = HashMap::new();
 
             for &(zone_id, zone) in &zones_of_dir {
-                // Get all Plus loop segments of the zone
-                let upper_segments = zone
-                    .subsurfaces
+                // Get all Upper loop segments of the zone in this direction
+                let adjacent_zones: HashSet<ZoneID> = segment_to_zone_map
                     .iter()
-                    .flat_map(|&face_id| self.loop_structure.edges(face_id))
-                    .filter(|&segment| {
-                        self.segment_to_side(segment, side_mask) == Side::Upper
-                            && self.segment_to_direction(segment) == direction
-                    });
-
-                let adjacent_segments = upper_segments
-                    .clone()
-                    .map(|segment| self.loop_structure.twin(segment))
-                    .collect_vec();
-
-                let adjacent_zones: HashSet<ZoneID> = adjacent_segments
-                    .into_iter()
-                    .map(|segment| {
-                        zones
-                            .iter()
-                            .find(|(_, z)| {
-                                z.subsurfaces.contains(&self.loop_structure.face(segment))
-                                    && z.direction == self.segment_to_direction(segment)
-                            })
-                            .unwrap()
-                            .0
+                    .filter(|&(&segment, &this_zone_id)| {
+                        this_zone_id == zone_id && self.segment_to_side(segment, side_mask) == Side::Upper && self.segment_to_direction(segment) == direction
+                    })
+                    // Map to the other zone (by following the twin segment)
+                    .map(|(&segment, _)| {
+                        let twin_segment = self.loop_structure.twin(segment);
+                        segment_to_zone_map.get(&twin_segment).cloned().unwrap()
                     })
                     .collect();
 
-                adjacency.insert(zone_id, adjacent_zones.clone());
-
                 for &adjacent_zone in &adjacent_zones {
-                    let entry = adjacency_backwards
-                        .entry(adjacent_zone)
-                        .or_insert_with(HashSet::new);
+                    let entry = adjacency_backwards.entry(adjacent_zone).or_insert_with(HashSet::new);
                     entry.insert(zone_id);
                 }
+
+                adjacency.insert(zone_id, adjacent_zones);
             }
 
-            let topological_sort = hutspot::graph::topological_sort::<ZoneID>(
-                &zones_of_dir.into_iter().map(|(id, _)| id).collect_vec(),
-                |z| {
-                    adjacency
-                        .get(&z)
-                        .cloned()
-                        .unwrap_or_default()
-                        .into_iter()
-                        .collect_vec()
-                },
-            );
+            let topological_sort = hutspot::graph::topological_sort::<ZoneID>(&zones_of_dir.into_iter().map(|(id, _)| id).collect_vec(), |z| {
+                adjacency.get(&z).cloned().unwrap_or_default().into_iter().collect_vec()
+            });
 
             if topological_sort.is_none() {
+                println!("Topological sort failed for direction {:?}", direction);
                 return None;
             }
 
@@ -340,25 +309,13 @@ impl Dual {
                 zones[zone_id].coordinate = if dependencies.is_empty() {
                     Some(0.0)
                 } else {
-                    Some(
-                        dependencies
-                            .iter()
-                            .max_by(|a, b| a.partial_cmp(b).unwrap())
-                            .unwrap()
-                            + 1.0,
-                    )
+                    Some(dependencies.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap() + 0.1)
                 };
             }
         }
 
         // Each face to an int
-        let face_to_int: HashMap<FaceID, usize> = self
-            .loop_structure
-            .faces
-            .keys()
-            .enumerate()
-            .map(|(i, f)| (f, i))
-            .collect();
+        let face_to_int: HashMap<FaceID, usize> = self.loop_structure.faces.keys().enumerate().map(|(i, f)| (f, i)).collect();
 
         // Create the dual (primal)
         // By creating the primal faces
@@ -382,12 +339,7 @@ impl Dual {
             .iter()
             .map(|(subsurface_id, _)| {
                 // Find the three zones that this subsurface is part of (X/Y/Z)
-                let this_zones = [
-                    PrincipalDirection::X,
-                    PrincipalDirection::Y,
-                    PrincipalDirection::Z,
-                ]
-                .map(|d| {
+                let this_zones = [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z].map(|d| {
                     zones
                         .iter()
                         .find(|(_, z)| z.subsurfaces.contains(&subsurface_id) && z.direction == d)
@@ -403,18 +355,20 @@ impl Dual {
             })
             .collect_vec();
 
-        let (mut primal, _, fmap) =
-            Polycube::from_embedded_faces(&primal_faces, &vertex_positions).unwrap();
+        let (mut primal, _, fmap) = Polycube::from_embedded_faces(&primal_faces, &vertex_positions).unwrap();
 
         for (face_id, face_obj) in &mut primal.faces {
-            *face_obj = self.loop_structure.verts.keys().collect_vec()
-                [fmap.get_by_right(&face_id).unwrap().to_owned()];
+            *face_obj = self.loop_structure.verts.keys().collect_vec()[fmap.get_by_right(&face_id).unwrap().to_owned()];
         }
 
         Some(primal)
     }
 
-    pub fn intersections(&self) -> Option<HashMap<EdgeID, Intersection>> {
+    // Assumes simple intersections:
+    //    1. No self-intersections
+    //    2. Exactly two loops intersect at each intersection (resulting in vertices of degree 4)
+    // Will panic if these assumptions are violated
+    pub fn intersections(&self) -> HashMap<EdgeID, Intersection> {
         // For each loop:
         //   We find all its intersections, by following the edges that the loop passes
         //   Therefore, the intersections are in the order of the loop traversal
@@ -430,10 +384,7 @@ impl Dual {
                     .map(|edge| (edge, self.get_paths_in_edge(edge).unwrap()))
                     .filter(|(_, set)| set.len() == 2)
                     .filter(|&(edge, _)| edge > self.mesh_ref.twin(edge))
-                    .map(|(edge, set)| IntersectionMarker {
-                        edge,
-                        loops: [set[0], set[1]],
-                    })
+                    .map(|(edge, set)| IntersectionMarker { edge, loops: [set[0], set[1]] })
                     .collect_vec();
                 (loop_id, path_intersections)
             })
@@ -462,54 +413,37 @@ impl Dual {
                     .filter_map(|(edge, next_edge)| {
                         assert!(edge != next_edge);
 
-                        if self.loops[intersection_marker.loops[0]].contains_pair((edge, next_edge))
-                        {
+                        if self.loops[intersection_marker.loops[0]].contains_pair((edge, next_edge)) {
                             Some((next_edge, intersection_marker.loops[0], 1))
-                        } else if self.loops[intersection_marker.loops[0]]
-                            .contains_pair((next_edge, edge))
-                        {
+                        } else if self.loops[intersection_marker.loops[0]].contains_pair((next_edge, edge)) {
                             Some((next_edge, intersection_marker.loops[0], -1))
-                        } else if self.loops[intersection_marker.loops[1]]
-                            .contains_pair((edge, next_edge))
-                        {
+                        } else if self.loops[intersection_marker.loops[1]].contains_pair((edge, next_edge)) {
                             Some((next_edge, intersection_marker.loops[1], 1))
-                        } else if self.loops[intersection_marker.loops[1]]
-                            .contains_pair((next_edge, edge))
-                        {
+                        } else if self.loops[intersection_marker.loops[1]].contains_pair((next_edge, edge)) {
                             Some((next_edge, intersection_marker.loops[1], -1))
                         } else {
                             None
                         }
                     })
                     .map(|(next_edge, follow_loop, direction)| {
-                        let follow_loop_intersections =
-                            loop_to_intersections.get(&follow_loop).unwrap();
+                        let follow_loop_intersections = loop_to_intersections.get(&follow_loop).unwrap();
 
                         // Find current intersection in `follow_loop`
-                        let this_intersection = follow_loop_intersections
-                            .iter()
-                            .position(|x| x.edge == this_edge)
-                            .unwrap();
+                        let this_intersection = follow_loop_intersections.iter().position(|x| x.edge == this_edge).unwrap();
 
                         // Find the next intersection in `follow_loop`
-                        let next_intersection = follow_loop_intersections[((this_intersection
-                            + follow_loop_intersections.len())
-                            as i32
-                            + direction)
-                            as usize
-                            % follow_loop_intersections.len()]
+                        let next_intersection = follow_loop_intersections
+                            [((this_intersection + follow_loop_intersections.len()) as i32 + direction) as usize % follow_loop_intersections.len()]
                         .edge;
 
                         (next_edge, follow_loop, next_intersection, direction)
                     })
                     .collect_vec();
 
-                assert!(nexts.len() == 4);
-
+                assert!(!(nexts.len() < 4), "Should simply be impossible {nexts:?} (len: {})", nexts.len());
+                assert!(!(nexts.len() > 4), "Assumes simple intersections: Intersection of degree > 4 detected.");
                 for next in &nexts {
-                    if next.0 == next.2 {
-                        return None;
-                    }
+                    assert!(next.0 != next.2, "Assumes simple intersections: Self-intersection detected.");
                 }
 
                 intersections.insert(
@@ -521,7 +455,8 @@ impl Dual {
                 );
             }
         }
-        Some(intersections)
+
+        intersections
     }
 
     pub fn loop_segments(&self, intersections: &HashMap<EdgeID, Intersection>) -> Vec<LoopSegment> {
@@ -535,9 +470,7 @@ impl Dual {
                 intersection
                     .next
                     .iter()
-                    .map(|(_, loop_id, next_id, direction)| {
-                        (*this_id, *next_id, *loop_id, *direction)
-                    })
+                    .map(|(_, loop_id, next_id, direction)| (*this_id, *next_id, *loop_id, *direction))
             })
             .map(|(this_id, next_id, loop_id, direction)| {
                 let this_intersection = intersections.get(&this_id).unwrap();
@@ -546,33 +479,25 @@ impl Dual {
                 let this_intersection_pointer_to_next = this_intersection
                     .next
                     .into_iter()
-                    .find(|&(_, next_loop_id, next_intersection_id, _)| {
-                        next_intersection_id == next_id && next_loop_id == loop_id
-                    })
+                    .find(|&(_, next_loop_id, next_intersection_id, _)| next_intersection_id == next_id && next_loop_id == loop_id)
                     .unwrap();
 
                 let next_intersection_pointer_to_this = next_intersection
                     .next
                     .into_iter()
-                    .find(|&(_, next_loop_id, next_intersection_id, _)| {
-                        next_intersection_id == this_id && next_loop_id == loop_id
-                    })
+                    .find(|&(_, next_loop_id, next_intersection_id, _)| next_intersection_id == this_id && next_loop_id == loop_id)
                     .unwrap();
 
                 assert!(this_intersection_pointer_to_next.1 == next_intersection_pointer_to_this.1);
 
                 let between = if direction == 1 {
-                    self.get_loop(loop_id).unwrap().between(
-                        this_intersection_pointer_to_next.0,
-                        next_intersection_pointer_to_this.0,
-                    )
+                    self.get_loop(loop_id)
+                        .unwrap()
+                        .between(this_intersection_pointer_to_next.0, next_intersection_pointer_to_this.0)
                 } else {
                     self.get_loop(loop_id)
                         .unwrap()
-                        .between(
-                            next_intersection_pointer_to_this.0,
-                            this_intersection_pointer_to_next.0,
-                        )
+                        .between(next_intersection_pointer_to_this.0, this_intersection_pointer_to_next.0)
                         .into_iter()
                         .rev()
                         .collect_vec()
@@ -589,22 +514,11 @@ impl Dual {
             .collect()
     }
 
-    fn next_intersection(
-        &self,
-        (this, next): (EdgeID, EdgeID),
-        intersections: &HashMap<EdgeID, Intersection>,
-    ) -> EdgeID {
+    fn next_intersection(&self, (this, next): (EdgeID, EdgeID), intersections: &HashMap<EdgeID, Intersection>) -> EdgeID {
         // Given two adjacent intersections (this, next), we find the third intersection in clockwise order.
 
         // Find the local edge that connects this and next
-        let edge_to_this = intersections
-            .get(&next)
-            .unwrap()
-            .next
-            .iter()
-            .find(|&&(_, _, x, _)| x == this)
-            .unwrap()
-            .0;
+        let edge_to_this = intersections.get(&next).unwrap().next.iter().find(|&&(_, _, x, _)| x == this).unwrap().0;
 
         // Find the local edge that connects next and third (the one with the smallest clockwise angle)
         intersections
@@ -628,10 +542,9 @@ impl Dual {
             .0
     }
 
-    pub fn loop_faces(
-        &self,
-        intersections: &HashMap<EdgeID, Intersection>,
-    ) -> Option<Vec<Vec<usize>>> {
+    // Assumes faces have less than 999 edges (to prevent infinite loops / malformed faces)
+    // Will panic if this assumption is violated
+    pub fn loop_faces(&self, intersections: &HashMap<EdgeID, Intersection>) -> Option<Vec<Vec<usize>>> {
         // Construct all faces
         let fn_to_id = |x: EdgeID| intersections.keys().position(|&y| y == x).unwrap();
 
@@ -655,8 +568,8 @@ impl Dual {
                 }
 
                 counter += 1;
-                if counter > 100 {
-                    // Malformed face
+                if counter > 999 {
+                    println!("Malformed face detected");
                     return None;
                 }
 
@@ -675,163 +588,142 @@ impl Dual {
         segments: &[LoopSegment],
     ) -> Option<LoopStructure> {
         // Create douconel based on these faces
-        if let Ok((mut loop_structure, vmap, _)) = LoopStructure::from_faces(faces) {
-            // Graph must be connected (exactly one connected component)
-            if !loop_structure.is_connected() {
-                return None;
-            }
+        let loop_structure_maybe = LoopStructure::from_faces(faces);
 
-            let intersection_ids = intersections.keys().copied().collect_vec();
-
-            for (vertex_id, vertex_obj) in &mut loop_structure.verts {
-                let intersection_id =
-                    intersection_ids[vmap.get_by_right(&vertex_id).unwrap().to_owned()];
-                *vertex_obj = intersections.get(&intersection_id).unwrap().to_owned();
-            }
-
-            let loop_structure_c = loop_structure.clone();
-
-            for (edge_id, edge_obj) in &mut loop_structure.edges {
-                let start = loop_structure.verts[loop_structure_c.root(edge_id)].this;
-                let end = loop_structure.verts[loop_structure_c.toor(edge_id)].this;
-                *edge_obj = segments
-                    .iter()
-                    .find(|e| e.start == start && e.end == end)
-                    .unwrap()
-                    .clone();
-            }
-
-            // Map from some verts to adjacent loops(segments)
-            let mut vert_to_loop_segments: HashMap<VertID, HashSet<_>> = HashMap::new();
-            for (ls_id, ls) in &loop_structure.edges {
-                // remove first and last element (intersection points)
-                let between = &ls.between[1..ls.between.len() - 1];
-
-                for &edge_id in between {
-                    let endpoints = self.mesh_ref.endpoints(edge_id);
-                    vert_to_loop_segments
-                        .entry(endpoints.0)
-                        .or_default()
-                        .insert(ls_id);
-
-                    vert_to_loop_segments
-                        .entry(endpoints.1)
-                        .or_default()
-                        .insert(ls_id);
-                }
-            }
-
-            let mut face_to_subsurface = HashMap::new();
-
-            for (face_id, _) in &loop_structure.faces {
-                let blocked: HashSet<EdgeID> = loop_structure
-                    .edges(face_id)
-                    .into_iter()
-                    .map(|edge_id| loop_structure.edges[edge_id].clone())
-                    .flat_map(|ls| [ls.between, vec![ls.start, ls.end]].concat())
-                    .collect();
-
-                // Our loopsegments:
-                let loop_segments: HashSet<_> = loop_structure
-                    .edges(face_id)
-                    .iter()
-                    .flat_map(|&e| [e, loop_structure.twin(e)])
-                    .collect();
-
-                // Make a neighborhood function that blocks all edges that are part of the loop segments of this face
-                let nfunction = |vertex: VertID| {
-                    self.mesh_ref.neighbor_function_primal()(vertex)
-                        .into_iter()
-                        .filter(|&neighbor| {
-                            let edge = self.mesh_ref.edge_between_verts(vertex, neighbor).unwrap();
-                            !blocked.contains(&edge.0) && !blocked.contains(&edge.1)
-                        })
-                        .collect()
-                };
-
-                // Find the connected components (should be 2!)
-                let ccs =
-                    hutspot::graph::find_ccs(&self.mesh_ref.verts.keys().collect_vec(), nfunction);
-
-                assert!(ccs.len() == 2);
-
-                let verify_0: HashSet<_> = ccs[0]
-                    .iter()
-                    .flat_map(|&v| vert_to_loop_segments.get(&v).cloned().unwrap_or_default())
-                    .collect();
-
-                let verify_1: HashSet<_> = ccs[1]
-                    .iter()
-                    .flat_map(|&v| vert_to_loop_segments.get(&v).cloned().unwrap_or_default())
-                    .collect();
-
-                assert!(verify_0.is_subset(&loop_segments) ^ verify_1.is_subset(&loop_segments));
-
-                if verify_0.is_subset(&loop_segments) {
-                    let subsurface = Subsurface {
-                        verts: ccs[0].iter().copied().collect(),
-                        color: hutspot::color::hsl_to_rgb(rand::random::<f32>() * 360., 0.5, 0.5)
-                            .into(),
-                    };
-                    face_to_subsurface.insert(face_id, subsurface);
-                } else {
-                    let subsurface = Subsurface {
-                        verts: ccs[1].iter().copied().collect(),
-                        color: hutspot::color::hsl_to_rgb(rand::random::<f32>() * 360., 0.5, 0.5)
-                            .into(),
-                    };
-                    face_to_subsurface.insert(face_id, subsurface);
-                }
-            }
-
-            for (face_id, subsurface) in face_to_subsurface {
-                loop_structure.faces[face_id] = subsurface;
-            }
-
-            return Some(loop_structure);
+        if loop_structure_maybe.is_err() {
+            return None;
         }
 
-        None
+        let (mut loop_structure, vmap, _) = LoopStructure::from_faces(faces).unwrap();
+
+        let intersection_ids = intersections.keys().copied().collect_vec();
+        for (vertex_id, vertex_obj) in &mut loop_structure.verts {
+            let intersection_id = intersection_ids[vmap.get_by_right(&vertex_id).unwrap().to_owned()];
+            intersections.get(&intersection_id).unwrap().clone_into(vertex_obj);
+        }
+
+        let loop_structure_c = loop_structure.clone();
+        for (edge_id, edge_obj) in &mut loop_structure.edges {
+            let start = loop_structure.verts[loop_structure_c.root(edge_id)].this;
+            let end = loop_structure.verts[loop_structure_c.toor(edge_id)].this;
+            *edge_obj = segments.iter().find(|e| e.start == start && e.end == end).unwrap().clone();
+        }
+
+        // Map from some verts to adjacent loops(segments)
+        let mut vert_to_loop_segments: HashMap<VertID, HashSet<_>> = HashMap::new();
+        for (ls_id, ls) in &loop_structure.edges {
+            // remove first and last element (intersection points)
+            let between = &ls.between[1..ls.between.len() - 1];
+
+            for &edge_id in between {
+                let endpoints = self.mesh_ref.endpoints(edge_id);
+                vert_to_loop_segments.entry(endpoints.0).or_default().insert(ls_id);
+
+                vert_to_loop_segments.entry(endpoints.1).or_default().insert(ls_id);
+            }
+        }
+
+        let mut face_to_subsurface = HashMap::new();
+
+        for (face_id, _) in &loop_structure.faces {
+            let blocked: HashSet<EdgeID> = loop_structure
+                .edges(face_id)
+                .into_iter()
+                .map(|edge_id| loop_structure.edges[edge_id].clone())
+                .flat_map(|ls| [ls.between, vec![ls.start, ls.end]].concat())
+                .collect();
+
+            // Our loopsegments:
+            let loop_segments: HashSet<_> = loop_structure.edges(face_id).iter().flat_map(|&e| [e, loop_structure.twin(e)]).collect();
+
+            // Make a neighborhood function that blocks all edges that are part of the loop segments of this face
+            let nfunction = |vertex: VertID| {
+                self.mesh_ref.neighbor_function_primal()(vertex)
+                    .into_iter()
+                    .filter(|&neighbor| {
+                        let edge = self.mesh_ref.edge_between_verts(vertex, neighbor).unwrap();
+                        !blocked.contains(&edge.0) && !blocked.contains(&edge.1)
+                    })
+                    .collect()
+            };
+
+            // Find the connected components (should be 2!)
+            let ccs = hutspot::graph::find_ccs(&self.mesh_ref.verts.keys().collect_vec(), nfunction);
+
+            assert!(ccs.len() == 2);
+
+            let verify_0: HashSet<_> = ccs[0]
+                .iter()
+                .flat_map(|&v| vert_to_loop_segments.get(&v).cloned().unwrap_or_default())
+                .collect();
+
+            let verify_1: HashSet<_> = ccs[1]
+                .iter()
+                .flat_map(|&v| vert_to_loop_segments.get(&v).cloned().unwrap_or_default())
+                .collect();
+
+            assert!(verify_0.is_subset(&loop_segments) ^ verify_1.is_subset(&loop_segments));
+
+            if verify_0.is_subset(&loop_segments) {
+                let subsurface = Subsurface {
+                    verts: ccs[0].iter().copied().collect(),
+                    color: hutspot::color::hsl_to_rgb(rand::random::<f32>() * 360., 0.5, 0.5).into(),
+                };
+                face_to_subsurface.insert(face_id, subsurface);
+            } else {
+                let subsurface = Subsurface {
+                    verts: ccs[1].iter().copied().collect(),
+                    color: hutspot::color::hsl_to_rgb(rand::random::<f32>() * 360., 0.5, 0.5).into(),
+                };
+                face_to_subsurface.insert(face_id, subsurface);
+            }
+        }
+
+        for (face_id, subsurface) in face_to_subsurface {
+            loop_structure.faces[face_id] = subsurface;
+        }
+
+        Some(loop_structure)
     }
 
-    pub fn build_loop_structure(&mut self) -> bool {
+    pub fn build_loop_structure(&mut self) -> Option<Polycube> {
         // Create the following "map"
         // List of all intersections
         // At each intersection, list all path segments that intersect there
         // We define both: the "next" intersection, and the local "next" edge
         // Using this information, we should be able to create an embedded graph (HEDS)
 
-        self.loop_structure = LoopStructure::default();
+        self.properties = Properties::default();
 
         if self.count_loops_in_direction(PrincipalDirection::X) == 0
             || self.count_loops_in_direction(PrincipalDirection::Y) == 0
             || self.count_loops_in_direction(PrincipalDirection::Z) == 0
         {
-            return true;
+            self.properties.has_incomplete_direction = true;
+            return None;
         }
 
-        // Intersections
+        self.loop_structure = LoopStructure::default();
+
         println!("Computing intersections...");
-        let intersections_result = self.intersections();
-        if intersections_result.is_none() {
-            return false;
-        }
-        let intersections = intersections_result.unwrap();
+        let intersections = self.intersections();
 
-        // Construct all faces
         println!("Constructing faces...");
-        let faces_result = self.loop_faces(&intersections);
-        if faces_result.is_none() {
-            return false;
+        let faces_maybe = self.loop_faces(&intersections);
+        if faces_maybe.is_none() {
+            self.properties.has_malformed_face = true;
+            return None;
         }
-        let faces = faces_result.unwrap();
+        let faces = faces_maybe.unwrap();
 
+        println!("Constructing loop structure...");
         let loop_segments = self.loop_segments(&intersections);
-        let loop_structure_res = self.assign_loop_structure(&faces, &intersections, &loop_segments);
-        if loop_structure_res.is_none() {
-            return false;
+        let loop_structure_maybe = self.assign_loop_structure(&faces, &intersections, &loop_segments);
+        if loop_structure_maybe.is_none() {
+            self.properties.has_malformed_face = true;
+            return None;
         }
-        self.loop_structure = loop_structure_res.unwrap();
+        self.loop_structure = loop_structure_maybe.unwrap();
 
         // Characterization
         println!("Basic properties...");
@@ -840,27 +732,25 @@ impl Dual {
 
             // Must be at least degree 3
             if edges.len() < 3 {
-                return false;
+                println!("Face {face_id} has less than 3 edges");
+                self.properties.has_face_lower_degree = true;
             }
 
             // Transversal intersection not allowed
             for (this, next) in hutspot::math::wrap_pairs(&edges) {
                 if self.segment_to_loop(this) == self.segment_to_loop(next) {
-                    return false;
+                    println!("Face {face_id} has a transversal intersection");
+                    self.properties.has_transversal_intersection = true;
                 }
             }
 
             // An intersection with its own direction is not allowed
             for (this, next) in hutspot::math::wrap_pairs(&edges) {
                 if self.segment_to_direction(this) == self.segment_to_direction(next) {
-                    return false;
+                    println!("Face {face_id} has an intersection with its own direction");
+                    self.properties.has_same_colored_intersection = true;
                 }
             }
-        }
-
-        if self.loops.len() < 10 {
-            self.loop_structure = LoopStructure::default();
-            return true;
         }
 
         // First we assign to each loop segment a direction
@@ -872,11 +762,7 @@ impl Dual {
         // If the loop segments share a face (are adjacent), we add an edge between the two vertices
         // Also add edge for: twin, loop segments of other side of this loop
         println!("Assigning sides...");
-        for direction in [
-            PrincipalDirection::X,
-            PrincipalDirection::Y,
-            PrincipalDirection::Z,
-        ] {
+        for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
             let mut sides_graph = HashMap::new();
 
             for segment in self.segments_of_direction(direction) {
@@ -893,29 +779,17 @@ impl Dual {
                         .iter()
                         .flat_map(|&x| {
                             vec![
-                                (
-                                    x,
-                                    self.loops[self.loop_structure.edges[x].loop_id].direction,
-                                ),
+                                (x, self.loops[self.loop_structure.edges[x].loop_id].direction),
                                 (
                                     self.loop_structure.twin(x),
-                                    self.loops[self.loop_structure.edges
-                                        [self.loop_structure.twin(x)]
-                                    .loop_id]
-                                        .direction,
+                                    self.loops[self.loop_structure.edges[self.loop_structure.twin(x)].loop_id].direction,
                                 ),
                             ]
                         })
                         .collect_vec();
                     let cur_pos = cand.iter().position(|&(x, _)| x == id).unwrap();
 
-                    cand.iter()
-                        .cycle()
-                        .skip(cur_pos + 1)
-                        .find(|&&(x, dir)| dir == direction)
-                        .unwrap()
-                        .to_owned()
-                        .0
+                    cand.iter().cycle().skip(cur_pos + 1).find(|&&(x, dir)| dir == direction).unwrap().to_owned().0
                 };
 
                 let mut this_side = vec![segment];
@@ -925,10 +799,7 @@ impl Dual {
                     next_seg = next_of_same_color(next_seg);
                 }
 
-                let other_side = this_side
-                    .iter()
-                    .map(|&x| self.loop_structure.twin(x))
-                    .collect_vec();
+                let other_side = this_side.iter().map(|&x| self.loop_structure.twin(x)).collect_vec();
 
                 let neighbors = [neighbors_of_direction, other_side].concat();
 
@@ -941,25 +812,16 @@ impl Dual {
                 }
             }
 
-            self.side_ccs[direction as usize] = hutspot::graph::find_ccs(
-                &sides_graph.keys().copied().collect_vec(),
-                |e: EdgeID| sides_graph[&e].clone(),
-            );
+            self.side_ccs[direction as usize] = hutspot::graph::find_ccs(&sides_graph.keys().copied().collect_vec(), |e: EdgeID| sides_graph[&e].clone());
 
-            println!(
-                "DIR: {}: {:?}",
-                direction, self.side_ccs[direction as usize]
-            );
+            println!("DIR: {}: {:?}", direction, self.side_ccs[direction as usize]);
 
             for component in &self.side_ccs[direction as usize] {
                 // Find a labeling that is consistent and acyclic
                 // We do this by finding a twocoloring of the bipartite graph
                 println!("cc: {}: {:?}", direction, component);
 
-                if let Some(two_coloring) = hutspot::graph::two_color::<EdgeID>(
-                    &component.iter().copied().collect_vec(),
-                    |e: EdgeID| sides_graph[&e].clone(),
-                ) {
+                if let Some(two_coloring) = hutspot::graph::two_color::<EdgeID>(&component.iter().copied().collect_vec(), |e: EdgeID| sides_graph[&e].clone()) {
                     for edge_id in two_coloring.0 {
                         self.loop_structure.edges[edge_id].side = Some(Side::Upper);
                     }
@@ -969,20 +831,13 @@ impl Dual {
                     }
                 } else {
                     println!("No two-coloring found");
-                    return false;
+                    self.properties.has_no_two_coloring = true;
                 }
             }
         }
 
-        // Compute the primal (polycube)
+        // UNKNOWN HIGHER GENUS REQUIREMENTS HERE>>>
         println!("Computing primal...");
-        let primal_res = self.primal([0, 0, 0]);
-        if primal_res.is_none() {
-            return false;
-        }
-
-        println!("Success !");
-
-        return true;
+        self.primal([0, 0, 0])
     }
 }

@@ -63,6 +63,35 @@ impl From<PrincipalDirection> for Vector3D {
     }
 }
 
+pub fn to_principal_direction(v: Vector3D) -> (PrincipalDirection, Side) {
+    let x_is_max = v.x.abs() > v.y.abs() && v.x.abs() > v.z.abs();
+    let y_is_max = v.y.abs() > v.x.abs() && v.y.abs() > v.z.abs();
+    let z_is_max = v.z.abs() > v.x.abs() && v.z.abs() > v.y.abs();
+    assert!(x_is_max ^ y_is_max ^ z_is_max);
+
+    if x_is_max {
+        if v.x > 0. {
+            (PrincipalDirection::X, Side::Upper)
+        } else {
+            (PrincipalDirection::X, Side::Lower)
+        }
+    } else if y_is_max {
+        if v.y > 0. {
+            (PrincipalDirection::Y, Side::Upper)
+        } else {
+            (PrincipalDirection::Y, Side::Lower)
+        }
+    } else if z_is_max {
+        if v.z > 0. {
+            (PrincipalDirection::Z, Side::Upper)
+        } else {
+            (PrincipalDirection::Z, Side::Lower)
+        }
+    } else {
+        unreachable!()
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Loop {
     // A loop is defined by a sequence of half-edges.
@@ -73,9 +102,7 @@ pub struct Loop {
 
 impl Loop {
     pub fn contains_pair(&self, needle: (EdgeID, EdgeID)) -> bool {
-        hutspot::math::wrap_pairs(&self.edges)
-            .into_iter()
-            .any(|(a, b)| a == needle.0 && b == needle.1)
+        hutspot::math::wrap_pairs(&self.edges).into_iter().any(|(a, b)| a == needle.0 && b == needle.1)
     }
 
     fn find_edge(&self, needle: EdgeID) -> usize {

@@ -1,22 +1,19 @@
-use crate::{elements::PrincipalDirection, ActionEvent, Configuration, RenderType};
+use crate::{elements::PrincipalDirection, ActionEvent, Configuration, DrawLoopType, RenderType, SolutionResource};
 use bevy::prelude::*;
-use bevy_egui::egui::{emath::Numeric, Slider, TopBottomPanel, Ui};
+use bevy_egui::egui::{emath::Numeric, Color32, RichText, Slider, TopBottomPanel, Ui};
 
 pub fn ui(
     mut egui_ctx: bevy_egui::EguiContexts,
     mut ev_w: EventWriter<ActionEvent>,
     mut conf: ResMut<Configuration>,
     mut mesh_resmut: ResMut<crate::MeshResource>,
-    solution: Res<crate::SolutionResource>,
+    mut solution: ResMut<SolutionResource>,
 ) {
     TopBottomPanel::top("panel").show(egui_ctx.ctx_mut(), |ui| {
         sep(ui);
         ui.horizontal(|ui| {
-            if ui.button("Load file (supported: .stl)").clicked() {
-                if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("triangulated geometry", &["stl", "poc", "obj"])
-                    .pick_file()
-                {
+            if ui.button("Load file").clicked() {
+                if let Some(path) = rfd::FileDialog::new().add_filter("triangulated geometry", &["obj", "stl", "save"]).pick_file() {
                     ev_w.send(ActionEvent::LoadFile(path));
                 }
             }
@@ -50,11 +47,13 @@ pub fn ui(
             ui.add_space(15.);
 
             ui.vertical(|ui| {
-                for direction in [
-                    PrincipalDirection::X,
-                    PrincipalDirection::Y,
-                    PrincipalDirection::Z,
-                ] {
+                for draw_loop_type in [DrawLoopType::None, DrawLoopType::Directed, DrawLoopType::Undirected] {
+                    radio(ui, &mut conf.draw_loop_type, draw_loop_type);
+                }
+            });
+
+            ui.vertical(|ui| {
+                for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
                     radio(ui, &mut conf.direction, direction);
                 }
             });
@@ -65,6 +64,40 @@ pub fn ui(
                 for render_type in [RenderType::Original, RenderType::Polycube] {
                     if radio(ui, &mut conf.render_type, render_type) {
                         mesh_resmut.as_mut();
+                    }
+                }
+            });
+
+            ui.vertical(|ui| {
+                ui.label(format!("Selected: {:?}", conf.cur_selected));
+
+                if let Some(selected) = conf.cur_selected {
+                    if let Some(Some((sol, _))) = solution.next.get(&selected) {
+                        ui.label("Properties");
+
+                        if sol.properties.has_incomplete_direction {
+                            warning(ui, "Has incomplete direction");
+                        }
+
+                        if sol.properties.has_face_lower_degree {
+                            warning(ui, "Has face lower degree");
+                        }
+
+                        if sol.properties.has_transversal_intersection {
+                            warning(ui, "Has transversal intersection");
+                        }
+
+                        if sol.properties.has_same_colored_intersection {
+                            warning(ui, "Has same colored intersection");
+                        }
+
+                        if sol.properties.has_no_two_coloring {
+                            warning(ui, "Has no two coloring");
+                        }
+
+                        if sol.properties.has_malformed_face {
+                            warning(ui, "Has malformed face");
+                        }
                     }
                 }
             });
@@ -81,10 +114,15 @@ pub fn ui(
                         0,
                         2_u32.pow(solution.dual.side_ccs[i].len() as u32) - 1,
                     ) {
+                        solution.primal = solution.dual.primal(conf.sides_mask);
                         mesh_resmut.as_mut();
                     }
                 }
             });
+
+            if ui.button("Export").clicked() {
+                ev_w.send(ActionEvent::ExportState);
+            };
         });
         sep(ui);
     });
@@ -133,4 +171,8 @@ fn radio<T: PartialEq<T> + std::fmt::Display>(ui: &mut Ui, item: &mut T, value: 
     } else {
         false
     }
+}
+
+fn warning(ui: &mut Ui, text: &str) {
+    ui.label(RichText::new(text).color(Color32::RED));
 }
