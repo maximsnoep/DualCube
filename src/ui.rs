@@ -44,6 +44,11 @@ pub fn ui(
                 ui.checkbox(&mut conf.draw_normals, "normals");
             });
 
+            ui.vertical(|ui| {
+                slider(ui, "alpha", &mut conf.alpha, 1..=20);
+                slider(ui, "beta", &mut conf.beta, 1..=20);
+            });
+
             ui.add_space(15.);
 
             ui.vertical(|ui| {
@@ -71,32 +76,20 @@ pub fn ui(
             ui.vertical(|ui| {
                 ui.label(format!("Selected: {:?}", conf.cur_selected));
 
-                if let Some(selected) = conf.cur_selected {
-                    if let Some(Some((sol, _))) = solution.next.get(&selected) {
-                        ui.label("Properties");
+                ui.label("Current solution:");
+                if let Err(err) = &solution.primal {
+                    warning(ui, &format!("ERROR: {err:?}"));
+                } else {
+                    okido(ui, "OK");
+                }
 
-                        if sol.properties.has_incomplete_direction {
-                            warning(ui, "Has incomplete direction");
-                        }
-
-                        if sol.properties.has_face_lower_degree {
-                            warning(ui, "Has face lower degree");
-                        }
-
-                        if sol.properties.has_transversal_intersection {
-                            warning(ui, "Has transversal intersection");
-                        }
-
-                        if sol.properties.has_same_colored_intersection {
-                            warning(ui, "Has same colored intersection");
-                        }
-
-                        if sol.properties.has_no_two_coloring {
-                            warning(ui, "Has no two coloring");
-                        }
-
-                        if sol.properties.has_malformed_face {
-                            warning(ui, "Has malformed face");
+                if let Some(selected_edge) = conf.cur_selected {
+                    if let Some(sol) = solution.next.get(&selected_edge) {
+                        ui.label("Selected candidate solution:");
+                        if let Some((_, Err(err))) = sol {
+                            warning(ui, &format!("ERROR: {err:?}"));
+                        } else {
+                            okido(ui, "OK");
                         }
                     }
                 }
@@ -175,4 +168,8 @@ fn radio<T: PartialEq<T> + std::fmt::Display>(ui: &mut Ui, item: &mut T, value: 
 
 fn warning(ui: &mut Ui, text: &str) {
     ui.label(RichText::new(text).color(Color32::RED));
+}
+
+fn okido(ui: &mut Ui, text: &str) {
+    ui.label(RichText::new(text).color(Color32::GREEN));
 }

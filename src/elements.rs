@@ -33,6 +33,17 @@ impl PrincipalDirection {
         }
     }
 
+    pub fn to_primal_color_sided(self, s: Side) -> Color {
+        match (self, s) {
+            (Self::X, Side::Upper) => hutspot::color::ROODT.into(),
+            (Self::X, Side::Lower) => hutspot::color::ROODT_L.into(),
+            (Self::Y, Side::Upper) => hutspot::color::BLAUW.into(),
+            (Self::Y, Side::Lower) => hutspot::color::BLAUW_L.into(),
+            (Self::Z, Side::Upper) => hutspot::color::YELLO.into(),
+            (Self::Z, Side::Lower) => hutspot::color::YELLO_L.into(),
+        }
+    }
+
     pub fn to_dual_color(self) -> Color {
         match self {
             Self::X => hutspot::color::GREEN.into(),

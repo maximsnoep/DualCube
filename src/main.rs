@@ -1,5 +1,3 @@
-#![warn(clippy::all, clippy::pedantic, clippy::nursery, clippy::cargo)]
-#![allow(clippy::missing_panics_doc, clippy::missing_errors_doc)]
 mod draw;
 mod dual;
 mod elements;
@@ -14,8 +12,9 @@ use bevy_egui::EguiPlugin;
 use bevy_mod_raycast::prelude::*;
 use douconel::douconel::{Douconel, EdgeID, Empty, FaceID, VertID};
 use douconel::douconel_embedded::EmbeddedVertex;
-use dual::{Dual, Polycube};
+use dual::{Dual, Polycube, PropertyViolationError};
 use elements::{to_principal_direction, Loop, Side};
+use hutspot::color::ROODT;
 use hutspot::draw::DrawableLine;
 use hutspot::geom::Vector3D;
 use itertools::Itertools;
@@ -107,6 +106,9 @@ pub struct Configuration {
 
     pub direction: PrincipalDirection,
 
+    pub alpha: i32,
+    pub beta: i32,
+
     pub sides_mask: [u32; 3],
 
     pub black: bool,
@@ -193,11 +195,21 @@ pub struct MeshResource {
     vertex_lookup: TreeD,
 }
 
-#[derive(Default, Debug, Clone, Resource, Serialize, Deserialize)]
+#[derive(Debug, Clone, Resource, Serialize, Deserialize)]
 pub struct SolutionResource {
     dual: Dual,
-    primal: Option<Polycube>,
-    next: HashMap<(FaceID, VertID), Option<(Dual, Option<Polycube>)>>,
+    primal: Result<Polycube, PropertyViolationError>,
+    next: HashMap<(FaceID, VertID), Option<(Dual, Result<Polycube, PropertyViolationError>)>>,
+}
+
+impl Default for SolutionResource {
+    fn default() -> Self {
+        Self {
+            dual: Dual::default(),
+            primal: Err(PropertyViolationError::UnknownError),
+            next: HashMap::new(),
+        }
+    }
 }
 
 fn main() {
@@ -394,48 +406,67 @@ fn update_mesh(
         return;
     }
 
-    let mesh = match configuration.render_type {
+    match configuration.render_type {
         RenderType::Original => {
             let color_map = HashMap::new();
-            mesh_resmut.mesh.bevy(&color_map)
+            let mesh = mesh_resmut.mesh.bevy(&color_map);
+
+            // Spawn new mesh
+            commands.spawn((
+                MaterialMeshBundle {
+                    mesh: meshes.add(mesh),
+                    transform: Transform {
+                        translation: Vec3::new(
+                            configuration.translation.x as f32,
+                            configuration.translation.y as f32,
+                            configuration.translation.z as f32,
+                        ),
+                        rotation: Quat::from_rotation_z(0f32),
+                        scale: Vec3::splat(configuration.scale),
+                    },
+                    material: materials.add(StandardMaterial {
+                        perceptual_roughness: 0.9,
+                        ..default()
+                    }),
+                    ..default()
+                },
+                RenderedMesh,
+            ));
         }
         RenderType::Polycube => {
             let mut color_map = HashMap::new();
-            if let Some(polycube) = &solution.primal {
+            if let Ok(polycube) = &solution.primal {
                 for &face_id in &polycube.face_ids() {
                     let normal = (polycube.normal(face_id) as Vector3D).normalize();
                     let (dir, side) = to_principal_direction(normal);
-                    let color = dir.to_dual_color_sided(side);
+                    let color = dir.to_primal_color();
                     color_map.insert(face_id, [color.r(), color.g(), color.b()]);
                 }
-                polycube.bevy(&color_map)
-            } else {
-                mesh_resmut.mesh.bevy(&color_map)
+                let mesh = polycube.bevy(&color_map);
+                let aabb = mesh.compute_aabb().unwrap();
+                let scale = 10. * (1. / aabb.half_extents.max_element());
+                let translation = -configuration.scale * aabb.center;
+
+                // Spawn new mesh
+                commands.spawn((
+                    MaterialMeshBundle {
+                        mesh: meshes.add(mesh),
+                        transform: Transform {
+                            translation: Vec3::new(translation.x as f32, translation.y as f32, translation.z as f32),
+                            rotation: Quat::from_rotation_z(0f32),
+                            scale: Vec3::splat(scale),
+                        },
+                        material: materials.add(StandardMaterial {
+                            perceptual_roughness: 0.9,
+                            ..default()
+                        }),
+                        ..default()
+                    },
+                    RenderedMesh,
+                ));
             }
         }
     };
-
-    // Spawn new mesh
-    commands.spawn((
-        MaterialMeshBundle {
-            mesh: meshes.add(mesh),
-            transform: Transform {
-                translation: Vec3::new(
-                    configuration.translation.x as f32,
-                    configuration.translation.y as f32,
-                    configuration.translation.z as f32,
-                ),
-                rotation: Quat::from_rotation_z(0f32),
-                scale: Vec3::splat(configuration.scale),
-            },
-            material: materials.add(StandardMaterial {
-                perceptual_roughness: 0.9,
-                ..default()
-            }),
-            ..default()
-        },
-        RenderedMesh,
-    ));
 }
 
 fn draw_gizmos(
@@ -496,6 +527,31 @@ fn draw_gizmos(
                     gizmos.line(line.u, line.v, l.direction.to_dual_color());
                 }
             }
+
+            if let Ok(primal) = &solution.primal {
+                for v in primal.vert_ids() {
+                    let vertex = primal.verts[v].pointer_primal_vertex;
+
+                    // draw vertex
+                    let u = mesh_resmut.mesh.position(vertex);
+                    let n = mesh_resmut.mesh.vert_normal(vertex);
+                    let line = DrawableLine::from_vertex(u, n, 0.05, configuration.translation, configuration.scale);
+                    gizmos.line(line.u, line.v, ROODT.into());
+                }
+
+                for e in primal.edge_ids() {
+                    let path = &primal.edges[e];
+                    for vertexpair in path.windows(2) {
+                        let u = mesh_resmut.mesh.position(vertexpair[0]);
+                        let v = mesh_resmut.mesh.position(vertexpair[1]);
+                        let edge = mesh_resmut.mesh.edge_between_verts(vertexpair[0], vertexpair[1]).unwrap().0;
+                        let n = mesh_resmut.mesh.edge_normal(edge);
+                        // draw the line
+                        let line = DrawableLine::from_line(u, v, n * 0.01, configuration.translation, configuration.scale);
+                        gizmos.line(line.u, line.v, ROODT.into());
+                    }
+                }
+            }
         }
         (DrawLoopType::Directed, RenderType::Original) => {
             // Draw all loop segments
@@ -532,36 +588,30 @@ fn draw_gizmos(
         }
         (DrawLoopType::Undirected, RenderType::Polycube) => {
             // Draw all loop segments / faces axis aligned.
-            if let Some(primal) = &solution.primal {
+
+            if let Ok(primal) = &solution.primal {
                 for (face_id, original_id) in &primal.faces {
                     let this_centroid = primal.centroid(face_id);
-
                     let normal = (primal.normal(face_id) as Vector3D).normalize();
                     let orientation = to_principal_direction(normal).0;
-
                     for &neighbor_id in &primal.fneighbors(face_id) {
                         let next_original_id = &primal.faces[neighbor_id];
-
                         let edge_between = primal.edge_between_faces(face_id, neighbor_id).unwrap().0;
                         let root = primal.root(edge_between);
                         let root_pos = primal.position(root);
-
                         let segment = solution
                             .dual
                             .get_loop_structure()
                             .edge_between_verts(*original_id, *next_original_id)
                             .unwrap()
                             .0;
-
                         let direction = solution.dual.segment_to_direction(segment);
-
                         let segment_direction = match (orientation, direction) {
                             (PrincipalDirection::X, PrincipalDirection::Y) | (PrincipalDirection::Y, PrincipalDirection::X) => PrincipalDirection::Z,
                             (PrincipalDirection::X, PrincipalDirection::Z) | (PrincipalDirection::Z, PrincipalDirection::X) => PrincipalDirection::Y,
                             (PrincipalDirection::Y, PrincipalDirection::Z) | (PrincipalDirection::Z, PrincipalDirection::Y) => PrincipalDirection::X,
                             _ => unreachable!(),
                         };
-
                         let mut direction_vector = this_centroid;
                         direction_vector[segment_direction as usize] = root_pos[segment_direction as usize];
 
@@ -580,7 +630,7 @@ fn draw_gizmos(
         }
         (DrawLoopType::Directed, RenderType::Polycube) => {
             // Draw all loop segments / faces axis aligned.
-            if let Some(primal) = &solution.primal {
+            if let Ok(primal) = &solution.primal {
                 for (face_id, original_id) in &primal.faces {
                     let this_centroid = primal.centroid(face_id);
 
@@ -740,10 +790,7 @@ fn raycast(
         return;
     }
 
-    if let Some(Some((sol, poly))) = solution.next.get(&(face_id, vert_id)) {
-        let sol_copy = sol.clone();
-        let poly_copy = poly.clone();
-
+    if let Some(Some((sol, poly))) = solution.next.get(&(face_id, vert_id)).cloned() {
         for &loop_id in &sol.get_loop_ids() {
             for &edge in &sol.get_pairs_of_loop(loop_id) {
                 let u = mesh_resmut.mesh.midpoint(edge[0]);
@@ -766,11 +813,14 @@ fn raycast(
         if mouse.just_pressed(MouseButton::Right) || mouse.just_released(MouseButton::Right) {
             mouse.clear_just_pressed(MouseButton::Right);
             mouse.clear_just_released(MouseButton::Right);
-            solution.primal = poly_copy;
-            solution.dual = sol_copy;
+
+            solution.dual = sol;
+            solution.primal = poly;
 
             solution.next.clear();
-            cache.cache[configuration.direction as usize].clear();
+            cache.cache[0].clear();
+            cache.cache[1].clear();
+            cache.cache[2].clear();
         }
 
         return;
@@ -816,7 +866,9 @@ fn raycast(
     };
 
     // The weight function
-    let wfunction = mesh_resmut.mesh.weight_function_angle_edgepairs_aligned(5, 5, configuration.direction.into());
+    let wfunction = mesh_resmut
+        .mesh
+        .weight_function_angle_edgepairs_aligned(configuration.alpha, configuration.beta, configuration.direction.into());
 
     let cache_ref = &mut cache.cache[configuration.direction as usize];
     let [e1, e2] = mesh_resmut.mesh.edges_in_face_with_vert(face_id, vert_id).unwrap();
@@ -845,11 +897,21 @@ fn raycast(
         return;
     }
 
-    println!("Path found: {:?}", total_path);
+    println!("path: {:?}", total_path);
 
-    for edge_pair in total_path.windows(2) {
-        assert!(occupied.get(&[edge_pair[0], edge_pair[1]]).is_none(), "Edge pair {edge_pair:?} is occupied.");
+    // Clean path, if duplicated vertices are present, remove everything between them.
+    let mut cur_path = vec![];
+    for v in total_path {
+        if cur_path.contains(&v) {
+            println!("CUTTING PATH");
+            cur_path = cur_path.into_iter().take_while(|&x| x != v).collect_vec();
+            cur_path.push(v);
+        } else {
+            cur_path.push(v);
+        }
     }
+
+    let total_path = cur_path;
 
     println!("Adding loop...");
     let mut dual_copy = solution.dual.clone();
@@ -859,6 +921,8 @@ fn raycast(
     });
 
     println!("Verify loop structure");
-    let poly = dual_copy.build_loop_structure();
-    solution.next.insert((face_id, vert_id), Some((dual_copy.clone(), poly)));
+
+    let polycube = dual_copy.build_loop_structure();
+
+    solution.next.insert((face_id, vert_id), Some((dual_copy, polycube)));
 }

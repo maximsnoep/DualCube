@@ -12,6 +12,14 @@ codgen-units = 1
 [profile.dev]
 opt-level = 3
 
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"
+cargo = "warn"
+missing_panics_doc = "allow"
+missing_errors_doc = "allow"
+
 [dependencies]
 douconel = { path = "../douconel"}
 hutspot = { path = "../hutspot" }
