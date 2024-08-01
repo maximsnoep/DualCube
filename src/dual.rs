@@ -822,20 +822,21 @@ impl Dual {
     }
 
     pub fn assign_loop_structure(
-        &self,
+        &mut self,
         faces: &[Vec<usize>],
         intersections: &HashMap<EdgeID, Intersection>,
         segments: &[LoopSegment],
-    ) -> Result<LoopStructure, PropertyViolationError> {
+    ) -> Result<(), PropertyViolationError> {
         // Create douconel based on these faces
         let loop_structure_maybe = LoopStructure::from_faces(faces);
         if let Err(err) = loop_structure_maybe {
             return Err(PropertyViolationError::LoopStructureError(err));
         }
-        let (mut loop_structure, vmap, _) = loop_structure_maybe.unwrap();
+        let vmap;
+        (self.loop_structure, vmap, _) = loop_structure_maybe.unwrap();
 
         let intersection_ids = intersections.keys().copied().collect_vec();
-        for (vertex_id, vertex_obj) in &mut loop_structure.verts {
+        for (vertex_id, vertex_obj) in &mut self.loop_structure.verts {
             let intersection_id = intersection_ids[vmap.get_by_right(&vertex_id).unwrap().to_owned()];
             intersections.get(&intersection_id).unwrap().clone_into(vertex_obj);
         }
@@ -845,16 +846,20 @@ impl Dual {
             endpoints_to_segment.insert((segment.start, segment.end), segment);
         }
 
-        let loop_structure_c = loop_structure.clone();
-        for (edge_id, edge_obj) in &mut loop_structure.edges {
-            let start = loop_structure.verts[loop_structure_c.root(edge_id)].this;
-            let end = loop_structure.verts[loop_structure_c.toor(edge_id)].this;
+        let loop_structure_c = self.loop_structure.clone();
+        for (edge_id, edge_obj) in &mut self.loop_structure.edges {
+            let start = self.loop_structure.verts[loop_structure_c.root(edge_id)].this;
+            let end = self.loop_structure.verts[loop_structure_c.toor(edge_id)].this;
             *edge_obj = endpoints_to_segment.get(&(start, end)).copied().unwrap().clone();
         }
 
+        Ok(())
+    }
+
+    pub fn assign_subsurfaces(&mut self) {
         // Map from some verts to adjacent loops(segments)
         let mut vert_to_loop_segments: HashMap<VertID, HashSet<_>> = HashMap::new();
-        for (ls_id, ls) in &loop_structure.edges {
+        for (ls_id, ls) in &self.loop_structure.edges {
             // remove first and last element (intersection points)
             let between = &ls.between[1..ls.between.len() - 1];
 
@@ -865,21 +870,28 @@ impl Dual {
             }
         }
 
-        let face_to_subsurface = loop_structure
+        let face_to_subsurface = self
+            .loop_structure
             .faces
             .keys()
             .collect_vec()
             .par_iter()
             .map(|&face_id| {
-                let blocked: HashSet<EdgeID> = loop_structure
+                let blocked: HashSet<EdgeID> = self
+                    .loop_structure
                     .edges(face_id)
                     .into_iter()
-                    .map(|edge_id| loop_structure.edges[edge_id].clone())
+                    .map(|edge_id| self.loop_structure.edges[edge_id].clone())
                     .flat_map(|ls| [ls.between, vec![ls.start, ls.end]].concat())
                     .collect();
 
                 // Our loopsegments:
-                let loop_segments: HashSet<_> = loop_structure.edges(face_id).iter().flat_map(|&e| [e, loop_structure.twin(e)]).collect();
+                let loop_segments: HashSet<_> = self
+                    .loop_structure
+                    .edges(face_id)
+                    .iter()
+                    .flat_map(|&e| [e, self.loop_structure.twin(e)])
+                    .collect();
 
                 // Make a neighborhood function that blocks all edges that are part of the loop segments of this face
                 let nfunction = |vertex: VertID| {
@@ -926,10 +938,8 @@ impl Dual {
             .collect::<Vec<_>>();
 
         for (face_id, subsurface) in face_to_subsurface {
-            loop_structure.faces[face_id] = subsurface;
+            self.loop_structure.faces[face_id] = subsurface;
         }
-
-        Ok(loop_structure)
     }
 
     pub fn build_loop_structure(&mut self) -> Result<Polycube, PropertyViolationError> {
@@ -966,8 +976,13 @@ impl Dual {
         timer.reset();
 
         println!("Constructing loop structure...");
-        self.loop_structure = self.assign_loop_structure(&faces, &intersections, &loop_segments)?;
+        self.assign_loop_structure(&faces, &intersections, &loop_segments)?;
         timer.report("Loop structure computation");
+        timer.reset();
+
+        println!("Assigning subsurfaces...");
+        self.assign_subsurfaces();
+        timer.report("Subsurfaces computation");
         timer.reset();
 
         println!("Basic properties and assigning sides...");
