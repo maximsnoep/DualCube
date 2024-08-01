@@ -63,6 +63,7 @@ pub enum PropertyViolationError {
     EqualColoredIntersection,
     SelfIntersection,
     NonTwoColorable,
+    NonConnectedComponents,
     NonSeperatedDirection,
     CyclicDependency,
     LoopStructureError(MeshError),
@@ -856,90 +857,106 @@ impl Dual {
         Ok(())
     }
 
-    pub fn assign_subsurfaces(&mut self) {
+    pub fn assign_subsurfaces(&mut self) -> Result<(), PropertyViolationError> {
+        let mut timer = hutspot::timer::Timer::new();
+
+        // Get all blocked edges (ALL LOOPS)
+        let blocked: HashSet<_> = self
+            .loop_structure
+            .edge_ids()
+            .into_iter()
+            .map(|edge_id| self.loop_structure.edges[edge_id].clone())
+            .flat_map(|ls| [ls.between, vec![ls.start, ls.end]].concat())
+            .flat_map(|edge_id| [edge_id, self.mesh_ref.twin(edge_id)])
+            .map(|edge_id| self.mesh_ref.endpoints(edge_id))
+            .collect();
+        timer.reset();
+
+        let vertex_neighbors: HashMap<VertID, Vec<VertID>> = self
+            .mesh_ref
+            .verts
+            .keys()
+            .map(|vertex: VertID| {
+                (
+                    vertex,
+                    self.mesh_ref.neighbor_function_primal()(vertex)
+                        .into_iter()
+                        .filter(|&neighbor| !blocked.contains(&(vertex, neighbor)))
+                        .collect_vec(),
+                )
+            })
+            .collect();
+
+        // Make a neighborhood function that blocks all edges that are part of the loop segments of this face
+        let nfunction = |vertex: VertID| vertex_neighbors[&vertex].clone();
+        timer.report("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!Neighborhood function");
+        timer.reset();
+
+        // Find all connected components (should be equal to the number of faces)
+        let ccs = hutspot::graph::find_ccs(&self.mesh_ref.verts.keys().collect_vec(), nfunction);
+        if ccs.len() != self.loop_structure.face_ids().len() {
+            return Err(PropertyViolationError::NonConnectedComponents);
+        }
+        timer.report("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!Connected components");
+        timer.reset();
+
         // Map from some verts to adjacent loops(segments)
         let mut vert_to_loop_segments: HashMap<VertID, HashSet<_>> = HashMap::new();
         for (ls_id, ls) in &self.loop_structure.edges {
-            // remove first and last element (intersection points)
-            let between = &ls.between[1..ls.between.len() - 1];
-
-            for &edge_id in between {
+            for &edge_id in &ls.between {
                 let endpoints = self.mesh_ref.endpoints(edge_id);
                 vert_to_loop_segments.entry(endpoints.0).or_default().insert(ls_id);
                 vert_to_loop_segments.entry(endpoints.1).or_default().insert(ls_id);
             }
         }
+        timer.report("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!Mapping");
+        timer.reset();
 
-        let face_to_subsurface = self
-            .loop_structure
-            .faces
-            .keys()
-            .collect_vec()
-            .par_iter()
-            .map(|&face_id| {
-                let blocked: HashSet<EdgeID> = self
-                    .loop_structure
-                    .edges(face_id)
-                    .into_iter()
-                    .map(|edge_id| self.loop_structure.edges[edge_id].clone())
-                    .flat_map(|ls| [ls.between, vec![ls.start, ls.end]].concat())
-                    .collect();
-
-                // Our loopsegments:
-                let loop_segments: HashSet<_> = self
-                    .loop_structure
-                    .edges(face_id)
-                    .iter()
-                    .flat_map(|&e| [e, self.loop_structure.twin(e)])
-                    .collect();
-
-                // Make a neighborhood function that blocks all edges that are part of the loop segments of this face
-                let nfunction = |vertex: VertID| {
-                    self.mesh_ref.neighbor_function_primal()(vertex)
-                        .into_iter()
-                        .filter(|&neighbor| {
-                            let edge = self.mesh_ref.edge_between_verts(vertex, neighbor).unwrap();
-                            !blocked.contains(&edge.0) && !blocked.contains(&edge.1)
-                        })
-                        .collect()
-                };
-
-                // Find the connected components (should be 2!)
-                let ccs = hutspot::graph::find_ccs(&self.mesh_ref.verts.keys().collect_vec(), nfunction);
-
-                assert!(ccs.len() == 2);
-
-                let verify_0: HashSet<_> = ccs[0]
-                    .iter()
-                    .flat_map(|&v| vert_to_loop_segments.get(&v).cloned().unwrap_or_default())
-                    .collect();
-
-                let verify_1: HashSet<_> = ccs[1]
-                    .iter()
-                    .flat_map(|&v| vert_to_loop_segments.get(&v).cloned().unwrap_or_default())
-                    .collect();
-
-                assert!(verify_0.is_subset(&loop_segments) ^ verify_1.is_subset(&loop_segments));
-
-                if verify_0.is_subset(&loop_segments) {
-                    let subsurface = Subsurface {
-                        verts: ccs[0].iter().copied().collect(),
-                        color: hutspot::color::hsl_to_rgb(rand::random::<f32>() * 360., 0.5, 0.5).into(),
-                    };
-                    (face_id, subsurface)
-                } else {
-                    let subsurface = Subsurface {
-                        verts: ccs[1].iter().copied().collect(),
-                        color: hutspot::color::hsl_to_rgb(rand::random::<f32>() * 360., 0.5, 0.5).into(),
-                    };
-                    (face_id, subsurface)
-                }
+        // For each connected component, assign a subsurface
+        // We can find the correct subsurface, by checking which loop segments are part of the connected component
+        // So first map each connected component, to the adjacent loop segments
+        let face_and_cc = ccs
+            .into_iter()
+            .map(|cc| {
+                (
+                    cc.clone(),
+                    cc.into_iter()
+                        .flat_map(|v| vert_to_loop_segments.get(&v).cloned().unwrap_or_default())
+                        .collect::<HashSet<_>>(),
+                )
             })
-            .collect::<Vec<_>>();
+            .filter_map(|(cc, loop_segments)| {
+                self.loop_structure
+                    .face_ids()
+                    .into_iter()
+                    .find(|&face_id| {
+                        // check that all loop segments of this face are part of the connected component
+                        self.loop_structure.edges(face_id).iter().all(|&e| loop_segments.contains(&e))
+                    })
+                    .map(|face_id| (face_id, cc))
+            })
+            .map(|(face_id, subsurface)| {
+                (
+                    face_id,
+                    Subsurface {
+                        verts: subsurface.into_iter().collect(),
+                        color: hutspot::color::hsl_to_rgb(rand::random::<f32>() * 360., 0.5, 0.5).into(),
+                    },
+                )
+            })
+            .collect_vec();
+        timer.report("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!Face and CC");
+        timer.reset();
 
-        for (face_id, subsurface) in face_to_subsurface {
+        if face_and_cc.len() != self.loop_structure.face_ids().len() {
+            return Err(PropertyViolationError::NonConnectedComponents);
+        }
+
+        for (face_id, subsurface) in face_and_cc {
             self.loop_structure.faces[face_id] = subsurface;
         }
+
+        Ok(())
     }
 
     pub fn build_loop_structure(&mut self) -> Result<Polycube, PropertyViolationError> {
@@ -981,7 +998,7 @@ impl Dual {
         timer.reset();
 
         println!("Assigning subsurfaces...");
-        self.assign_subsurfaces();
+        self.assign_subsurfaces()?;
         timer.report("Subsurfaces computation");
         timer.reset();
 

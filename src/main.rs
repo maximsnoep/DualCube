@@ -876,6 +876,9 @@ fn raycast(
         return;
     }
 
+    let mut timer = hutspot::timer::Timer::new();
+    println!("Computing path...");
+
     let total_path = [
         hutspot::graph::find_shortest_cycle([e1, e2], nfunction, &wfunction, cache_ref),
         hutspot::graph::find_shortest_cycle([e2, e1], nfunction, &wfunction, cache_ref),
@@ -906,12 +909,17 @@ fn raycast(
         }
     }
     let total_path = cur_path;
+    timer.report("Path computation");
+    timer.reset();
 
+    println!("Adding path...");
     let mut dual_copy = solution.dual.clone();
     dual_copy.add_loop(Loop {
         edges: total_path,
         direction: configuration.direction,
     });
+    timer.report("Adding path");
+    timer.reset();
 
     let polycube = dual_copy.build_loop_structure();
 
