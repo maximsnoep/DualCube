@@ -105,9 +105,13 @@ pub fn ui(
                         ["X-loops", "Y-loops", "Z-loops"][i],
                         &mut conf.sides_mask[i],
                         0,
-                        2_u32.pow(solution.dual.side_ccs[i].len() as u32) - 1,
+                        2_u32.pow(u32::try_from(solution.dual.side_ccs[i].len()).unwrap()) - 1,
                     ) {
-                        solution.primal = solution.dual.primal(conf.sides_mask);
+                        let res = solution.dual.zone_graph(conf.sides_mask);
+                        if let Err(err) = res {
+                            solution.primal = Err(err);
+                        }
+                        solution.primal = Ok(solution.dual.primal());
                         mesh_resmut.as_mut();
                     }
                 }

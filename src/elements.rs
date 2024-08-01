@@ -173,7 +173,7 @@ pub struct Subsurface {
     pub color: Color,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Zone {
     // A zone is defined by a direction
     pub direction: PrincipalDirection,

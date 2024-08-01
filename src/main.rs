@@ -846,8 +846,6 @@ fn raycast(
         }
     }
 
-    println!("Occupied edges: {:?}", occupied);
-
     // The neighborhood function: filters out all edges that are already used in the solution
     let nfunction = |edgepair: [EdgeID; 2]| {
         let self_intersection = edgepair
@@ -897,30 +895,23 @@ fn raycast(
         return;
     }
 
-    println!("path: {:?}", total_path);
-
     // Clean path, if duplicated vertices are present, remove everything between them.
     let mut cur_path = vec![];
     for v in total_path {
         if cur_path.contains(&v) {
-            println!("CUTTING PATH");
             cur_path = cur_path.into_iter().take_while(|&x| x != v).collect_vec();
             cur_path.push(v);
         } else {
             cur_path.push(v);
         }
     }
-
     let total_path = cur_path;
 
-    println!("Adding loop...");
     let mut dual_copy = solution.dual.clone();
-    let loop_id = dual_copy.add_loop(Loop {
+    dual_copy.add_loop(Loop {
         edges: total_path,
         direction: configuration.direction,
     });
-
-    println!("Verify loop structure");
 
     let polycube = dual_copy.build_loop_structure();
 
