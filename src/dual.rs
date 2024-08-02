@@ -4,7 +4,6 @@ use douconel::douconel::{Douconel, EdgeID, FaceID, MeshError, VertID};
 use douconel::douconel_embedded::HasPosition;
 use hutspot::geom::Vector3D;
 use itertools::Itertools;
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
 use slotmap::{SecondaryMap, SlotMap};
 use std::collections::{HashMap, HashSet};
@@ -333,7 +332,7 @@ impl Dual {
                     .iter()
                     .filter(|&(&segment, &this_zone_id)| {
                         this_zone_id == zone_id
-                            && self.segment_to_side(segment, side_mask) == Side::Upper
+                            && self.segment_to_side(segment, side_mask) == Side::Lower
                             && self.segment_to_direction(segment) == this_direction
                     })
                     // Map to the other zone (by following the twin segment)
@@ -809,12 +808,50 @@ impl Dual {
                     return Err(PropertyViolationError::NonTwoColorable);
                 }
                 let (upper_segments, lower_segments) = two_coloring.unwrap();
-                for edge_id in upper_segments {
-                    self.loop_structure.edges[edge_id].side = Some(Side::Upper);
+
+                let mut cur_score = 0.0;
+                let mut flip_score = 0.0;
+                for (&ls_id, s) in upper_segments
+                    .iter()
+                    .map(|ls_id| (ls_id, Vector3D::from(direction)))
+                    .chain(lower_segments.iter().map(|ls_id| (ls_id, -Vector3D::from(direction))))
+                {
+                    let ls = &self.loop_structure.edges[ls_id];
+                    let edges = vec![ls.between.clone()].into_iter().flatten();
+
+                    for (edge1, edge2) in edges.tuple_windows() {
+                        if self.mesh_ref.twin(edge1) == edge2 {
+                            continue;
+                        }
+                        let u = self.mesh_ref.midpoint(edge1);
+                        let v = self.mesh_ref.midpoint(edge2);
+                        let face = self.mesh_ref.face(edge1);
+                        assert!(face == self.mesh_ref.face(edge2));
+                        let edge_normal = self.mesh_ref.normal(face);
+                        let edge_direction = (v - u).normalize();
+                        let edge_length = (v - u).norm();
+                        let cross = edge_normal.cross(&edge_direction).normalize();
+                        cur_score += cross.dot(&s) * edge_length;
+                        flip_score += cross.dot(&-s) * edge_length;
+                    }
                 }
 
-                for edge_id in lower_segments {
-                    self.loop_structure.edges[edge_id].side = Some(Side::Lower);
+                if cur_score > flip_score {
+                    for edge_id in upper_segments {
+                        self.loop_structure.edges[edge_id].side = Some(Side::Upper);
+                    }
+
+                    for edge_id in lower_segments {
+                        self.loop_structure.edges[edge_id].side = Some(Side::Lower);
+                    }
+                } else {
+                    for edge_id in upper_segments {
+                        self.loop_structure.edges[edge_id].side = Some(Side::Lower);
+                    }
+
+                    for edge_id in lower_segments {
+                        self.loop_structure.edges[edge_id].side = Some(Side::Upper);
+                    }
                 }
             }
         }
@@ -858,8 +895,6 @@ impl Dual {
     }
 
     pub fn assign_subsurfaces(&mut self) -> Result<(), PropertyViolationError> {
-        let mut timer = hutspot::timer::Timer::new();
-
         // Get all blocked edges (ALL LOOPS)
         let blocked: HashSet<_> = self
             .loop_structure
@@ -870,7 +905,6 @@ impl Dual {
             .flat_map(|edge_id| [edge_id, self.mesh_ref.twin(edge_id)])
             .map(|edge_id| self.mesh_ref.endpoints(edge_id))
             .collect();
-        timer.reset();
 
         let vertex_neighbors: HashMap<VertID, Vec<VertID>> = self
             .mesh_ref
@@ -889,16 +923,12 @@ impl Dual {
 
         // Make a neighborhood function that blocks all edges that are part of the loop segments of this face
         let nfunction = |vertex: VertID| vertex_neighbors[&vertex].clone();
-        timer.report("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!Neighborhood function");
-        timer.reset();
 
         // Find all connected components (should be equal to the number of faces)
         let ccs = hutspot::graph::find_ccs(&self.mesh_ref.verts.keys().collect_vec(), nfunction);
         if ccs.len() != self.loop_structure.face_ids().len() {
             return Err(PropertyViolationError::NonConnectedComponents);
         }
-        timer.report("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!Connected components");
-        timer.reset();
 
         // Map from some verts to adjacent loops(segments)
         let mut vert_to_loop_segments: HashMap<VertID, HashSet<_>> = HashMap::new();
@@ -909,8 +939,6 @@ impl Dual {
                 vert_to_loop_segments.entry(endpoints.1).or_default().insert(ls_id);
             }
         }
-        timer.report("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!Mapping");
-        timer.reset();
 
         // For each connected component, assign a subsurface
         // We can find the correct subsurface, by checking which loop segments are part of the connected component
@@ -945,8 +973,6 @@ impl Dual {
                 )
             })
             .collect_vec();
-        timer.report("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!Face and CC");
-        timer.reset();
 
         if face_and_cc.len() != self.loop_structure.face_ids().len() {
             return Err(PropertyViolationError::NonConnectedComponents);

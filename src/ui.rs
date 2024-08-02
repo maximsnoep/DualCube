@@ -1,4 +1,4 @@
-use crate::{elements::PrincipalDirection, ActionEvent, Configuration, DrawLoopType, RenderType, SolutionResource};
+use crate::{elements::PrincipalDirection, ActionEvent, Configuration, DrawLoopType, InputResource, RenderType, SolutionResource};
 use bevy::prelude::*;
 use bevy_egui::egui::{emath::Numeric, Color32, RichText, Slider, TopBottomPanel, Ui};
 
@@ -6,7 +6,7 @@ pub fn ui(
     mut egui_ctx: bevy_egui::EguiContexts,
     mut ev_w: EventWriter<ActionEvent>,
     mut conf: ResMut<Configuration>,
-    mut mesh_resmut: ResMut<crate::MeshResource>,
+    mut mesh_resmut: ResMut<InputResource>,
     mut solution: ResMut<SolutionResource>,
 ) {
     TopBottomPanel::top("panel").show(egui_ctx.ctx_mut(), |ui| {
@@ -18,12 +18,15 @@ pub fn ui(
                 }
             }
 
-            if conf.source.is_empty() {
+            if mesh_resmut.properties.source.is_empty() {
                 ui.label("No file yet loaded.");
             } else {
                 ui.label(format!(
                     "\tLoaded: {}\t\t(v: {}, e: {}, f: {})",
-                    conf.source, conf.nr_of_vertices, conf.nr_of_edges, conf.nr_of_faces
+                    mesh_resmut.properties.source,
+                    mesh_resmut.properties.nr_of_vertices,
+                    mesh_resmut.properties.nr_of_edges,
+                    mesh_resmut.properties.nr_of_faces
                 ));
             }
         });

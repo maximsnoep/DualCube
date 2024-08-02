@@ -2327,6 +2327,7 @@ dependencies = [
  "nalgebra",
  "ordered-float",
  "pathfinding",
+ "rayon",
 ]
 
 [[package]]

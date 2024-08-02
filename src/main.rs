@@ -7,7 +7,8 @@ use crate::elements::PrincipalDirection;
 use crate::ui::ui;
 use bevy::diagnostic::LogDiagnosticsPlugin;
 use bevy::prelude::*;
-use bevy::window::WindowMode;
+use bevy::render::camera::Viewport;
+use bevy::window::{WindowMode, WindowResized};
 use bevy_egui::EguiPlugin;
 use bevy_mod_raycast::prelude::*;
 use douconel::douconel::{Douconel, EdgeID, Empty, FaceID, VertID};
@@ -21,6 +22,7 @@ use itertools::Itertools;
 use kdtree::distance::squared_euclidean;
 use kdtree::KdTree;
 use ordered_float::OrderedFloat;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use smooth_bevy_cameras::controllers::orbit::{OrbitCameraBundle, OrbitCameraController, OrbitCameraPlugin};
 use smooth_bevy_cameras::LookTransformPlugin;
@@ -35,7 +37,7 @@ const BACKGROUND_COLOR: bevy::prelude::Color = bevy::prelude::Color::rgb(0. / 25
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SaveStateObject {
-    mesh: MeshResource,
+    mesh: InputResource,
     solution: SolutionResource,
     configuration: Configuration,
 }
@@ -58,11 +60,6 @@ pub enum LoopScoring {
     SingularitySeparationSpread,
 }
 
-pub struct Rules {
-    pub intersections: bool,
-    pub loop_regions: bool,
-}
-
 #[derive(Default, Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RenderType {
     #[default]
@@ -81,8 +78,8 @@ impl std::fmt::Display for RenderType {
 
 #[derive(Default, Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DrawLoopType {
-    #[default]
     None,
+    #[default]
     Undirected,
     Directed,
 }
@@ -97,13 +94,20 @@ impl std::fmt::Display for DrawLoopType {
     }
 }
 
-#[derive(Resource, Default, Debug, Clone, Serialize, Deserialize)]
-pub struct Configuration {
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+pub struct MeshProperties {
     pub source: String,
     pub nr_of_faces: usize,
     pub nr_of_edges: usize,
     pub nr_of_vertices: usize,
+    pub scale: f32,
+    pub translation: Vector3D,
+}
 
+const POLYCUBE_OFFSET: Vec3 = Vec3::new(-10000., -10000., -10000.);
+
+#[derive(Resource, Default, Debug, Clone, Serialize, Deserialize)]
+pub struct Configuration {
     pub direction: PrincipalDirection,
 
     pub alpha: i32,
@@ -114,9 +118,6 @@ pub struct Configuration {
     pub black: bool,
 
     pub render_type: RenderType,
-
-    pub scale: f32,
-    pub translation: Vector3D,
 
     pub interactive: bool,
     pub region_selection: bool,
@@ -190,8 +191,9 @@ pub struct GizmosCache {
 type EmbeddedMesh = Douconel<EmbeddedVertex, Empty, Empty>;
 
 #[derive(Default, Debug, Clone, Resource, Serialize, Deserialize)]
-pub struct MeshResource {
+pub struct InputResource {
     mesh: Arc<EmbeddedMesh>,
+    properties: MeshProperties,
     vertex_lookup: TreeD,
 }
 
@@ -200,6 +202,7 @@ pub struct SolutionResource {
     dual: Dual,
     primal: Result<Polycube, PropertyViolationError>,
     next: HashMap<(FaceID, VertID), Option<(Dual, Result<Polycube, PropertyViolationError>)>>,
+    properties: MeshProperties,
 }
 
 impl Default for SolutionResource {
@@ -208,13 +211,14 @@ impl Default for SolutionResource {
             dual: Dual::default(),
             primal: Err(PropertyViolationError::UnknownError),
             next: HashMap::new(),
+            properties: MeshProperties::default(),
         }
     }
 }
 
 fn main() {
     App::new()
-        .init_resource::<MeshResource>()
+        .init_resource::<InputResource>()
         .init_resource::<CacheResource>()
         .init_resource::<GizmosCache>()
         .init_resource::<SolutionResource>()
@@ -240,24 +244,68 @@ fn main() {
         .add_plugins(OrbitCameraPlugin::default())
         // User specified
         .add_systems(Startup, setup)
+        .add_systems(Update, sync_cameras)
         .add_systems(Update, ui)
         .add_systems(Update, handle_events)
         .add_systems(Update, draw_gizmos)
         .add_systems(Update, update_mesh)
         .add_systems(Update, raycast)
+        .add_systems(Update, set_camera_viewports)
         .add_event::<ActionEvent>()
         .run();
 }
 
+#[derive(Component)]
+struct MainCamera;
+
+#[derive(Component)]
+struct SubCamera;
+
 /// Set up
 fn setup(mut commands: Commands, mut ui: bevy_egui::EguiContexts) {
-    commands.spawn(Camera3dBundle::default()).insert((OrbitCameraBundle::new(
-        OrbitCameraController::default(),
-        Vec3::new(0.0, 5.0, 20.0),
-        Vec3::new(0., 0., 0.),
-        Vec3::Y,
-    ),));
+    // SETUP CAMERAS
+    // commands.spawn(Camera3dBundle::default()).insert((OrbitCameraBundle::new(
+    //     OrbitCameraController::default(),
+    //     Vec3::new(0.0, 5.0, 20.0),
+    //     Vec3::new(0., 0., 0.),
+    //     Vec3::Y,
+    // ),));
 
+    // setup split screen
+    // Left Camera
+    commands
+        .spawn(Camera3dBundle {
+            camera: Camera { order: 0, ..default() },
+            ..default()
+        })
+        .insert((OrbitCameraBundle::new(
+            OrbitCameraController::default(),
+            Vec3::new(0.0, 5.0, 20.0),
+            Vec3::new(0., 0., 0.),
+            Vec3::Y,
+        ),))
+        .insert(MainCamera);
+
+    // Right Camera
+    commands
+        .spawn(Camera3dBundle {
+            transform: Transform::from_xyz(0.0, 5., 20.0).looking_at(Vec3::ZERO, Vec3::Y),
+            camera: Camera { order: 1, ..default() },
+            camera_3d: Camera3d {
+                clear_color: bevy::core_pipeline::clear_color::ClearColorConfig::None,
+                ..default()
+            },
+            ..default()
+        })
+        // .insert((OrbitCameraBundle::new(
+        //     OrbitCameraController::default(),
+        //     Vec3::new(0.0, 5.0, 20.0),
+        //     Vec3::new(0., 0., 0.),
+        //     Vec3::Y,
+        // ),))
+        .insert(SubCamera);
+
+    // SETUP FONT
     let mut fonts = bevy_egui::egui::FontDefinitions::default();
     fonts.font_data.insert(
         "BerkeleyMonoTrial".to_owned(),
@@ -274,12 +322,51 @@ fn setup(mut commands: Commands, mut ui: bevy_egui::EguiContexts) {
         .or_default()
         .push("BerkeleyMonoTrial".to_owned());
     ui.ctx_mut().set_fonts(fonts);
+
+    // SETUP DARK THEME
     ui.ctx_mut().set_visuals(bevy_egui::egui::Visuals::dark());
+}
+
+fn sync_cameras(mut main_camera: Query<&mut Transform, (With<MainCamera>, Without<SubCamera>)>, mut sub_camera: Query<&mut Transform, With<SubCamera>>) {
+    for main_c in main_camera.iter() {
+        for mut sub_c in sub_camera.iter_mut() {
+            sub_c.translation = main_c.translation + POLYCUBE_OFFSET;
+            sub_c.rotation = main_c.rotation;
+            sub_c.scale = main_c.scale;
+        }
+    }
+}
+
+fn set_camera_viewports(
+    windows: Query<&Window>,
+    mut resize_events: EventReader<WindowResized>,
+    mut main_camera: Query<&mut Camera, (With<MainCamera>, Without<SubCamera>)>,
+    mut sub_camera: Query<&mut Camera, With<SubCamera>>,
+) {
+    // We need to dynamically resize the camera's viewports whenever the window size changes
+    // so then each camera always takes up half the screen.
+    // A resize_event is sent when the window is first created, allowing us to reuse this system for initial setup.
+    for resize_event in resize_events.read() {
+        let window = windows.get(resize_event.window).unwrap();
+        let mut main_camera = main_camera.single_mut();
+        main_camera.viewport = Some(Viewport {
+            physical_position: UVec2::new(0, 0),
+            physical_size: UVec2::new(window.resolution.physical_width() / 2, window.resolution.physical_height()),
+            ..default()
+        });
+
+        let mut sub_camera = sub_camera.single_mut();
+        sub_camera.viewport = Some(Viewport {
+            physical_position: UVec2::new(window.resolution.physical_width() / 2, 0),
+            physical_size: UVec2::new(window.resolution.physical_width() / 2, window.resolution.physical_height()),
+            ..default()
+        });
+    }
 }
 
 pub fn handle_events(
     mut ev_reader: EventReader<ActionEvent>,
-    mut mesh_resmut: ResMut<MeshResource>,
+    mut mesh_resmut: ResMut<InputResource>,
     mut solution: ResMut<SolutionResource>,
     mut gizmos_cache: ResMut<GizmosCache>,
     mut configuration: ResMut<Configuration>,
@@ -291,7 +378,7 @@ pub fn handle_events(
                 match path.extension().unwrap().to_str() {
                     Some("obj" | "stl") => {
                         *configuration = Configuration::default();
-                        *mesh_resmut = MeshResource::default();
+                        *mesh_resmut = InputResource::default();
                         *solution = SolutionResource::default();
 
                         mesh_resmut.mesh = match Douconel::from_file(path) {
@@ -318,25 +405,25 @@ pub fn handle_events(
                     _ => panic!("File format not supported."),
                 }
 
-                configuration.source = String::from(path.to_str().unwrap());
+                mesh_resmut.properties.source = String::from(path.to_str().unwrap());
 
-                configuration.nr_of_vertices = mesh_resmut.mesh.nr_verts();
-                configuration.nr_of_edges = mesh_resmut.mesh.nr_edges() / 2; // dcel -> single edge
-                configuration.nr_of_faces = mesh_resmut.mesh.nr_faces();
+                mesh_resmut.properties.nr_of_vertices = mesh_resmut.mesh.nr_verts();
+                mesh_resmut.properties.nr_of_edges = mesh_resmut.mesh.nr_edges() / 2; // dcel -> single edge
+                mesh_resmut.properties.nr_of_faces = mesh_resmut.mesh.nr_faces();
 
                 let mesh = mesh_resmut.mesh.bevy(&HashMap::new());
                 let aabb = mesh.compute_aabb().unwrap();
-                configuration.scale = 10. * (1. / aabb.half_extents.max_element());
-                let translation = -configuration.scale * aabb.center;
-                configuration.translation = Vector3D::new(translation.x.into(), translation.y.into(), translation.z.into());
+                mesh_resmut.properties.scale = 10. * (1. / aabb.half_extents.max_element());
+                let translation = -mesh_resmut.properties.scale * aabb.center;
+                mesh_resmut.properties.translation = Vector3D::new(translation.x.into(), translation.y.into(), translation.z.into());
 
                 for edge_id in mesh_resmut.mesh.edge_ids() {
                     draw::add_edge(
                         &mut gizmos_cache.lines,
                         edge_id,
                         &mesh_resmut.mesh,
-                        configuration.translation,
-                        configuration.scale,
+                        mesh_resmut.properties.translation,
+                        mesh_resmut.properties.scale,
                     );
                 }
 
@@ -345,8 +432,8 @@ pub fn handle_events(
                         &mut gizmos_cache.lines,
                         vert_id,
                         &mesh_resmut.mesh,
-                        configuration.translation,
-                        configuration.scale,
+                        mesh_resmut.properties.translation,
+                        mesh_resmut.properties.scale,
                     );
                 }
 
@@ -355,15 +442,15 @@ pub fn handle_events(
                         &mut gizmos_cache.lines,
                         face_id,
                         &mesh_resmut.mesh,
-                        configuration.translation,
-                        configuration.scale,
+                        mesh_resmut.properties.translation,
+                        mesh_resmut.properties.scale,
                     );
                 }
             }
             ActionEvent::ExportState => {
                 let path = format!(
                     "./out/{}_{:?}.save",
-                    configuration.source.split("\\").last().unwrap().split(".").next().unwrap(),
+                    mesh_resmut.properties.source.split("\\").last().unwrap().split(".").next().unwrap(),
                     SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards").as_millis()
                 );
 
@@ -385,13 +472,13 @@ fn update_mesh(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 
-    mesh_resmut: Res<MeshResource>,
-    solution: Res<SolutionResource>,
+    mesh_resmut: Res<InputResource>,
+    mut solution: ResMut<SolutionResource>,
     configuration: Res<Configuration>,
 
     rendered_mesh_query: Query<Entity, With<RenderedMesh>>,
 ) {
-    if !mesh_resmut.is_changed() {
+    if !mesh_resmut.is_changed() && !solution.is_changed() {
         return;
     }
     info!("Mesh has been changed. Updating the Bevy render.");
@@ -414,15 +501,15 @@ fn update_mesh(
             // Spawn new mesh
             commands.spawn((
                 MaterialMeshBundle {
-                    mesh: meshes.add(mesh),
+                    mesh: meshes.add(mesh.clone()),
                     transform: Transform {
                         translation: Vec3::new(
-                            configuration.translation.x as f32,
-                            configuration.translation.y as f32,
-                            configuration.translation.z as f32,
+                            mesh_resmut.properties.translation.x as f32,
+                            mesh_resmut.properties.translation.y as f32,
+                            mesh_resmut.properties.translation.z as f32,
                         ),
                         rotation: Quat::from_rotation_z(0f32),
-                        scale: Vec3::splat(configuration.scale),
+                        scale: Vec3::splat(mesh_resmut.properties.scale),
                     },
                     material: materials.add(StandardMaterial {
                         perceptual_roughness: 0.9,
@@ -432,6 +519,43 @@ fn update_mesh(
                 },
                 RenderedMesh,
             ));
+
+            let mut color_map = HashMap::new();
+            if let Ok(polycube) = &solution.primal {
+                for &face_id in &polycube.face_ids() {
+                    let normal = (polycube.normal(face_id) as Vector3D).normalize();
+                    let (dir, side) = to_principal_direction(normal);
+                    let color = dir.to_primal_color_sided(side);
+                    color_map.insert(face_id, [color.r(), color.g(), color.b()]);
+                }
+                let color_map = HashMap::new();
+
+                let mesh = polycube.bevy(&color_map);
+                let aabb = mesh.compute_aabb().unwrap();
+                let scale = 10. * (1. / aabb.half_extents.max_element());
+                let translation = -scale * aabb.center;
+
+                solution.properties.translation = Vector3D::new(translation.x.into(), translation.y.into(), translation.z.into());
+                solution.properties.scale = scale;
+
+                // Spawn new mesh
+                commands.spawn((
+                    MaterialMeshBundle {
+                        mesh: meshes.add(mesh),
+                        transform: Transform {
+                            translation: Vec3::new(translation.x as f32, translation.y as f32, translation.z as f32) + POLYCUBE_OFFSET,
+                            rotation: Quat::from_rotation_z(0f32),
+                            scale: Vec3::splat(scale),
+                        },
+                        material: materials.add(StandardMaterial {
+                            perceptual_roughness: 0.9,
+                            ..default()
+                        }),
+                        ..default()
+                    },
+                    RenderedMesh,
+                ));
+            }
         }
         RenderType::Polycube => {
             let mut color_map = HashMap::new();
@@ -445,7 +569,7 @@ fn update_mesh(
                 let mesh = polycube.bevy(&color_map);
                 let aabb = mesh.compute_aabb().unwrap();
                 let scale = 10. * (1. / aabb.half_extents.max_element());
-                let translation = -configuration.scale * aabb.center;
+                let translation = -scale * aabb.center;
 
                 // Spawn new mesh
                 commands.spawn((
@@ -474,7 +598,7 @@ fn draw_gizmos(
     gizmos_cache: Res<GizmosCache>,
     configuration: Res<Configuration>,
     solution: Res<SolutionResource>,
-    mesh_resmut: Res<MeshResource>,
+    mesh_resmut: Res<InputResource>,
 ) {
     for &(u, v, c, t) in &gizmos_cache.lines {
         match t {
@@ -500,7 +624,7 @@ fn draw_gizmos(
         let u = mesh_resmut.mesh.position(vert_id);
         let v = mesh_resmut.mesh.centroid(face_id);
         let n = mesh_resmut.mesh.normal(face_id);
-        let line = DrawableLine::from_line(u, v, n * 0.01, configuration.translation, configuration.scale);
+        let line = DrawableLine::from_line(u, v, n * 0.01, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
         match sol {
             Some(_) => gizmos.line(line.u, line.v, hutspot::color::GREEN.into()),
             None => gizmos.line(line.u, line.v, hutspot::color::ROODT.into()),
@@ -523,7 +647,7 @@ fn draw_gizmos(
                     let u = mesh_resmut.mesh.midpoint(edge[0]);
                     let v = mesh_resmut.mesh.midpoint(edge[1]);
                     let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge[0]));
-                    let line = DrawableLine::from_line(u, v, n * 0.01, configuration.translation, configuration.scale);
+                    let line = DrawableLine::from_line(u, v, n * 0.01, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
                     gizmos.line(line.u, line.v, l.direction.to_dual_color());
                 }
             }
@@ -535,7 +659,7 @@ fn draw_gizmos(
                     // draw vertex
                     let u = mesh_resmut.mesh.position(vertex);
                     let n = mesh_resmut.mesh.vert_normal(vertex);
-                    let line = DrawableLine::from_vertex(u, n, 0.05, configuration.translation, configuration.scale);
+                    let line = DrawableLine::from_vertex(u, n, 0.05, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
                     gizmos.line(line.u, line.v, ROODT.into());
                 }
 
@@ -547,7 +671,7 @@ fn draw_gizmos(
                         let edge = mesh_resmut.mesh.edge_between_verts(vertexpair[0], vertexpair[1]).unwrap().0;
                         let n = mesh_resmut.mesh.edge_normal(edge);
                         // draw the line
-                        let line = DrawableLine::from_line(u, v, n * 0.01, configuration.translation, configuration.scale);
+                        let line = DrawableLine::from_line(u, v, n * 0.01, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
                         gizmos.line(line.u, line.v, ROODT.into());
                     }
                 }
@@ -577,11 +701,79 @@ fn draw_gizmos(
                         n,
                         0.9,
                         mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge[0])) * 0.2,
-                        configuration.translation,
-                        configuration.scale,
+                        mesh_resmut.properties.translation,
+                        mesh_resmut.properties.scale,
                     ) {
                         let side = solution.dual.segment_to_side(segment, configuration.sides_mask);
                         gizmos.line(line.u, line.v, dir.to_dual_color_sided(side));
+                    }
+                }
+            }
+
+            // POLYCUBE :::
+
+            // Draw all loop segments / faces axis aligned.
+            if let Ok(primal) = &solution.primal {
+                for (face_id, original_id) in &primal.faces {
+                    let this_centroid = primal.centroid(face_id);
+
+                    let normal = (primal.normal(face_id) as Vector3D).normalize();
+                    let orientation = to_principal_direction(normal).0;
+
+                    for &neighbor_id in &primal.fneighbors(face_id) {
+                        let next_original_id = &primal.faces[neighbor_id];
+
+                        let edge_between = primal.edge_between_faces(face_id, neighbor_id).unwrap().0;
+                        let root = primal.root(edge_between);
+                        let root_pos = primal.position(root);
+
+                        let segment = solution
+                            .dual
+                            .get_loop_structure()
+                            .edge_between_verts(*original_id, *next_original_id)
+                            .unwrap()
+                            .0;
+
+                        let direction = solution.dual.segment_to_direction(segment);
+
+                        for side in [Side::Upper, Side::Lower] {
+                            let segment_direction = match (orientation, direction) {
+                                (PrincipalDirection::X, PrincipalDirection::Y) | (PrincipalDirection::Y, PrincipalDirection::X) => PrincipalDirection::Z,
+                                (PrincipalDirection::X, PrincipalDirection::Z) | (PrincipalDirection::Z, PrincipalDirection::X) => PrincipalDirection::Y,
+                                (PrincipalDirection::Y, PrincipalDirection::Z) | (PrincipalDirection::Z, PrincipalDirection::Y) => PrincipalDirection::X,
+                                _ => unreachable!(),
+                            };
+
+                            let mut direction_vector = this_centroid;
+                            direction_vector[segment_direction as usize] = root_pos[segment_direction as usize];
+
+                            let mut offset = Vector3D::new(0., 0., 0.);
+
+                            let dist = 0.001 * solution.properties.scale as f64;
+
+                            match side {
+                                Side::Upper => match direction {
+                                    PrincipalDirection::X => offset[0] += dist,
+                                    PrincipalDirection::Y => offset[1] += dist,
+                                    PrincipalDirection::Z => offset[2] += dist,
+                                },
+                                Side::Lower => match direction {
+                                    PrincipalDirection::X => offset[0] -= dist,
+                                    PrincipalDirection::Y => offset[1] -= dist,
+                                    PrincipalDirection::Z => offset[2] -= dist,
+                                },
+                            };
+
+                            let line = DrawableLine::from_line(
+                                this_centroid,
+                                direction_vector,
+                                offset + normal * 0.01,
+                                solution.properties.translation + Vector3D::new(POLYCUBE_OFFSET.x as f64, POLYCUBE_OFFSET.y as f64, POLYCUBE_OFFSET.z as f64),
+                                solution.properties.scale,
+                            );
+
+                            gizmos.line(line.u, line.v, direction.to_dual_color_sided(side));
+                        }
                     }
                 }
             }
@@ -619,8 +811,8 @@ fn draw_gizmos(
                             this_centroid,
                             direction_vector,
                             Vector3D::new(0., 0., 0.),
-                            configuration.translation,
-                            configuration.scale,
+                            mesh_resmut.properties.translation,
+                            mesh_resmut.properties.scale,
                         );
 
                         gizmos.line(line.u, line.v, direction.to_dual_color());
@@ -681,7 +873,13 @@ fn draw_gizmos(
                                 },
                             };
 
-                            let line = DrawableLine::from_line(this_centroid, direction_vector, offset, configuration.translation, configuration.scale);
+                            let line = DrawableLine::from_line(
+                                this_centroid,
+                                direction_vector,
+                                offset,
+                                mesh_resmut.properties.translation,
+                                mesh_resmut.properties.scale,
+                            );
 
                             gizmos.line(line.u, line.v, direction.to_dual_color_sided(side));
                         }
@@ -697,7 +895,7 @@ fn raycast(
     cursor_ray: Res<CursorRay>,
     mut raycast: Raycast,
     mut mouse: ResMut<Input<MouseButton>>,
-    mesh_resmut: Res<MeshResource>,
+    mesh_resmut: Res<InputResource>,
     mut solution: ResMut<SolutionResource>,
     mut cache: ResMut<CacheResource>,
     mut gizmos_cache: ResMut<GizmosCache>,
@@ -727,8 +925,8 @@ fn raycast(
         intersection.position().z.into(),
     );
 
-    let position = hutspot::draw::invert_transform_coordinates(position_in_render, configuration.translation, configuration.scale);
-    let line = DrawableLine::from_vertex(position, normal, 5., configuration.translation, configuration.scale);
+    let position = hutspot::draw::invert_transform_coordinates(position_in_render, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
+    let line = DrawableLine::from_vertex(position, normal, 5., mesh_resmut.properties.translation, mesh_resmut.properties.scale);
     gizmos_cache.raycast.clear();
     gizmos_cache.raycast.push((line.u, line.v, hutspot::color::ROODT.into()));
 
@@ -742,7 +940,7 @@ fn raycast(
         .map(|pos| {
             mesh_resmut.mesh.vert_ids()[mesh_resmut
                 .vertex_lookup
-                .nearest(&hutspot::draw::invert_transform_coordinates(pos, configuration.translation, configuration.scale).into())
+                .nearest(&hutspot::draw::invert_transform_coordinates(pos, mesh_resmut.properties.translation, mesh_resmut.properties.scale).into())
                 .1]
         })
         // .map(|v| (v, v.metric_distance(&position_in_render)))
@@ -802,8 +1000,8 @@ fn raycast(
                     n,
                     0.9,
                     mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge[0])) * 0.001,
-                    configuration.translation,
-                    configuration.scale,
+                    mesh_resmut.properties.translation,
+                    mesh_resmut.properties.scale,
                 ) {
                     gizmos_cache.raycast.push((line.u, line.v, sol.loop_to_direction(loop_id).to_dual_color()));
                 }
@@ -832,6 +1030,9 @@ fn raycast(
 
     solution.next.insert((face_id, vert_id), None);
 
+    let mut timer = hutspot::timer::Timer::new();
+    println!("Computing path...");
+
     let mut occupied = HashMap::new();
 
     for (edge1, loop1) in &solution.dual.occupied {
@@ -845,21 +1046,38 @@ fn raycast(
             }
         }
     }
+    timer.report("Occupied edges");
+    timer.reset();
+
+    let edge_to_neighbors = mesh_resmut
+        .mesh
+        .edge_ids()
+        .par_iter()
+        .map(|&edge| {
+            if solution
+                .dual
+                .loops_on_edge(edge)
+                .iter()
+                .filter(|&&loop_id| solution.dual.loop_to_direction(loop_id) == configuration.direction)
+                .count()
+                > 0
+            {
+                (edge, vec![])
+            } else {
+                let neighbors = mesh_resmut.mesh.neighbor_function_edgepairgraph()([edge, edge]);
+                (edge, neighbors)
+            }
+        })
+        .collect::<HashMap<_, _>>();
+    timer.report("Edge to neighbors");
+    timer.reset();
 
     // The neighborhood function: filters out all edges that are already used in the solution
     let nfunction = |edgepair: [EdgeID; 2]| {
-        let self_intersection = edgepair
-            .iter()
-            .map(|&edge| solution.dual.loops_on_edge(edge))
-            .flatten()
-            .filter(|&loop_id| solution.dual.loop_to_direction(loop_id) == configuration.direction)
-            .count()
-            > 0;
-
-        if self_intersection || occupied.get(&edgepair).is_some() {
+        if occupied.contains_key(&edgepair) {
             vec![]
         } else {
-            mesh_resmut.mesh.neighbor_function_edgepairgraph()(edgepair)
+            edge_to_neighbors[&edgepair[1]].clone()
         }
     };
 
@@ -876,15 +1094,14 @@ fn raycast(
         return;
     }
 
-    let mut timer = hutspot::timer::Timer::new();
-    println!("Computing path...");
-
     let total_path = [
         hutspot::graph::find_shortest_cycle([e1, e2], nfunction, &wfunction, cache_ref),
         hutspot::graph::find_shortest_cycle([e2, e1], nfunction, &wfunction, cache_ref),
     ]
-    .into_iter()
+    .into_par_iter()
     .flatten()
+    .collect::<Vec<_>>()
+    .into_iter()
     .sorted_by(|&(_, a), &(_, b)| a.cmp(&b))
     .next()
     .unwrap_or_default()
@@ -897,6 +1114,8 @@ fn raycast(
         println!("Path is empty.");
         return;
     }
+    timer.report("Path computation");
+    timer.reset();
 
     // Clean path, if duplicated vertices are present, remove everything between them.
     let mut cur_path = vec![];
@@ -909,7 +1128,7 @@ fn raycast(
         }
     }
     let total_path = cur_path;
-    timer.report("Path computation");
+    timer.report("Path stripping");
     timer.reset();
 
     println!("Adding path...");
