@@ -5,17 +5,20 @@ mod ui;
 
 use crate::elements::PrincipalDirection;
 use crate::ui::ui;
-use bevy::diagnostic::LogDiagnosticsPlugin;
+use bevy::diagnostic::DiagnosticsStore;
+use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
 use bevy::render::camera::Viewport;
-use bevy::window::{WindowMode, WindowResized};
+use bevy::window::WindowMode;
 use bevy_egui::EguiPlugin;
 use bevy_mod_raycast::prelude::*;
 use douconel::douconel::{Douconel, EdgeID, Empty, FaceID, VertID};
 use douconel::douconel_embedded::EmbeddedVertex;
 use dual::{Dual, Polycube, PropertyViolationError};
 use elements::{to_principal_direction, Loop, Side};
+use hutspot::color::BLACK;
 use hutspot::color::ROODT;
+use hutspot::color::WHITE;
 use hutspot::draw::DrawableLine;
 use hutspot::geom::Vector3D;
 use itertools::Itertools;
@@ -113,6 +116,8 @@ pub struct Configuration {
     pub alpha: i32,
     pub beta: i32,
 
+    pub fps: f64,
+
     pub sides_mask: [u32; 3],
 
     pub black: bool,
@@ -124,9 +129,12 @@ pub struct Configuration {
     pub zone_selection: bool,
 
     pub draw_wireframe: bool,
+    pub draw_wireframe_granny: bool,
     pub draw_vertices: bool,
     pub draw_normals: bool,
     pub draw_debug: bool,
+
+    pub swap_cameras: bool,
 
     pub cur_selected: Option<(FaceID, VertID)>,
 
@@ -235,8 +243,8 @@ fn main() {
             ..Default::default()
         }))
         .add_plugins(DefaultRaycastingPlugin)
-        // Plugin for diagnostics
-        .add_plugins(LogDiagnosticsPlugin::default())
+        // Plugin for FPS
+        .add_plugins(FrameTimeDiagnosticsPlugin)
         // Plugin for GUI
         .add_plugins(EguiPlugin)
         // Plugin for smooth camera
@@ -251,6 +259,7 @@ fn main() {
         .add_systems(Update, update_mesh)
         .add_systems(Update, raycast)
         .add_systems(Update, set_camera_viewports)
+        .add_systems(Update, fps)
         .add_event::<ActionEvent>()
         .run();
 }
@@ -289,7 +298,6 @@ fn setup(mut commands: Commands, mut ui: bevy_egui::EguiContexts) {
     // Right Camera
     commands
         .spawn(Camera3dBundle {
-            transform: Transform::from_xyz(0.0, 5., 20.0).looking_at(Vec3::ZERO, Vec3::Y),
             camera: Camera { order: 1, ..default() },
             camera_3d: Camera3d {
                 clear_color: bevy::core_pipeline::clear_color::ClearColorConfig::None,
@@ -297,12 +305,6 @@ fn setup(mut commands: Commands, mut ui: bevy_egui::EguiContexts) {
             },
             ..default()
         })
-        // .insert((OrbitCameraBundle::new(
-        //     OrbitCameraController::default(),
-        //     Vec3::new(0.0, 5.0, 20.0),
-        //     Vec3::new(0., 0., 0.),
-        //     Vec3::Y,
-        // ),))
         .insert(SubCamera);
 
     // SETUP FONT
@@ -327,40 +329,79 @@ fn setup(mut commands: Commands, mut ui: bevy_egui::EguiContexts) {
     ui.ctx_mut().set_visuals(bevy_egui::egui::Visuals::dark());
 }
 
-fn sync_cameras(mut main_camera: Query<&mut Transform, (With<MainCamera>, Without<SubCamera>)>, mut sub_camera: Query<&mut Transform, With<SubCamera>>) {
+fn sync_cameras(main_camera: Query<&Transform, (With<MainCamera>, Without<SubCamera>)>, mut sub_camera: Query<&mut Transform, With<SubCamera>>) {
     for main_c in main_camera.iter() {
-        for mut sub_c in sub_camera.iter_mut() {
+        for mut sub_c in &mut sub_camera {
             sub_c.translation = main_c.translation + POLYCUBE_OFFSET;
             sub_c.rotation = main_c.rotation;
-            sub_c.scale = main_c.scale;
         }
     }
 }
 
 fn set_camera_viewports(
     windows: Query<&Window>,
-    mut resize_events: EventReader<WindowResized>,
     mut main_camera: Query<&mut Camera, (With<MainCamera>, Without<SubCamera>)>,
     mut sub_camera: Query<&mut Camera, With<SubCamera>>,
+    configuration: Res<Configuration>,
 ) {
     // We need to dynamically resize the camera's viewports whenever the window size changes
     // so then each camera always takes up half the screen.
     // A resize_event is sent when the window is first created, allowing us to reuse this system for initial setup.
-    for resize_event in resize_events.read() {
-        let window = windows.get(resize_event.window).unwrap();
-        let mut main_camera = main_camera.single_mut();
+
+    // for resize_event in resize_events.read() {
+    //     let window = windows.get(resize_event.window).unwrap();
+    //     let mut main_camera = main_camera.single_mut();
+    //     main_camera.viewport = Some(Viewport {
+    //         physical_position: UVec2::new(0, 0),
+    //         physical_size: UVec2::new(window.resolution.physical_width(), window.resolution.physical_height()),
+    //         ..default()
+    //     });
+
+    //     let mut sub_camera = sub_camera.single_mut();
+    //     sub_camera.viewport = Some(Viewport {
+    //         physical_position: UVec2::new(11 * window.resolution.physical_width() / 16, 11 * window.resolution.physical_height() / 16),
+    //         physical_size: UVec2::new(window.resolution.physical_width() / 4, window.resolution.physical_height() / 4),
+    //         ..default()
+    //     });
+    // }
+
+    let window = windows.single();
+    let mut main_camera = main_camera.single_mut();
+    let mut sub_camera = sub_camera.single_mut();
+    // If swap_cameras is true, I want the main_camera to be smaller, and sub_camera to be bigger.
+    if !configuration.swap_cameras {
         main_camera.viewport = Some(Viewport {
             physical_position: UVec2::new(0, 0),
-            physical_size: UVec2::new(window.resolution.physical_width() / 2, window.resolution.physical_height()),
+            physical_size: UVec2::new(window.resolution.physical_width(), window.resolution.physical_height()),
             ..default()
         });
-
-        let mut sub_camera = sub_camera.single_mut();
         sub_camera.viewport = Some(Viewport {
-            physical_position: UVec2::new(window.resolution.physical_width() / 2, 0),
-            physical_size: UVec2::new(window.resolution.physical_width() / 2, window.resolution.physical_height()),
+            physical_position: UVec2::new(11 * window.resolution.physical_width() / 16, 11 * window.resolution.physical_height() / 16),
+            physical_size: UVec2::new(window.resolution.physical_width() / 4, window.resolution.physical_height() / 4),
             ..default()
         });
+    } else {
+        sub_camera.viewport = Some(Viewport {
+            physical_position: UVec2::new(0, 0),
+            physical_size: UVec2::new(window.resolution.physical_width(), window.resolution.physical_height()),
+            ..default()
+        });
+        main_camera.viewport = Some(Viewport {
+            physical_position: UVec2::new(11 * window.resolution.physical_width() / 16, 11 * window.resolution.physical_height() / 16),
+            physical_size: UVec2::new(window.resolution.physical_width() / 4, window.resolution.physical_height() / 4),
+            ..default()
+        });
+    }
+}
+
+fn fps(diagnostics: Res<DiagnosticsStore>, mut configuration: ResMut<Configuration>) {
+    if let Some(value) = diagnostics
+        .get(FrameTimeDiagnosticsPlugin::FPS)
+        .and_then(bevy::diagnostic::Diagnostic::smoothed)
+    {
+        configuration.fps = value;
+    } else {
+        configuration.fps = -1.;
     }
 }
 
@@ -620,6 +661,26 @@ fn draw_gizmos(
         }
     }
 
+    if configuration.draw_wireframe_granny {
+        if let Some(granny) = &solution.dual.granulated_mesh {
+            for edge_id in granny.edge_ids() {
+                let (u_id, v_id) = granny.endpoints(edge_id);
+                let u = granny.position(u_id);
+                let v = granny.position(v_id);
+
+                let line = DrawableLine::from_line(
+                    u,
+                    v,
+                    Vector3D::new(0., 0., 0.),
+                    mesh_resmut.properties.translation,
+                    mesh_resmut.properties.scale,
+                );
+
+                gizmos.line(line.u, line.v, hutspot::color::WHITE.into());
+            }
+        }
+    }
+
     for (&(face_id, vert_id), sol) in &solution.next {
         let u = mesh_resmut.mesh.position(vert_id);
         let v = mesh_resmut.mesh.centroid(face_id);
@@ -639,74 +700,69 @@ fn draw_gizmos(
         gizmos.line(u, v, c);
     }
 
-    match (configuration.draw_loop_type, configuration.render_type) {
-        (DrawLoopType::Undirected, RenderType::Original) => {
-            // Draw all loops
-            for l in solution.dual.get_loops() {
-                for edge in &solution.dual.get_pairs_of_sequence(&l.edges) {
-                    let u = mesh_resmut.mesh.midpoint(edge[0]);
-                    let v = mesh_resmut.mesh.midpoint(edge[1]);
-                    let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge[0]));
-                    let line = DrawableLine::from_line(u, v, n * 0.01, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
-                    gizmos.line(line.u, line.v, l.direction.to_dual_color());
-                }
+    // Draw the paths.
+    if let Ok(primal) = &solution.primal {
+        if let Some(granulated_mesh) = &solution.dual.granulated_mesh {
+            for v in primal.vert_ids() {
+                let vertex = primal.verts[v].pointer_primal_vertex;
+
+                // draw vertex
+                let u = granulated_mesh.position(vertex);
+                let n = granulated_mesh.vert_normal(vertex);
+                let line = DrawableLine::from_vertex(u, n, 0.05, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
+                gizmos.line(line.u, line.v, BLACK.into());
             }
 
-            if let Ok(primal) = &solution.primal {
-                for v in primal.vert_ids() {
-                    let vertex = primal.verts[v].pointer_primal_vertex;
-
-                    // draw vertex
-                    let u = mesh_resmut.mesh.position(vertex);
-                    let n = mesh_resmut.mesh.vert_normal(vertex);
-                    let line = DrawableLine::from_vertex(u, n, 0.05, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
-                    gizmos.line(line.u, line.v, ROODT.into());
-                }
-
-                for e in primal.edge_ids() {
-                    let path = &primal.edges[e];
-                    for vertexpair in path.windows(2) {
-                        let u = mesh_resmut.mesh.position(vertexpair[0]);
-                        let v = mesh_resmut.mesh.position(vertexpair[1]);
-                        let edge = mesh_resmut.mesh.edge_between_verts(vertexpair[0], vertexpair[1]).unwrap().0;
-                        let n = mesh_resmut.mesh.edge_normal(edge);
-                        // draw the line
-                        let line = DrawableLine::from_line(u, v, n * 0.01, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
-                        gizmos.line(line.u, line.v, ROODT.into());
+            for e in primal.edge_ids() {
+                let path = &primal.edges[e];
+                for vertexpair in path.windows(2) {
+                    let u = granulated_mesh.position(vertexpair[0]);
+                    let v = granulated_mesh.position(vertexpair[1]);
+                    if let Some((edge, _)) = granulated_mesh.edge_between_verts(vertexpair[0], vertexpair[1]) {
+                        let n = granulated_mesh.edge_normal(edge);
+                        // // draw the line
+                        let line = DrawableLine::from_line(u, v, n * 0.05, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
+                        gizmos.line(line.u, line.v, WHITE.into());
                     }
                 }
             }
         }
+    }
+
+    match (configuration.draw_loop_type, configuration.render_type) {
         (DrawLoopType::Directed, RenderType::Original) => {
             // Draw all loop segments
             let loopstruct = solution.dual.get_loop_structure();
             for segment in loopstruct.edge_ids() {
                 let pairs_between = solution.dual.get_pairs_of_sequence(&solution.dual.segment_to_edges(segment));
-
-                let dir = solution.dual.segment_to_direction(segment);
-
-                let adjacent_face = loopstruct.face(segment);
-                let centroid = hutspot::math::calculate_average_f64(loopstruct.faces[adjacent_face].verts.iter().map(|&vert| mesh_resmut.mesh.position(vert)));
+                let direction = solution.dual.segment_to_direction(segment);
+                let side = solution.dual.segment_to_side(segment, configuration.sides_mask);
 
                 for edge in pairs_between {
-                    let vector0_to_centroid = (centroid - mesh_resmut.mesh.midpoint(edge[0])).normalize();
-                    let vector1_to_centroid = (centroid - mesh_resmut.mesh.midpoint(edge[1])).normalize();
+                    let mut offset = Vector3D::new(0., 0., 0.);
 
-                    let u = mesh_resmut.mesh.midpoint(edge[0]) + vector0_to_centroid * 0.02;
-                    let v = mesh_resmut.mesh.midpoint(edge[1]) + vector1_to_centroid * 0.02;
-                    let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge[0]));
-                    for line in DrawableLine::from_arrow(
-                        u,
-                        v,
-                        n,
-                        0.9,
-                        mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edge[0])) * 0.2,
-                        mesh_resmut.properties.translation,
-                        mesh_resmut.properties.scale,
-                    ) {
-                        let side = solution.dual.segment_to_side(segment, configuration.sides_mask);
-                        gizmos.line(line.u, line.v, dir.to_dual_color_sided(side));
-                    }
+                    let dist = 0.001 * mesh_resmut.properties.scale as f64;
+
+                    match side {
+                        Side::Upper => match direction {
+                            PrincipalDirection::X => offset[0] += dist,
+                            PrincipalDirection::Y => offset[1] += dist,
+                            PrincipalDirection::Z => offset[2] += dist,
+                        },
+                        Side::Lower => match direction {
+                            PrincipalDirection::X => offset[0] -= dist,
+                            PrincipalDirection::Y => offset[1] -= dist,
+                            PrincipalDirection::Z => offset[2] -= dist,
+                        },
+                    };
+
+                    let u = mesh_resmut.mesh.midpoint(edge[0]);
+                    let v = mesh_resmut.mesh.midpoint(edge[1]);
+                    let n = mesh_resmut.mesh.edge_normal(edge[0]);
+
+                    let line = DrawableLine::from_line(u, v, offset + n * 0.05, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
+
+                    gizmos.line(line.u, line.v, direction.to_dual_color_sided(side));
                 }
             }
 
@@ -778,115 +834,7 @@ fn draw_gizmos(
                 }
             }
         }
-        (DrawLoopType::Undirected, RenderType::Polycube) => {
-            // Draw all loop segments / faces axis aligned.
 
-            if let Ok(primal) = &solution.primal {
-                for (face_id, original_id) in &primal.faces {
-                    let this_centroid = primal.centroid(face_id);
-                    let normal = (primal.normal(face_id) as Vector3D).normalize();
-                    let orientation = to_principal_direction(normal).0;
-                    for &neighbor_id in &primal.fneighbors(face_id) {
-                        let next_original_id = &primal.faces[neighbor_id];
-                        let edge_between = primal.edge_between_faces(face_id, neighbor_id).unwrap().0;
-                        let root = primal.root(edge_between);
-                        let root_pos = primal.position(root);
-                        let segment = solution
-                            .dual
-                            .get_loop_structure()
-                            .edge_between_verts(*original_id, *next_original_id)
-                            .unwrap()
-                            .0;
-                        let direction = solution.dual.segment_to_direction(segment);
-                        let segment_direction = match (orientation, direction) {
-                            (PrincipalDirection::X, PrincipalDirection::Y) | (PrincipalDirection::Y, PrincipalDirection::X) => PrincipalDirection::Z,
-                            (PrincipalDirection::X, PrincipalDirection::Z) | (PrincipalDirection::Z, PrincipalDirection::X) => PrincipalDirection::Y,
-                            (PrincipalDirection::Y, PrincipalDirection::Z) | (PrincipalDirection::Z, PrincipalDirection::Y) => PrincipalDirection::X,
-                            _ => unreachable!(),
-                        };
-                        let mut direction_vector = this_centroid;
-                        direction_vector[segment_direction as usize] = root_pos[segment_direction as usize];
-
-                        let line = DrawableLine::from_line(
-                            this_centroid,
-                            direction_vector,
-                            Vector3D::new(0., 0., 0.),
-                            mesh_resmut.properties.translation,
-                            mesh_resmut.properties.scale,
-                        );
-
-                        gizmos.line(line.u, line.v, direction.to_dual_color());
-                    }
-                }
-            }
-        }
-        (DrawLoopType::Directed, RenderType::Polycube) => {
-            // Draw all loop segments / faces axis aligned.
-            if let Ok(primal) = &solution.primal {
-                for (face_id, original_id) in &primal.faces {
-                    let this_centroid = primal.centroid(face_id);
-
-                    let normal = (primal.normal(face_id) as Vector3D).normalize();
-                    let orientation = to_principal_direction(normal).0;
-
-                    for &neighbor_id in &primal.fneighbors(face_id) {
-                        let next_original_id = &primal.faces[neighbor_id];
-
-                        let edge_between = primal.edge_between_faces(face_id, neighbor_id).unwrap().0;
-                        let root = primal.root(edge_between);
-                        let root_pos = primal.position(root);
-
-                        let segment = solution
-                            .dual
-                            .get_loop_structure()
-                            .edge_between_verts(*original_id, *next_original_id)
-                            .unwrap()
-                            .0;
-
-                        let direction = solution.dual.segment_to_direction(segment);
-
-                        for side in [Side::Upper, Side::Lower] {
-                            let segment_direction = match (orientation, direction) {
-                                (PrincipalDirection::X, PrincipalDirection::Y) | (PrincipalDirection::Y, PrincipalDirection::X) => PrincipalDirection::Z,
-                                (PrincipalDirection::X, PrincipalDirection::Z) | (PrincipalDirection::Z, PrincipalDirection::X) => PrincipalDirection::Y,
-                                (PrincipalDirection::Y, PrincipalDirection::Z) | (PrincipalDirection::Z, PrincipalDirection::Y) => PrincipalDirection::X,
-                                _ => unreachable!(),
-                            };
-
-                            let mut direction_vector = this_centroid;
-                            direction_vector[segment_direction as usize] = root_pos[segment_direction as usize];
-
-                            let mut offset = Vector3D::new(0., 0., 0.);
-
-                            let dist = 0.01;
-
-                            match side {
-                                Side::Upper => match direction {
-                                    PrincipalDirection::X => offset[0] -= dist,
-                                    PrincipalDirection::Y => offset[1] += dist,
-                                    PrincipalDirection::Z => offset[2] -= dist,
-                                },
-                                Side::Lower => match direction {
-                                    PrincipalDirection::X => offset[0] += dist,
-                                    PrincipalDirection::Y => offset[1] -= dist,
-                                    PrincipalDirection::Z => offset[2] += dist,
-                                },
-                            };
-
-                            let line = DrawableLine::from_line(
-                                this_centroid,
-                                direction_vector,
-                                offset,
-                                mesh_resmut.properties.translation,
-                                mesh_resmut.properties.scale,
-                            );
-
-                            gizmos.line(line.u, line.v, direction.to_dual_color_sided(side));
-                        }
-                    }
-                }
-            }
-        }
         _ => (),
     }
 }

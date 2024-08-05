@@ -4,12 +4,21 @@ use douconel::douconel::{Douconel, EdgeID, FaceID, MeshError, VertID};
 use douconel::douconel_embedded::HasPosition;
 use hutspot::geom::Vector3D;
 use itertools::Itertools;
+use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
 use slotmap::{SecondaryMap, SlotMap};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 pub type Polycube = Douconel<PolycubeVertex, Vec<VertID>, VertID>;
+
+#[derive(Default, Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Copy)]
+pub enum NodeType {
+    Vertex(VertID),
+    Face(FaceID),
+    #[default]
+    Phantom,
+}
 
 // Embedded vertices (have a position)
 #[derive(Default, Copy, Clone, Debug, Serialize, Deserialize)]
@@ -48,6 +57,7 @@ pub struct Dual {
     loop_structure: LoopStructure,
     zones: SlotMap<ZoneID, Zone>,
     pub side_ccs: [Vec<HashSet<EdgeID>>; 3],
+    pub granulated_mesh: Option<EmbeddedMesh>,
 }
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
@@ -66,16 +76,6 @@ pub enum PropertyViolationError {
     NonSeperatedDirection,
     CyclicDependency,
     LoopStructureError(MeshError),
-}
-
-#[derive(Default, Debug, Clone, Serialize, Deserialize)]
-pub struct Properties {
-    pub has_face_lower_degree: bool,
-    pub has_transversal_intersection: bool,
-    pub has_same_colored_intersection: bool,
-    pub has_no_two_coloring: bool,
-    pub has_incomplete_direction: bool,
-    pub has_malformed_face: bool,
 }
 
 #[derive(Debug)]
@@ -102,6 +102,7 @@ impl Dual {
             zones: SlotMap::with_key(),
             occupied: SecondaryMap::new(),
             side_ccs: [vec![], vec![], vec![]],
+            granulated_mesh: None,
         }
     }
 
@@ -479,30 +480,97 @@ impl Dual {
             primal.verts[primal_vert_id].pointer_primal_vertex = best_vertex_in_subsurface;
         }
 
+        for (face_id, face_obj) in &mut primal.faces {
+            *face_obj = self.loop_structure.verts.keys().collect_vec()[fmap.get_by_right(&face_id).unwrap().to_owned()];
+        }
+
+        primal
+    }
+
+    fn place_paths(&mut self, primal: &mut Polycube) -> EmbeddedMesh {
+        let mut granulated_mesh = self.mesh_ref.as_ref().clone();
+
         let mut edge_to_obj = HashMap::new();
         for (edge_id, edge_obj) in &primal.edges {
             let (u_new, v_new) = primal.endpoints(edge_id);
             let (u, v) = (primal.verts[u_new].pointer_primal_vertex, primal.verts[v_new].pointer_primal_vertex);
+
+            // TODO:
+            // block previously used vertices...
+            // block previously used edges...
+            // block all primals (cannot go over primal vertex)
             // shortest path from u to v
-            let path = hutspot::graph::find_shortest_path(
-                u,
-                v,
-                self.mesh_ref.neighbor_function_primal(),
-                self.mesh_ref.weight_function_euclidean(),
-                &mut HashMap::new(),
-            );
-            edge_to_obj.insert(edge_id, path.unwrap().0);
+            let n_function = |node: NodeType| match node {
+                NodeType::Face(f_id) => {
+                    let f_neighbors: Vec<NodeType> = granulated_mesh.fneighbors(f_id).into_iter().map(NodeType::Face).collect_vec();
+                    let v_neighbors = granulated_mesh.corners(f_id).into_iter().map(NodeType::Vertex).collect_vec();
+                    [v_neighbors, f_neighbors].concat()
+                }
+                NodeType::Vertex(v_id) => {
+                    let v_neighbors = granulated_mesh.vneighbors(v_id).into_iter().map(NodeType::Vertex).collect_vec();
+                    let f_neighbors = granulated_mesh.star(v_id).into_iter().map(NodeType::Face).collect_vec();
+                    [v_neighbors, f_neighbors].concat()
+                }
+                NodeType::Phantom => vec![],
+            };
+
+            let nodetype_to_pos = |node: NodeType| match node {
+                NodeType::Face(f_id) => granulated_mesh.centroid(f_id),
+                NodeType::Vertex(v_id) => granulated_mesh.position(v_id),
+                NodeType::Phantom => unreachable!(),
+            };
+
+            let w_function = |a: NodeType, b: NodeType| {
+                let a_pos = nodetype_to_pos(a);
+                let b_pos = nodetype_to_pos(b);
+                OrderedFloat(a_pos.metric_distance(&b_pos))
+            };
+
+            let mut granulated_path = vec![];
+            if let Some((path, _)) = hutspot::graph::find_shortest_path(NodeType::Vertex(u), NodeType::Vertex(v), n_function, w_function, &mut HashMap::new()) {
+                let mut last_f_ids_maybe: Option<[FaceID; 3]> = None;
+                for node in path {
+                    match node {
+                        NodeType::Vertex(v_id) => {
+                            granulated_path.push(v_id);
+                            last_f_ids_maybe = None;
+                        }
+                        NodeType::Face(f_id) => {
+                            let new_v_pos = granulated_mesh.centroid(f_id);
+                            let (new_v_id, new_f_ids) = granulated_mesh.split_face(f_id);
+                            granulated_mesh.verts[new_v_id].set_position(new_v_pos);
+
+                            if let Some(last_f_ids) = last_f_ids_maybe {
+                                for last_f_id in last_f_ids {
+                                    for new_f_id in new_f_ids {
+                                        if let Some((edge_id, _)) = granulated_mesh.edge_between_faces(last_f_id, new_f_id) {
+                                            let mid_v_pos = granulated_mesh.midpoint(edge_id);
+                                            let (mid_v_id, _) = granulated_mesh.split_edge(edge_id);
+                                            granulated_mesh.verts[mid_v_id].set_position(mid_v_pos);
+                                            granulated_path.push(mid_v_id);
+                                        }
+                                    }
+                                }
+                            }
+
+                            last_f_ids_maybe = Some(new_f_ids);
+                            granulated_path.push(new_v_id);
+                        }
+                        NodeType::Phantom => unreachable!(),
+                    }
+                }
+            };
+
+            println!("granulated path: {granulated_path:?}");
+
+            edge_to_obj.insert(edge_id, granulated_path);
         }
 
         for (edge_id, edge_obj) in &mut primal.edges {
             edge_obj.clone_from(edge_to_obj.get(&edge_id).unwrap());
         }
 
-        for (face_id, face_obj) in &mut primal.faces {
-            *face_obj = self.loop_structure.verts.keys().collect_vec()[fmap.get_by_right(&face_id).unwrap().to_owned()];
-        }
-
-        primal
+        granulated_mesh
     }
 
     // Returns error if:
@@ -1048,8 +1116,13 @@ impl Dual {
         // UNKNOWN HIGHER GENUS REQUIREMENTS HERE>>>
         // UNKNOWN HIGHER GENUS REQUIREMENTS HERE>>>
         // UNKNOWN HIGHER GENUS REQUIREMENTS HERE>>>
-        let polycube = self.primal();
+        let mut polycube = self.primal();
         timer.report("Polycube computation");
+        timer.reset();
+
+        println!("Computing paths");
+        self.granulated_mesh = Some(self.place_paths(&mut polycube));
+        timer.report("Place paths computation");
         timer.reset();
 
         Ok(polycube)
