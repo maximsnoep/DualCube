@@ -1,7 +1,6 @@
-use crate::{elements::PrincipalDirection, ActionEvent, Configuration, DrawLoopType, InputResource, RenderType, SolutionResource};
+use crate::{elements::PrincipalDirection, ActionEvent, Configuration, DrawLoopType, InputResource, SolutionResource};
 use bevy::prelude::*;
 use bevy_egui::egui::{emath::Numeric, Color32, RichText, Slider, TopBottomPanel, Ui};
-use douconel::douconel_embedded::HasPosition;
 
 pub fn ui(
     mut egui_ctx: bevy_egui::EguiContexts,
@@ -129,8 +128,6 @@ pub fn ui(
                     // ui.add_space(15.);
 
                     ui.vertical(|ui| {
-                        ui.checkbox(&mut conf.region_selection, "region selection");
-                        ui.checkbox(&mut conf.zone_selection, "zone selection");
                         ui.checkbox(&mut conf.draw_wireframe, "graph");
                         ui.checkbox(&mut conf.draw_wireframe_granny, "granny");
                         ui.checkbox(&mut conf.draw_vertices, "vertices");
@@ -146,12 +143,6 @@ pub fn ui(
                         //         }
                         //     }
                         // }
-                    });
-
-                    ui.vertical(|ui| {
-                        for draw_loop_type in [DrawLoopType::None, DrawLoopType::Directed, DrawLoopType::Undirected] {
-                            radio(ui, &mut conf.draw_loop_type, draw_loop_type);
-                        }
                     });
 
                     // ui.add_space(15.);
