@@ -234,6 +234,11 @@ pub fn handle_events(
                 mesh_resmut.properties.nr_of_edges = mesh_resmut.mesh.nr_edges() / 2; // dcel -> single edge
                 mesh_resmut.properties.nr_of_faces = mesh_resmut.mesh.nr_faces();
 
+                configuration.interactive = true;
+                configuration.alpha = 15;
+                configuration.beta = 15;
+                configuration.black = true;
+
                 let mesh = mesh_resmut.mesh.bevy(&HashMap::new());
                 let aabb = mesh.compute_aabb().unwrap();
                 mesh_resmut.properties.scale = 10. * (1. / aabb.half_extents.max_element());

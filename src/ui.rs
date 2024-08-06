@@ -1,5 +1,5 @@
 use crate::{elements::PrincipalDirection, ActionEvent, Configuration, DrawLoopType, InputResource, SolutionResource};
-use bevy::prelude::*;
+use bevy::{prelude::*, render::mesh};
 use bevy_egui::egui::{emath::Numeric, Color32, RichText, Slider, TopBottomPanel, Ui};
 
 pub fn ui(
@@ -121,9 +121,15 @@ pub fn ui(
                                 }
                             }
                         }
-                    });
 
-                    // ui.label(format!("Selected: {:?}", conf.cur_selected));
+                        if conf.cur_selected.is_some() {
+                            ui.label(format!("raycast: {:?}", conf.cur_selected.unwrap()));
+                            let cycle = mesh_resmut.mesh.edges(conf.cur_selected.unwrap().0);
+                            ui.label(format!("cycle: {:?}", cycle));
+                            let star = mesh_resmut.mesh.star(conf.cur_selected.unwrap().1);
+                            ui.label(format!("star: {:?}", star));
+                        }
+                    });
 
                     // ui.add_space(15.);
 

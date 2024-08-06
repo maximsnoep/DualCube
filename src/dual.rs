@@ -490,29 +490,138 @@ impl Dual {
     fn place_paths(&mut self, primal: &mut Polycube) -> EmbeddedMesh {
         let mut granulated_mesh = self.mesh_ref.as_ref().clone();
 
-        let mut edge_to_obj = HashMap::new();
-        for (edge_id, edge_obj) in &primal.edges {
+        let mut spanning_tree_edges = vec![];
+        let mut visited = HashSet::new();
+        //start at random vertex
+        let mut queue = vec![primal.vert_ids()[0]];
+        while let Some(vertex_id) = queue.pop() {
+            visited.insert(vertex_id);
+            for neighbor_id in primal.vneighbors(vertex_id) {
+                if !visited.contains(&neighbor_id) {
+                    let (edge_id, _) = primal.edge_between_verts(vertex_id, neighbor_id).unwrap();
+                    spanning_tree_edges.push(edge_id);
+                    queue.push(neighbor_id);
+                    visited.insert(neighbor_id);
+                }
+            }
+        }
+
+        for edge_id in primal.edge_ids() {
+            if !spanning_tree_edges.contains(&edge_id) {
+                spanning_tree_edges.push(edge_id);
+            }
+        }
+
+        let primal_vertices = primal.vert_ids().iter().map(|&x| primal.verts[x].pointer_primal_vertex).collect_vec();
+        let mut occupied_vertices = HashSet::new();
+
+        let mut edge_to_obj: HashMap<EdgeID, Vec<VertID>> = HashMap::new();
+        while let Some(edge_id) = spanning_tree_edges.pop() {
+            // if already found (because of twin), skip
+            if edge_to_obj.contains_key(&edge_id) {
+                continue;
+            }
+
             let (u_new, v_new) = primal.endpoints(edge_id);
             let (u, v) = (primal.verts[u_new].pointer_primal_vertex, primal.verts[v_new].pointer_primal_vertex);
 
-            // TODO:
-            // block previously used vertices...
-            // block previously used edges...
-            // block all primals (cannot go over primal vertex)
+            // Find edge in `u_new`
+            let edges_done_in_u_new = primal
+                .outgoing(u_new)
+                .into_iter()
+                .filter(|&e| edge_to_obj.contains_key(&e) || e == edge_id)
+                .collect_vec();
+
+            let mut blocked_faces = HashSet::new();
+            // If this is 3 or larger, this means we must make sure the new edge is placed inbetween existing edges, in the correct order
+            if edges_done_in_u_new.len() >= 3 {
+                // Find the edge that is "above" the new edge
+                let edge_id_position = edges_done_in_u_new.iter().position(|&e| e == edge_id).unwrap();
+                let above = (edge_id_position + 1) % edges_done_in_u_new.len();
+                let below = (edge_id_position + edges_done_in_u_new.len() - 1) % edges_done_in_u_new.len();
+                // find above edge in the granulated mesh
+                let above_edge_id = edges_done_in_u_new[above];
+                let above_edge_obj = edge_to_obj.get(&above_edge_id).unwrap();
+                let above_edge_start = above_edge_obj[0];
+                assert!(above_edge_start == u);
+                let above_edge_start_plus_one = above_edge_obj[1];
+                let above_edge_real_edge = granulated_mesh.edge_between_verts(above_edge_start, above_edge_start_plus_one).unwrap().0;
+                // find below edge in the granulated mesh
+                let below_edge_id = edges_done_in_u_new[below];
+                let below_edge_obj = edge_to_obj.get(&below_edge_id).unwrap();
+                let below_edge_start = below_edge_obj[0];
+                assert!(below_edge_start == u);
+                let below_edge_start_plus_one = below_edge_obj[1];
+                let below_edge_real_edge = granulated_mesh.edge_between_verts(below_edge_start, below_edge_start_plus_one).unwrap().0;
+                // so starting from below edge, we insert all faces up until the above edge
+                let all_edges = granulated_mesh.outgoing(u).into_iter().flat_map(|e| [e, granulated_mesh.twin(e)]).collect_vec();
+                let allowed_edges = all_edges
+                    .into_iter()
+                    .cycle()
+                    .skip_while(|&e| e != below_edge_real_edge)
+                    .skip(1)
+                    .take_while(|&e| e != above_edge_real_edge)
+                    .collect_vec();
+                println!("below: {below_edge_real_edge:?}, above: {above_edge_real_edge:?}");
+                println!("allowed edges: {allowed_edges:?}");
+                let allowed_faces = allowed_edges.into_iter().map(|e| granulated_mesh.face(e)).collect_vec();
+                println!("allowed faces: {allowed_faces:?}");
+                assert!(allowed_faces.len() > 0);
+                for face_id in granulated_mesh.star(u) {
+                    if !allowed_faces.contains(&face_id) {
+                        blocked_faces.insert(face_id);
+                    }
+                }
+            }
+
+            let mut blocked_vertices = HashSet::new();
+            for &blocked_face in &blocked_faces {
+                blocked_vertices.extend(granulated_mesh.corners(blocked_face));
+            }
+
             // shortest path from u to v
             let n_function = |node: NodeType| match node {
                 NodeType::Face(f_id) => {
-                    let f_neighbors: Vec<NodeType> = granulated_mesh.fneighbors(f_id).into_iter().map(NodeType::Face).collect_vec();
+                    let f_neighbors: Vec<NodeType> = {
+                        // Disallow blocked faces
+                        if blocked_faces.contains(&f_id) {
+                            return vec![];
+                        }
+                        // Only allowed if the edge between the two faces is not occupied.
+                        let blocked = |f1: FaceID, f2: FaceID| {
+                            let (edge_id, _) = granulated_mesh.edge_between_faces(f1, f2).unwrap();
+                            let (u, v) = granulated_mesh.endpoints(edge_id);
+                            occupied_vertices.contains(&u) && occupied_vertices.contains(&v)
+                        };
+                        granulated_mesh
+                            .fneighbors(f_id)
+                            .into_iter()
+                            .filter(|&n_id| !blocked(f_id, n_id))
+                            .map(NodeType::Face)
+                            .collect_vec()
+                    };
                     let v_neighbors = granulated_mesh.corners(f_id).into_iter().map(NodeType::Vertex).collect_vec();
                     [v_neighbors, f_neighbors].concat()
                 }
                 NodeType::Vertex(v_id) => {
+                    // Disallow vertices of blocked faces (unless it is the start or end vertex)
+                    if blocked_vertices.contains(&v_id) && v_id != u && v_id != v {
+                        return vec![];
+                    }
+                    // Only allowed if the vertex is not occupied
+                    if (occupied_vertices.contains(&v_id) && v_id != u && v_id != v) || (primal_vertices.contains(&v_id) && v_id != u && v_id != v) {
+                        return vec![];
+                    }
                     let v_neighbors = granulated_mesh.vneighbors(v_id).into_iter().map(NodeType::Vertex).collect_vec();
                     let f_neighbors = granulated_mesh.star(v_id).into_iter().map(NodeType::Face).collect_vec();
                     [v_neighbors, f_neighbors].concat()
                 }
                 NodeType::Phantom => vec![],
             };
+
+            println!("u: {u:?}, v: {v:?}");
+            // neighbors of u using n_function
+            println!("neighbors of u: {:?}", n_function(NodeType::Vertex(u)));
 
             let nodetype_to_pos = |node: NodeType| match node {
                 NodeType::Face(f_id) => granulated_mesh.centroid(f_id),
@@ -532,7 +641,7 @@ impl Dual {
                 for node in path {
                     match node {
                         NodeType::Vertex(v_id) => {
-                            granulated_path.push(v_id);
+                            granulated_path.push((v_id, false));
                             last_f_ids_maybe = None;
                         }
                         NodeType::Face(f_id) => {
@@ -547,23 +656,50 @@ impl Dual {
                                             let mid_v_pos = granulated_mesh.midpoint(edge_id);
                                             let (mid_v_id, _) = granulated_mesh.split_edge(edge_id);
                                             granulated_mesh.verts[mid_v_id].set_position(mid_v_pos);
-                                            granulated_path.push(mid_v_id);
+                                            granulated_path.push((mid_v_id, false));
                                         }
                                     }
                                 }
                             }
 
                             last_f_ids_maybe = Some(new_f_ids);
-                            granulated_path.push(new_v_id);
+                            granulated_path.push((new_v_id, true));
                         }
                         NodeType::Phantom => unreachable!(),
                     }
                 }
             };
 
+            for triple in granulated_path.windows(3) {
+                if triple[1].1 {
+                    assert!(!triple[0].1 && !triple[2].1);
+                    let (v0, v1, v2) = (triple[0].0, triple[1].0, triple[2].0);
+                    // Get pos of v0 and v2
+                    let (pos0, pos2) = (granulated_mesh.position(v0), granulated_mesh.position(v2));
+                    // Set pos of v1 to be the midpoint of v0 and v2
+                    let pos1 = (pos0 + pos2) / 2.0;
+                    granulated_mesh.verts[v1].set_position(pos1);
+                }
+            }
+
+            let granulated_path = granulated_path.into_iter().map(|(v_id, _)| v_id).collect_vec();
+
             println!("granulated path: {granulated_path:?}");
 
-            edge_to_obj.insert(edge_id, granulated_path);
+            for &v_id in &granulated_path {
+                occupied_vertices.insert(v_id);
+            }
+
+            // if granulated_path.is_empty() {
+            //     panic!("Empty path found");
+            // }
+
+            edge_to_obj.insert(edge_id, granulated_path.clone());
+
+            // for the twin, we insert the reverse
+            let mut rev_path = granulated_path;
+            rev_path.reverse();
+            edge_to_obj.insert(primal.twin(edge_id), rev_path);
         }
 
         for (edge_id, edge_obj) in &mut primal.edges {

@@ -77,12 +77,6 @@ pub fn setup(mut commands: Commands, mut ui: bevy_egui::EguiContexts, mut config
         })
         .insert(SubCamera);
 
-    // Configuration default parameters
-    configuration.interactive = true;
-    configuration.alpha = 15;
-    configuration.beta = 15;
-    configuration.black = true;
-
     // SETUP FONT
     let mut fonts = bevy_egui::egui::FontDefinitions::default();
     fonts.font_data.insert(
@@ -245,84 +239,18 @@ pub fn draw_gizmos(
                     }
                 }
             }
-        }
-    }
 
-    // Draw all loop segments
-    let loopstruct = solution.dual.get_loop_structure();
-    for segment in loopstruct.edge_ids() {
-        let pairs_between = solution.dual.get_pairs_of_sequence(&solution.dual.segment_to_edges(segment));
-        let direction = solution.dual.segment_to_direction(segment);
-        let side = solution.dual.segment_to_side(segment, configuration.sides_mask);
-
-        for edge in pairs_between {
-            let mut offset = Vector3D::new(0., 0., 0.);
-
-            let dist = 0.001 * mesh_resmut.properties.scale as f64;
-
-            match side {
-                Side::Upper => match direction {
-                    PrincipalDirection::X => offset[0] += dist,
-                    PrincipalDirection::Y => offset[1] += dist,
-                    PrincipalDirection::Z => offset[2] += dist,
-                },
-                Side::Lower => match direction {
-                    PrincipalDirection::X => offset[0] -= dist,
-                    PrincipalDirection::Y => offset[1] -= dist,
-                    PrincipalDirection::Z => offset[2] -= dist,
-                },
-            };
-
-            let u = mesh_resmut.mesh.midpoint(edge[0]);
-            let v = mesh_resmut.mesh.midpoint(edge[1]);
-            let n = mesh_resmut.mesh.edge_normal(edge[0]);
-
-            let line = DrawableLine::from_line(u, v, offset + n * 0.05, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
-
-            gizmos.line(line.u, line.v, direction.to_dual_color_sided(side));
-        }
-    }
-
-    // POLYCUBE :::
-
-    // Draw all loop segments / faces axis aligned.
-    if let Ok(primal) = &solution.primal {
-        for (face_id, original_id) in &primal.faces {
-            let this_centroid = primal.centroid(face_id);
-
-            let normal = (primal.normal(face_id) as Vector3D).normalize();
-            let orientation = to_principal_direction(normal).0;
-
-            for &neighbor_id in &primal.fneighbors(face_id) {
-                let next_original_id = &primal.faces[neighbor_id];
-
-                let edge_between = primal.edge_between_faces(face_id, neighbor_id).unwrap().0;
-                let root = primal.root(edge_between);
-                let root_pos = primal.position(root);
-
-                let segment = solution
-                    .dual
-                    .get_loop_structure()
-                    .edge_between_verts(*original_id, *next_original_id)
-                    .unwrap()
-                    .0;
-
+            // Draw all loop segments
+            let loopstruct = solution.dual.get_loop_structure();
+            for segment in loopstruct.edge_ids() {
+                let pairs_between = solution.dual.get_pairs_of_sequence(&solution.dual.segment_to_edges(segment));
                 let direction = solution.dual.segment_to_direction(segment);
+                let side = solution.dual.segment_to_side(segment, configuration.sides_mask);
 
-                for side in [Side::Upper, Side::Lower] {
-                    let segment_direction = match (orientation, direction) {
-                        (PrincipalDirection::X, PrincipalDirection::Y) | (PrincipalDirection::Y, PrincipalDirection::X) => PrincipalDirection::Z,
-                        (PrincipalDirection::X, PrincipalDirection::Z) | (PrincipalDirection::Z, PrincipalDirection::X) => PrincipalDirection::Y,
-                        (PrincipalDirection::Y, PrincipalDirection::Z) | (PrincipalDirection::Z, PrincipalDirection::Y) => PrincipalDirection::X,
-                        _ => unreachable!(),
-                    };
-
-                    let mut direction_vector = this_centroid;
-                    direction_vector[segment_direction as usize] = root_pos[segment_direction as usize];
-
+                for edge in pairs_between {
                     let mut offset = Vector3D::new(0., 0., 0.);
 
-                    let dist = 0.001 * solution.properties.scale as f64;
+                    let dist = 0.001 * mesh_resmut.properties.scale as f64;
 
                     match side {
                         Side::Upper => match direction {
@@ -337,15 +265,78 @@ pub fn draw_gizmos(
                         },
                     };
 
-                    let line = DrawableLine::from_line(
-                        this_centroid,
-                        direction_vector,
-                        offset + normal * 0.01,
-                        solution.properties.translation + Vector3D::new(POLYCUBE_OFFSET.x as f64, POLYCUBE_OFFSET.y as f64, POLYCUBE_OFFSET.z as f64),
-                        solution.properties.scale,
-                    );
+                    let u = mesh_resmut.mesh.midpoint(edge[0]);
+                    let v = mesh_resmut.mesh.midpoint(edge[1]);
+                    let n = mesh_resmut.mesh.edge_normal(edge[0]);
+
+                    let line = DrawableLine::from_line(u, v, offset + n * 0.05, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
 
                     gizmos.line(line.u, line.v, direction.to_dual_color_sided(side));
+                }
+
+                // POLYCUBE :::
+                // Draw all loop segments / faces axis aligned.
+                for (face_id, original_id) in &primal.faces {
+                    let this_centroid = primal.centroid(face_id);
+
+                    let normal = (primal.normal(face_id) as Vector3D).normalize();
+                    let orientation = to_principal_direction(normal).0;
+
+                    for &neighbor_id in &primal.fneighbors(face_id) {
+                        let next_original_id = &primal.faces[neighbor_id];
+
+                        let edge_between = primal.edge_between_faces(face_id, neighbor_id).unwrap().0;
+                        let root = primal.root(edge_between);
+                        let root_pos = primal.position(root);
+
+                        let segment = solution
+                            .dual
+                            .get_loop_structure()
+                            .edge_between_verts(*original_id, *next_original_id)
+                            .unwrap()
+                            .0;
+
+                        let direction = solution.dual.segment_to_direction(segment);
+
+                        for side in [Side::Upper, Side::Lower] {
+                            let segment_direction = match (orientation, direction) {
+                                (PrincipalDirection::X, PrincipalDirection::Y) | (PrincipalDirection::Y, PrincipalDirection::X) => PrincipalDirection::Z,
+                                (PrincipalDirection::X, PrincipalDirection::Z) | (PrincipalDirection::Z, PrincipalDirection::X) => PrincipalDirection::Y,
+                                (PrincipalDirection::Y, PrincipalDirection::Z) | (PrincipalDirection::Z, PrincipalDirection::Y) => PrincipalDirection::X,
+                                _ => unreachable!(),
+                            };
+
+                            let mut direction_vector = this_centroid;
+                            direction_vector[segment_direction as usize] = root_pos[segment_direction as usize];
+
+                            let mut offset = Vector3D::new(0., 0., 0.);
+
+                            let dist = 0.001 * solution.properties.scale as f64;
+
+                            match side {
+                                Side::Upper => match direction {
+                                    PrincipalDirection::X => offset[0] += dist,
+                                    PrincipalDirection::Y => offset[1] += dist,
+                                    PrincipalDirection::Z => offset[2] += dist,
+                                },
+                                Side::Lower => match direction {
+                                    PrincipalDirection::X => offset[0] -= dist,
+                                    PrincipalDirection::Y => offset[1] -= dist,
+                                    PrincipalDirection::Z => offset[2] -= dist,
+                                },
+                            };
+
+                            let line = DrawableLine::from_line(
+                                this_centroid,
+                                direction_vector,
+                                offset + normal * 0.01,
+                                solution.properties.translation + Vector3D::new(POLYCUBE_OFFSET.x as f64, POLYCUBE_OFFSET.y as f64, POLYCUBE_OFFSET.z as f64),
+                                solution.properties.scale,
+                            );
+
+                            gizmos.line(line.u, line.v, direction.to_dual_color_sided(side));
+                        }
+                    }
                 }
             }
         }
