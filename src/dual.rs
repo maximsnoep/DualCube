@@ -190,6 +190,25 @@ impl Dual {
         self.occupied.get(edge).cloned().unwrap_or_default()
     }
 
+    pub fn occupied_edgepairs(&self) -> HashSet<[EdgeID; 2]> {
+        self.occupied
+            .iter()
+            .flat_map(|(edge_id, loops_on_edge)| {
+                self.mesh_ref
+                    .nexts(edge_id)
+                    .iter()
+                    .flat_map(|&neighbor_id| {
+                        if loops_on_edge.iter().any(|loop_on_edge| self.loops_on_edge(neighbor_id).contains(loop_on_edge)) {
+                            vec![[edge_id, neighbor_id], [neighbor_id, edge_id]]
+                        } else {
+                            vec![]
+                        }
+                    })
+                    .collect_vec()
+            })
+            .collect()
+    }
+
     pub fn count_loops_in_direction(&self, direction: PrincipalDirection) -> usize {
         self.loops.iter().filter(|(_, l)| l.direction == direction).count()
     }

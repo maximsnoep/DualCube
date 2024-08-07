@@ -1,5 +1,5 @@
-use crate::{elements::PrincipalDirection, ActionEvent, Configuration, DrawLoopType, InputResource, SolutionResource};
-use bevy::{prelude::*, render::mesh};
+use crate::{elements::PrincipalDirection, ActionEvent, Configuration, InputResource, SolutionResource};
+use bevy::prelude::*;
 use bevy_egui::egui::{emath::Numeric, Color32, RichText, Slider, TopBottomPanel, Ui};
 
 pub fn ui(
@@ -33,11 +33,9 @@ pub fn ui(
                         ui.add_space(15.);
                         ui.label(mesh_resmut.properties.source.to_string());
                     }
-                });
 
-                ui.add_space(15.);
+                    ui.add_space(15.);
 
-                ui.horizontal(|ui| {
                     let vert_color = if mesh_resmut.properties.nr_of_vertices >= 100_000 {
                         Color32::RED
                     } else if mesh_resmut.properties.nr_of_vertices >= 50_000 {
@@ -107,12 +105,16 @@ pub fn ui(
                             okido(ui, "OK");
                         }
                     });
+                });
 
+                ui.add_space(15.);
+
+                ui.horizontal(|ui| {
                     ui.add_space(15.);
 
                     ui.vertical(|ui| {
                         if let Some(selected_edge) = conf.cur_selected {
-                            if let Some(sol) = solution.next.get(&selected_edge) {
+                            if let Some(sol) = solution.next[conf.direction as usize].get(&selected_edge) {
                                 ui.label("SELECTED");
                                 if let Some((_, Err(err))) = sol {
                                     warning(ui, &format!("ERROR: {err:?}"));
@@ -133,23 +135,11 @@ pub fn ui(
 
                     // ui.add_space(15.);
 
-                    ui.vertical(|ui| {
-                        ui.checkbox(&mut conf.draw_wireframe, "graph");
-                        ui.checkbox(&mut conf.draw_wireframe_granny, "granny");
-                        ui.checkbox(&mut conf.draw_vertices, "vertices");
-                        ui.checkbox(&mut conf.draw_normals, "normals");
-
-                        // if ui.button("test").clicked() {
-                        //     for _ in 0..100 {
-                        //         if let Some(granny) = &mut solution.dual.granulated_mesh {
-                        //             let face_id = granny.random_faces(1)[0];
-                        //             let (new_v_id, _) = granny.split_face(face_id);
-                        //             let new_pos = granny.centroid(face_id);
-                        //             granny.verts[new_v_id].set_position(new_pos);
-                        //         }
-                        //     }
-                        // }
-                    });
+                    // ui.vertical(|ui| {
+                    //     ui.checkbox(&mut conf.draw_wireframe, "graph");
+                    //     ui.checkbox(&mut conf.draw_vertices, "vertices");
+                    //     ui.checkbox(&mut conf.draw_normals, "normals");
+                    // });
 
                     // ui.add_space(15.);
 
@@ -213,7 +203,9 @@ pub fn ui(
 
                     ui.add_space(15.);
 
-                    ui.checkbox(&mut conf.black, "BLACK");
+                    if ui.checkbox(&mut conf.black, "BLACK").changed() {
+                        mesh_resmut.as_mut();
+                    }
                 });
 
                 ui.add_space(5.);
