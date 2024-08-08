@@ -1421,6 +1421,8 @@ impl Dual {
         timer.reset();
 
         self.assign_patches(&mut polycube)?;
+        timer.report("Assigning patches");
+        timer.reset();
 
         Ok(polycube)
     }
