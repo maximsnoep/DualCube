@@ -107,7 +107,7 @@ pub fn ui(
                         ui.add_space(15.);
 
                         ui.with_layout(Layout::top_down(Align::BOTTOM), |ui| {
-                            ui.label("STATUS");
+                            ui.label("CURRENT STATUS");
                             if let Err(err) = &solution.primal {
                                 warning(ui, &format!("ERROR: {err:?}"));
                             } else {
@@ -162,22 +162,28 @@ pub fn ui(
                 ui.add_space(10.);
 
                 ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
-                    ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
+                    ui.with_layout(Layout::right_to_left(Align::TOP), |ui| {
                         ui.add_space(15.);
 
-                        // Hovered solution status etc.
-                        ui.with_layout(Layout::top_down(Align::TOP), |ui| {
-                            ui.label("SELECTED SOL");
+                        // Selected face etc.
+                        ui.with_layout(Layout::top_down(Align::BOTTOM), |ui| {
+                            ui.label("RAYCASTED FACE");
+                            if let Some(selected_face) = conf.selected_face {
+                                ui.label(selected_face.0.to_string());
+                            } else {
+                                ui.label("-");
+                            }
+
+                            ui.add_space(15.);
+
+                            ui.label("HIGHLIGHTED SOLUTION");
+
                             if let Some(selected_edge) = conf.selected_solution {
                                 ui.label(format!("{}", selected_edge.0));
                             } else {
                                 ui.label("-");
                             }
-                        });
 
-                        ui.add_space(15.);
-
-                        ui.with_layout(Layout::top_down(Align::TOP), |ui| {
                             ui.label("STATUS");
 
                             if let Some(selected_edge) = conf.selected_solution {
@@ -190,22 +196,6 @@ pub fn ui(
                                 } else {
                                     ui.label("-");
                                 }
-                            } else {
-                                ui.label("-");
-                            }
-                        });
-
-                        ui.add_space(15.);
-                    });
-
-                    ui.with_layout(Layout::right_to_left(Align::TOP), |ui| {
-                        ui.add_space(15.);
-
-                        // Selected face etc.
-                        ui.with_layout(Layout::top_down(Align::BOTTOM), |ui| {
-                            ui.label("SELECTED FACE");
-                            if let Some(selected_face) = conf.selected_face {
-                                ui.label(selected_face.0.to_string());
                             } else {
                                 ui.label("-");
                             }
@@ -246,12 +236,6 @@ pub fn ui(
             });
         });
     });
-}
-
-pub fn sep(ui: &mut Ui) {
-    ui.add_space(10.);
-    ui.separator();
-    ui.add_space(10.);
 }
 
 fn slider<T: Numeric>(ui: &mut Ui, label: &str, value: &mut T, range: std::ops::RangeInclusive<T>) {

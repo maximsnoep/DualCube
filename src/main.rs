@@ -1,4 +1,3 @@
-mod draw;
 mod dual;
 mod elements;
 mod system;
@@ -12,7 +11,6 @@ use bevy_egui::EguiPlugin;
 use bevy_mod_raycast::prelude::*;
 use douconel::douconel::{Douconel, EdgeID, Empty, FaceID, VertID};
 use douconel::douconel_embedded::EmbeddedVertex;
-use draw::{draw_gizmos, GizmosCache};
 use dual::{Dual, Polycube, PropertyViolationError};
 use elements::{Loop, PrincipalDirection, Side};
 use hutspot::draw::DrawableLine;
@@ -31,7 +29,7 @@ use std::io::BufReader;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use system::{fps, set_camera_viewports, setup, sync_cameras, update_mesh, Configuration};
+use system::{add_line2, draw_gizmos, fps, set_camera_viewports, setup, sync_cameras, update_mesh, Configuration, GizmosCache};
 
 pub const BACKGROUND_COLOR: bevy::prelude::Color = bevy::prelude::Color::rgb(27. / 255., 27. / 255., 27. / 255.);
 pub const MESH_OFFSET: Vector3D = Vector3D::new(0., 1_000., 0.);
@@ -240,7 +238,7 @@ pub fn handle_events(
                     let u = mesh_resmut.mesh.position(u_id);
                     let v = mesh_resmut.mesh.position(v_id);
                     let n = mesh_resmut.mesh.edge_normal(edge_id);
-                    draw::add_line2(
+                    add_line2(
                         &mut gizmos_cache.wireframe,
                         u,
                         v,
@@ -253,7 +251,7 @@ pub fn handle_events(
                 for vert_id in mesh_resmut.mesh.vert_ids() {
                     let position = mesh_resmut.mesh.position(vert_id);
                     let normal = mesh_resmut.mesh.vert_normal(vert_id);
-                    draw::add_line2(
+                    add_line2(
                         &mut gizmos_cache.vertices,
                         position,
                         position + normal * 0.05,
@@ -266,7 +264,7 @@ pub fn handle_events(
                 for face_id in mesh_resmut.mesh.face_ids() {
                     let position = mesh_resmut.mesh.centroid(face_id);
                     let normal = mesh_resmut.mesh.normal(face_id);
-                    draw::add_line2(
+                    add_line2(
                         &mut gizmos_cache.normals,
                         position,
                         position + normal * 0.05,
@@ -336,7 +334,7 @@ fn raycast(
         mesh_resmut.properties.translation,
         mesh_resmut.properties.scale,
     );
-    draw::add_line(
+    system::add_line(
         &mut gizmos_cache.raycaster,
         position,
         normal,
@@ -353,7 +351,7 @@ fn raycast(
             Some(_) => configuration.direction.to_dual_color(),
             None => hutspot::color::BLACK.into(),
         };
-        draw::add_line2(&mut gizmos_cache.raycaster, u, v, n * 0.01, color, &mesh_resmut.properties);
+        system::add_line2(&mut gizmos_cache.raycaster, u, v, n * 0.01, color, &mesh_resmut.properties);
     }
 
     // Match the selected verts of the selected triangle (face of three vertices).
@@ -451,7 +449,7 @@ fn raycast(
                                 let u = mesh_resmut.mesh.midpoint(edgepair[0]);
                                 let v = mesh_resmut.mesh.midpoint(edgepair[1]);
                                 let n = mesh_resmut.mesh.edge_normal(edgepair[0]);
-                                draw::add_line2(&mut gizmos_cache.loops, u, v, offset + n * 0.05, color, &mesh_resmut.properties);
+                                add_line2(&mut gizmos_cache.loops, u, v, offset + n * 0.05, color, &mesh_resmut.properties);
                             }
                         }
                     } else {
@@ -461,7 +459,7 @@ fn raycast(
                                 let u = mesh_resmut.mesh.midpoint(edgepair[0]);
                                 let v = mesh_resmut.mesh.midpoint(edgepair[1]);
                                 let n = mesh_resmut.mesh.edge_normal(edgepair[0]);
-                                draw::add_line2(&mut gizmos_cache.loops, u, v, n * 0.05, color, &mesh_resmut.properties);
+                                add_line2(&mut gizmos_cache.loops, u, v, n * 0.05, color, &mesh_resmut.properties);
                             }
                         }
                     }
@@ -481,7 +479,7 @@ fn raycast(
                                     let u = granulated_mesh.position(u_id);
                                     let v = granulated_mesh.position(v_id);
                                     let n = granulated_mesh.edge_normal(edge_id);
-                                    draw::add_line2(&mut gizmos_cache.paths, u, v, n * 0.05, hutspot::color::BLACK.into(), &mesh_resmut.properties);
+                                    add_line2(&mut gizmos_cache.paths, u, v, n * 0.05, hutspot::color::BLACK.into(), &mesh_resmut.properties);
                                 }
                             }
                         }
