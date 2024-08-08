@@ -1,9 +1,10 @@
+mod camera;
 mod dual;
 mod elements;
+mod render;
 mod system;
 mod ui;
 
-use crate::ui::ui;
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
 use bevy::window::WindowMode;
@@ -12,14 +13,18 @@ use bevy_mod_raycast::prelude::*;
 use douconel::douconel::{Douconel, EdgeID, Empty, FaceID, VertID};
 use douconel::douconel_embedded::EmbeddedVertex;
 use dual::{Dual, Polycube, PropertyViolationError};
-use elements::{Loop, PrincipalDirection, Side};
+use elements::Loop;
+use graph::prelude::{CsrLayout, DirectedCsrGraph, GraphBuilder};
 use hutspot::draw::DrawableLine;
 use hutspot::geom::Vector3D;
 use itertools::Itertools;
 use kdtree::distance::squared_euclidean;
 use kdtree::KdTree;
 use ordered_float::OrderedFloat;
+use petgraph::visit::{IntoNodeIdentifiers, IntoNodeReferences};
+use petgraph::Directed;
 use rayon::prelude::*;
+use render::{add_line, add_line2, GizmosCache};
 use serde::{Deserialize, Serialize};
 use smooth_bevy_cameras::controllers::orbit::OrbitCameraPlugin;
 use smooth_bevy_cameras::LookTransformPlugin;
@@ -29,9 +34,9 @@ use std::io::BufReader;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use system::{add_line2, draw_gizmos, fps, set_camera_viewports, setup, sync_cameras, update_mesh, Configuration, GizmosCache};
+use system::{fps, Configuration};
 
-pub const BACKGROUND_COLOR: bevy::prelude::Color = bevy::prelude::Color::rgb(27. / 255., 27. / 255., 27. / 255.);
+pub const BACKGROUND_COLOR: bevy::prelude::Color = bevy::prelude::Color::rgb(248. / 255., 248. / 255., 248. / 255.);
 pub const MESH_OFFSET: Vector3D = Vector3D::new(0., 1_000., 0.);
 pub const POLYCUBE_OFFSET: Vector3D = Vector3D::new(0., -1_000., 0.);
 
@@ -49,23 +54,6 @@ pub struct RenderedMesh;
 pub enum ActionEvent {
     LoadFile(PathBuf),
     ExportState,
-}
-
-#[derive(Default, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
-pub enum LoopScoring {
-    #[default]
-    PathLength,
-    LoopDistribution,
-    SingularitySeparationCount,
-    SingularitySeparationSpread,
-}
-
-#[derive(Default, Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DrawLoopType {
-    None,
-    #[default]
-    Undirected,
-    Directed,
 }
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
@@ -141,7 +129,7 @@ fn main() {
         .insert_resource(ClearColor(BACKGROUND_COLOR))
         .insert_resource(AmbientLight {
             color: Color::WHITE,
-            brightness: 0.6,
+            brightness: 1.0,
         })
         // Load default plugins
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -161,15 +149,16 @@ fn main() {
         // Plugin for smooth camera
         .add_plugins(LookTransformPlugin)
         .add_plugins(OrbitCameraPlugin::default())
-        // User specified
-        .add_systems(Startup, setup)
-        .add_systems(Update, sync_cameras)
-        .add_systems(Update, ui)
+        // Setups
+        .add_systems(Startup, ui::setup)
+        .add_systems(Startup, camera::setup)
+        // Updates
+        .add_systems(Update, ui::update)
+        .add_systems(Update, camera::update)
+        .add_systems(Update, render::update)
+        .add_systems(Update, render::gizmos)
         .add_systems(Update, handle_events)
-        .add_systems(Update, draw_gizmos)
-        .add_systems(Update, update_mesh)
         .add_systems(Update, raycast)
-        .add_systems(Update, set_camera_viewports)
         .add_systems(Update, fps)
         .add_event::<ActionEvent>()
         .run();
@@ -212,67 +201,17 @@ pub fn handle_events(
                         *mesh_resmut = loaded_state.mesh;
                         *solution = loaded_state.solution;
                         *configuration = loaded_state.configuration;
+                        mesh_resmut.as_mut();
                     }
                     _ => panic!("File format not supported."),
                 }
 
                 mesh_resmut.properties.source = String::from(path.to_str().unwrap());
 
-                mesh_resmut.properties.nr_of_vertices = mesh_resmut.mesh.nr_verts();
-                mesh_resmut.properties.nr_of_edges = mesh_resmut.mesh.nr_edges() / 2; // dcel -> single edge
-                mesh_resmut.properties.nr_of_faces = mesh_resmut.mesh.nr_faces();
-
                 configuration.interactive = true;
                 configuration.alpha = 15;
                 configuration.beta = 15;
                 configuration.black = true;
-
-                let mesh = mesh_resmut.mesh.bevy(&HashMap::new());
-                let aabb = mesh.compute_aabb().unwrap();
-                mesh_resmut.properties.scale = 10. * (1. / aabb.half_extents.max_element());
-                let translation = -mesh_resmut.properties.scale * aabb.center;
-                mesh_resmut.properties.translation = Vector3D::new(translation.x.into(), translation.y.into(), translation.z.into()) + MESH_OFFSET;
-
-                for edge_id in mesh_resmut.mesh.edge_ids() {
-                    let (u_id, v_id) = mesh_resmut.mesh.endpoints(edge_id);
-                    let u = mesh_resmut.mesh.position(u_id);
-                    let v = mesh_resmut.mesh.position(v_id);
-                    let n = mesh_resmut.mesh.edge_normal(edge_id);
-                    add_line2(
-                        &mut gizmos_cache.wireframe,
-                        u,
-                        v,
-                        n * 0.05,
-                        hutspot::color::GRIJS.into(),
-                        &mesh_resmut.properties,
-                    );
-                }
-
-                for vert_id in mesh_resmut.mesh.vert_ids() {
-                    let position = mesh_resmut.mesh.position(vert_id);
-                    let normal = mesh_resmut.mesh.vert_normal(vert_id);
-                    add_line2(
-                        &mut gizmos_cache.vertices,
-                        position,
-                        position + normal * 0.05,
-                        Vector3D::new(0., 0., 0.),
-                        hutspot::color::GRIJS.into(),
-                        &mesh_resmut.properties,
-                    );
-                }
-
-                for face_id in mesh_resmut.mesh.face_ids() {
-                    let position = mesh_resmut.mesh.centroid(face_id);
-                    let normal = mesh_resmut.mesh.normal(face_id);
-                    add_line2(
-                        &mut gizmos_cache.normals,
-                        position,
-                        position + normal * 0.05,
-                        Vector3D::new(0., 0., 0.),
-                        hutspot::color::GRIJS.into(),
-                        &mesh_resmut.properties,
-                    );
-                }
             }
             ActionEvent::ExportState => {
                 let path = format!(
@@ -334,7 +273,7 @@ fn raycast(
         mesh_resmut.properties.translation,
         mesh_resmut.properties.scale,
     );
-    system::add_line(
+    add_line(
         &mut gizmos_cache.raycaster,
         position,
         normal,
@@ -351,7 +290,7 @@ fn raycast(
             Some(_) => configuration.direction.to_dual_color(),
             None => hutspot::color::BLACK.into(),
         };
-        system::add_line2(&mut gizmos_cache.raycaster, u, v, n * 0.01, color, &mesh_resmut.properties);
+        add_line2(&mut gizmos_cache.raycaster, u, v, n * 0.01, color, &mesh_resmut.properties);
     }
 
     // Match the selected verts of the selected triangle (face of three vertices).
@@ -423,68 +362,6 @@ fn raycast(
                 if mouse.just_pressed(MouseButton::Right) || mouse.just_released(MouseButton::Right) {
                     mouse.clear_just_pressed(MouseButton::Right);
                     mouse.clear_just_released(MouseButton::Right);
-
-                    gizmos_cache.loops.clear();
-                    let ls = sol.get_loop_structure();
-                    if !ls.edge_ids().is_empty() && poly.is_ok() {
-                        for segment in sol.get_loop_structure().edge_ids() {
-                            let direction = sol.segment_to_direction(segment);
-                            let side = sol.segment_to_side(segment, configuration.sides_mask);
-                            let mut offset = Vector3D::new(0., 0., 0.);
-                            let dist = 0.001 * f64::from(mesh_resmut.properties.scale);
-                            match side {
-                                Side::Upper => match direction {
-                                    PrincipalDirection::X => offset[0] += dist,
-                                    PrincipalDirection::Y => offset[1] += dist,
-                                    PrincipalDirection::Z => offset[2] += dist,
-                                },
-                                Side::Lower => match direction {
-                                    PrincipalDirection::X => offset[0] -= dist,
-                                    PrincipalDirection::Y => offset[1] -= dist,
-                                    PrincipalDirection::Z => offset[2] -= dist,
-                                },
-                            };
-                            let color = direction.to_dual_color_sided(side);
-                            for edgepair in sol.get_pairs_of_sequence(&sol.segment_to_edges(segment)) {
-                                let u = mesh_resmut.mesh.midpoint(edgepair[0]);
-                                let v = mesh_resmut.mesh.midpoint(edgepair[1]);
-                                let n = mesh_resmut.mesh.edge_normal(edgepair[0]);
-                                add_line2(&mut gizmos_cache.loops, u, v, offset + n * 0.05, color, &mesh_resmut.properties);
-                            }
-                        }
-                    } else {
-                        for loop_id in sol.get_loop_ids() {
-                            let color = sol.loop_to_direction(loop_id).to_dual_color();
-                            for edgepair in sol.get_pairs_of_loop(loop_id) {
-                                let u = mesh_resmut.mesh.midpoint(edgepair[0]);
-                                let v = mesh_resmut.mesh.midpoint(edgepair[1]);
-                                let n = mesh_resmut.mesh.edge_normal(edgepair[0]);
-                                add_line2(&mut gizmos_cache.loops, u, v, n * 0.05, color, &mesh_resmut.properties);
-                            }
-                        }
-                    }
-
-                    gizmos_cache.paths.clear();
-                    if let Ok(primal) = &poly {
-                        if let Some(granulated_mesh) = &sol.granulated_mesh {
-                            // for v in primal.vert_ids() {
-                            //     let vertex = primal.verts[v].pointer_primal_vertex;
-                            //     draw::add_vertex(&mut gizmos_cache.paths, vertex, granulated_mesh, &mesh_resmut.properties);
-                            // }
-
-                            for path_id in primal.edge_ids() {
-                                for vertexpair in primal.edges[path_id].windows(2) {
-                                    let edge_id = granulated_mesh.edge_between_verts(vertexpair[0], vertexpair[1]).unwrap().0;
-                                    let (u_id, v_id) = granulated_mesh.endpoints(edge_id);
-                                    let u = granulated_mesh.position(u_id);
-                                    let v = granulated_mesh.position(v_id);
-                                    let n = granulated_mesh.edge_normal(edge_id);
-                                    add_line2(&mut gizmos_cache.paths, u, v, n * 0.05, hutspot::color::BLACK.into(), &mesh_resmut.properties);
-                                }
-                            }
-                        }
-                    }
-
                     solution.dual = sol;
                     solution.primal = poly;
                     solution.next[0].clear();
@@ -560,14 +437,67 @@ fn raycast(
     let [e1, e2] = mesh_resmut.mesh.edges_in_face_with_vert(face_id, verts[0]).unwrap();
 
     // TODO: why is this unwrap safe?
-    let option_a = hutspot::graph::find_shortest_cycle([e1, e2], nfunction, &wfunction, cache_ref).unwrap_or_else(|| (vec![], OrderedFloat(0.)));
-    let option_b = hutspot::graph::find_shortest_cycle([e1, e2], nfunction, &wfunction, cache_ref).unwrap_or_else(|| (vec![], OrderedFloat(0.)));
+    let option_a = hutspot::graph::find_shortest_cycle([e1, e2], nfunction, &wfunction).unwrap_or_else(|| (vec![], OrderedFloat(0.)));
+    let option_b = hutspot::graph::find_shortest_cycle([e1, e2], nfunction, &wfunction).unwrap_or_else(|| (vec![], OrderedFloat(0.)));
     let best_option = if option_a.1 > option_b.1 {
         option_a.0.into_iter().flatten().collect_vec()
     } else {
         option_b.0.into_iter().flatten().collect_vec()
     };
-    timer.report("Path computation");
+    timer.report("CURRENT Path computation");
+    timer.reset();
+
+    // BENCHMARK WITH OTHER GRAPH CRATES:
+
+    let mut nodes = vec![];
+    let mut nodes_to_id = HashMap::new();
+    for face_id in mesh_resmut.mesh.face_ids() {
+        // Add a node for each edge combination.
+        let edges = mesh_resmut.mesh.edges(face_id);
+        assert!(edges.len() == 3);
+        let combinations = vec![
+            [edges[0], edges[1]],
+            [edges[1], edges[0]],
+            [edges[0], edges[2]],
+            [edges[2], edges[0]],
+            [edges[1], edges[2]],
+            [edges[2], edges[1]],
+        ];
+        for combination in combinations {
+            if !nodes_to_id.contains_key(&combination) {
+                nodes.push(combination);
+                nodes_to_id.insert(combination, nodes.len() - 1);
+            }
+        }
+    }
+
+    timer.report("Found nodes");
+    timer.reset();
+
+    // let mut edges = vec![];
+    // for (&node, &node_id) in &nodes_to_id {
+    //     for neighbor in mesh_resmut.mesh.neighbor_function_edgepairgraph()(node) {
+    //         let neighbor_id = nodes_to_id[&neighbor];
+    //         edges.push((node_id, neighbor_id, wfunction(node, neighbor)));
+    //     }
+    // }
+
+    let edges = nodes
+        .into_par_iter()
+        .flat_map(|node| {
+            mesh_resmut.mesh.neighbor_function_edgepairgraph()(node)
+                .into_iter()
+                .map(|neighbor| (nodes_to_id[&node], nodes_to_id[&neighbor], wfunction(node, neighbor)))
+                .collect_vec()
+        })
+        .collect::<Vec<_>>();
+
+    timer.report("Found edges");
+    timer.reset();
+
+    let g: DirectedCsrGraph<usize, (), OrderedFloat<f64>> = GraphBuilder::new().csr_layout(CsrLayout::Sorted).edges_with_values(edges).build();
+
+    timer.report("Built graph");
     timer.reset();
 
     // If the best option is empty, we have no valid path.

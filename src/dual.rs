@@ -793,7 +793,7 @@ impl Dual {
             };
 
             let mut granulated_path = vec![];
-            if let Some((path, _)) = hutspot::graph::find_shortest_path(NodeType::Vertex(u), NodeType::Vertex(v), n_function, w_function, &mut HashMap::new()) {
+            if let Some((path, _)) = hutspot::graph::find_shortest_path(NodeType::Vertex(u), NodeType::Vertex(v), n_function, w_function) {
                 let mut last_f_ids_maybe: Option<[FaceID; 3]> = None;
                 for node in path {
                     match node {

@@ -2,7 +2,30 @@ use crate::{elements::PrincipalDirection, ActionEvent, Configuration, InputResou
 use bevy::prelude::*;
 use bevy_egui::egui::{emath::Numeric, Align, Color32, Layout, RichText, Slider, TopBottomPanel, Ui};
 
-pub fn ui(
+pub fn setup(mut ui: bevy_egui::EguiContexts) {
+    // Font
+    let mut fonts = bevy_egui::egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "BerkeleyMonoTrial".to_owned(),
+        bevy_egui::egui::FontData::from_static(include_bytes!("../assets/BerkeleyMonoTrial-Regular.ttf")),
+    );
+    fonts
+        .families
+        .entry(bevy_egui::egui::FontFamily::Proportional)
+        .or_default()
+        .insert(0, "BerkeleyMonoTrial".to_owned());
+    fonts
+        .families
+        .entry(bevy_egui::egui::FontFamily::Monospace)
+        .or_default()
+        .push("BerkeleyMonoTrial".to_owned());
+    ui.ctx_mut().set_fonts(fonts);
+
+    // Theme
+    ui.ctx_mut().set_visuals(bevy_egui::egui::Visuals::light());
+}
+
+pub fn update(
     mut egui_ctx: bevy_egui::EguiContexts,
     mut ev_w: EventWriter<ActionEvent>,
     mut conf: ResMut<Configuration>,
@@ -14,7 +37,9 @@ pub fn ui(
 
         ui.horizontal(|ui| {
             ui.with_layout(Layout::top_down(Align::TOP), |ui| {
+                // FIRST ROW
                 ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
+                    // LEFT SIDE
                     ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
                         ui.add_space(15.);
 
@@ -42,6 +67,7 @@ pub fn ui(
                         ui.add_space(15.);
                     });
 
+                    // RIGHT SIDE
                     ui.with_layout(Layout::right_to_left(Align::TOP), |ui| {
                         ui.add_space(15.);
 
@@ -65,18 +91,54 @@ pub fn ui(
 
                         ui.add_space(15.);
 
-                        let vert_color = if mesh_resmut.properties.nr_of_vertices >= 100_000 {
-                            Color32::RED
-                        } else if mesh_resmut.properties.nr_of_vertices >= 50_000 {
-                            Color32::YELLOW
-                        } else {
-                            Color32::GREEN
-                        };
+                        ui.with_layout(Layout::top_down(Align::BOTTOM), |ui| {
+                            ui.label("CURRENT STATUS");
+                            if let Err(err) = &solution.primal {
+                                warning(ui, &format!("ERROR: {err:?}"));
+                            } else {
+                                okido(ui, "OK");
+                            }
+                        });
+                    });
+                });
+
+                ui.add_space(15.);
+
+                // SECOND ROW
+                ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
+                    // LEFT SIDE
+                    ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
+                        ui.add_space(15.);
+
+                        ui.checkbox(&mut conf.interactive, "interactive");
+
+                        ui.add_space(15.);
+
+                        ui.spacing_mut().slider_width = 30.0;
+
+                        slider(ui, "α", &mut conf.alpha, 1..=20);
+
+                        ui.add_space(15.);
+
+                        slider(ui, "β", &mut conf.beta, 1..=20);
+
+                        ui.add_space(15.);
+
+                        for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
+                            radio(ui, &mut conf.direction, direction);
+                        }
+
+                        ui.add_space(15.);
+                    });
+
+                    // RIGHT SIDE
+                    ui.with_layout(Layout::right_to_left(Align::BOTTOM), |ui| {
+                        ui.add_space(15.);
 
                         ui.with_layout(Layout::top_down(Align::BOTTOM), |ui| {
-                            ui.label("VERTS");
-                            if mesh_resmut.properties.nr_of_vertices > 0 {
-                                ui.label(RichText::new(format!("{:}", mesh_resmut.properties.nr_of_vertices)).color(vert_color));
+                            ui.label("FACES");
+                            if mesh_resmut.properties.nr_of_faces > 0 {
+                                ui.label(format!("{:}", mesh_resmut.properties.nr_of_faces));
                             } else {
                                 ui.label("-");
                             }
@@ -87,7 +149,7 @@ pub fn ui(
                         ui.with_layout(Layout::top_down(Align::BOTTOM), |ui| {
                             ui.label("EDGES");
                             if mesh_resmut.properties.nr_of_edges > 0 {
-                                ui.label(RichText::new(format!("{:}", mesh_resmut.properties.nr_of_edges)).color(vert_color));
+                                ui.label(format!("{:}", mesh_resmut.properties.nr_of_edges));
                             } else {
                                 ui.label("-");
                             }
@@ -96,9 +158,9 @@ pub fn ui(
                         ui.add_space(5.);
 
                         ui.with_layout(Layout::top_down(Align::BOTTOM), |ui| {
-                            ui.label("FACES");
-                            if mesh_resmut.properties.nr_of_faces > 0 {
-                                ui.label(RichText::new(format!("{:}", mesh_resmut.properties.nr_of_faces)).color(vert_color));
+                            ui.label("VERTS");
+                            if mesh_resmut.properties.nr_of_vertices > 0 {
+                                ui.label(format!("{:}", mesh_resmut.properties.nr_of_vertices));
                             } else {
                                 ui.label("-");
                             }
@@ -107,59 +169,76 @@ pub fn ui(
                         ui.add_space(15.);
 
                         ui.with_layout(Layout::top_down(Align::BOTTOM), |ui| {
-                            ui.label("CURRENT STATUS");
-                            if let Err(err) = &solution.primal {
-                                warning(ui, &format!("ERROR: {err:?}"));
+                            ui.label("INPUT");
+                        });
+                    });
+                });
+
+                ui.add_space(15.);
+
+                // THIRD ROW
+                ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
+                    // LEFT SIDE
+                    ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
+                        ui.add_space(15.);
+
+                        if ui.button("Swap").clicked() {
+                            conf.swap_cameras = !conf.swap_cameras;
+                        }
+
+                        ui.add_space(15.);
+
+                        if ui.checkbox(&mut conf.black, "Dual").changed() {
+                            mesh_resmut.as_mut();
+                        }
+
+                        ui.add_space(15.);
+                    });
+
+                    // RIGHT SIDE
+                    ui.with_layout(Layout::right_to_left(Align::BOTTOM), |ui| {
+                        ui.add_space(15.);
+
+                        ui.with_layout(Layout::top_down(Align::BOTTOM), |ui| {
+                            ui.label("FACES");
+                            if solution.properties.nr_of_faces > 0 {
+                                ui.label(format!("{:}", solution.properties.nr_of_faces));
                             } else {
-                                okido(ui, "OK");
+                                ui.label("-");
+                            }
+                        });
+
+                        ui.add_space(5.);
+
+                        ui.with_layout(Layout::top_down(Align::BOTTOM), |ui| {
+                            ui.label("EDGES");
+                            if solution.properties.nr_of_edges > 0 {
+                                ui.label(format!("{:}", solution.properties.nr_of_edges));
+                            } else {
+                                ui.label("-");
+                            }
+                        });
+
+                        ui.add_space(5.);
+
+                        ui.with_layout(Layout::top_down(Align::BOTTOM), |ui| {
+                            ui.label("VERTS");
+                            if solution.properties.nr_of_vertices > 0 {
+                                ui.label(format!("{:}", solution.properties.nr_of_vertices));
+                            } else {
+                                ui.label("-");
                             }
                         });
 
                         ui.add_space(15.);
+
+                        ui.with_layout(Layout::top_down(Align::BOTTOM), |ui| {
+                            ui.label("POLYCUBE");
+                        });
                     });
                 });
 
-                ui.add_space(10.);
-
-                ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
-                    ui.add_space(15.);
-
-                    ui.checkbox(&mut conf.interactive, "interactive");
-
-                    ui.add_space(15.);
-
-                    ui.spacing_mut().slider_width = 30.0;
-
-                    slider(ui, "α", &mut conf.alpha, 1..=20);
-
-                    ui.add_space(15.);
-
-                    slider(ui, "β", &mut conf.beta, 1..=20);
-
-                    ui.add_space(15.);
-
-                    for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
-                        radio(ui, &mut conf.direction, direction);
-                    }
-                });
-
-                ui.add_space(10.);
-
-                ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
-                    ui.add_space(15.);
-
-                    if ui.button("Swap").clicked() {
-                        conf.swap_cameras = !conf.swap_cameras;
-                    }
-
-                    ui.add_space(15.);
-
-                    if ui.checkbox(&mut conf.black, "Dual").changed() {
-                        mesh_resmut.as_mut();
-                    }
-                });
-
-                ui.add_space(10.);
+                ui.add_space(15.);
 
                 ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
                     ui.with_layout(Layout::right_to_left(Align::TOP), |ui| {
