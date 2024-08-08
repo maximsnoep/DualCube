@@ -1,4 +1,4 @@
-use crate::elements::{Loop, LoopSegment, PrincipalDirection, Side, Subsurface, Zone};
+use crate::elements::{Loop, LoopSegment, Patch, PrincipalDirection, Side, Subsurface, Zone};
 use crate::EmbeddedMesh;
 use douconel::douconel::{Douconel, EdgeID, FaceID, MeshError, VertID};
 use douconel::douconel_embedded::HasPosition;
@@ -10,7 +10,7 @@ use slotmap::{SecondaryMap, SlotMap};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
-pub type Polycube = Douconel<PolycubeVertex, Vec<VertID>, VertID>;
+pub type Polycube = Douconel<PolycubeVertex, Vec<VertID>, (VertID, Patch)>;
 
 #[derive(Default, Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Copy)]
 pub enum NodeType {
@@ -75,6 +75,7 @@ pub enum PropertyViolationError {
     NonConnectedComponents,
     NonSeperatedDirection,
     CyclicDependency,
+    PatchesMissing,
     LoopStructureError(MeshError),
 }
 
@@ -321,6 +322,97 @@ impl Dual {
         }
     }
 
+    pub fn assign_patches(&mut self, polycube: &mut Polycube) -> Result<(), PropertyViolationError> {
+        let granny = self.granulated_mesh.as_ref().unwrap();
+
+        // Get all blocked edges (ALL PATHS)
+        let blocked: HashSet<_> = polycube
+            .edge_ids()
+            .into_iter()
+            .flat_map(|path_id| polycube.edges[path_id].windows(2))
+            .map(|edgepair| granny.edge_between_verts(edgepair[0], edgepair[1]).unwrap())
+            .flat_map(|(a, b)| vec![(granny.face(a), granny.face(b)), (granny.face(b), granny.face(a))])
+            .collect();
+
+        let face_neighbors: HashMap<FaceID, Vec<FaceID>> = granny
+            .faces
+            .keys()
+            .map(|face_id: FaceID| {
+                (
+                    face_id,
+                    granny
+                        .fneighbors(face_id)
+                        .into_iter()
+                        .filter(|&neighbor_id| !blocked.contains(&(face_id, neighbor_id)))
+                        .collect(),
+                )
+            })
+            .collect();
+
+        // Make a neighborhood function that blocks all edges that are part of the loop segments of this face
+        let nfunction = |face_id: FaceID| face_neighbors[&face_id].clone();
+
+        // Find all connected components (should be equal to the number of faces)
+        let ccs = hutspot::graph::find_ccs(&granny.faces.keys().collect_vec(), nfunction);
+        if ccs.len() != polycube.face_ids().len() {
+            return Err(PropertyViolationError::PatchesMissing);
+        }
+
+        // Map from some faces to adjacent paths
+        let mut face_to_path: HashMap<FaceID, HashSet<_>> = HashMap::new();
+        for (path_id, path) in &polycube.edges {
+            for vertexpair in path.windows(2) {
+                let edgepair = granny.edge_between_verts(vertexpair[0], vertexpair[1]).unwrap();
+                let facepair = (granny.face(edgepair.0), granny.face(edgepair.1));
+                face_to_path.entry(facepair.0).or_default().insert(path_id);
+                face_to_path.entry(facepair.1).or_default().insert(path_id);
+            }
+        }
+
+        // For each connected component, assign a patch
+        // We can find the correct patch, by checking which paths are part of the connected component
+        // So first map each connected component, to the paths
+        let face_and_cc = ccs
+            .into_iter()
+            .map(|cc| {
+                (
+                    cc.clone(),
+                    cc.into_iter()
+                        .flat_map(|face_id| face_to_path.get(&face_id).cloned().unwrap_or_default())
+                        .collect::<HashSet<_>>(),
+                )
+            })
+            .filter_map(|(cc, paths)| {
+                polycube
+                    .face_ids()
+                    .into_iter()
+                    .find(|&patch_id| {
+                        // check that all paths of this patch are part of the connected component
+                        polycube.edges(patch_id).iter().all(|&path_id| paths.contains(&path_id))
+                    })
+                    .map(|face_id| (face_id, cc))
+            })
+            .map(|(face_id, subsurface)| {
+                (
+                    face_id,
+                    Patch {
+                        faces: subsurface.into_iter().collect(),
+                    },
+                )
+            })
+            .collect_vec();
+
+        if face_and_cc.len() != polycube.face_ids().len() {
+            return Err(PropertyViolationError::PatchesMissing);
+        }
+
+        for (face_id, patch) in face_and_cc {
+            polycube.faces[face_id].1 = patch;
+        }
+
+        Ok(())
+    }
+
     // Get zones and topological sort on the zones.
     pub fn zone_graph(&mut self, side_mask: [u32; 3]) -> Result<(), PropertyViolationError> {
         let mut adjacency = HashMap::new();
@@ -500,7 +592,7 @@ impl Dual {
         }
 
         for (face_id, face_obj) in &mut primal.faces {
-            *face_obj = self.loop_structure.verts.keys().collect_vec()[fmap.get_by_right(&face_id).unwrap().to_owned()];
+            face_obj.0 = self.loop_structure.verts.keys().collect_vec()[fmap.get_by_right(&face_id).unwrap().to_owned()];
         }
 
         primal
@@ -530,8 +622,6 @@ impl Dual {
                 visited.insert(neighbor_id);
             }
         }
-
-        println!("spanning tree edges: {spanning_tree_edges:?}");
 
         for edge_id in primal.edge_ids() {
             if !spanning_tree_edges.contains(&edge_id) {
@@ -590,10 +680,7 @@ impl Dual {
                     .skip(1)
                     .take_while(|&e| e != above_edge_real_edge)
                     .collect_vec();
-                println!("below: {below_edge_real_edge:?}, above: {above_edge_real_edge:?}");
-                println!("allowed edges: {allowed_edges:?}");
                 let allowed_faces = allowed_edges.into_iter().map(|e| granulated_mesh.face(e)).collect_vec();
-                println!("allowed faces: {allowed_faces:?}");
                 assert!(allowed_faces.len() > 0);
                 for face_id in granulated_mesh.star(u) {
                     if !allowed_faces.contains(&face_id) {
@@ -639,10 +726,7 @@ impl Dual {
                     .skip(1)
                     .take_while(|&e| e != above_edge_real_edge)
                     .collect_vec();
-                println!("below: {below_edge_real_edge:?}, above: {above_edge_real_edge:?}");
-                println!("allowed edges: {allowed_edges:?}");
                 let allowed_faces = allowed_edges.into_iter().map(|e| granulated_mesh.face(e)).collect_vec();
-                println!("allowed faces: {allowed_faces:?}");
                 assert!(allowed_faces.len() > 0);
                 for face_id in granulated_mesh.star(v) {
                     if !allowed_faces.contains(&face_id) {
@@ -695,11 +779,7 @@ impl Dual {
                 }
                 NodeType::Phantom => vec![],
             };
-
-            println!("u: {u:?}, v: {v:?}");
             // neighbors of u using n_function
-            println!("neighbors of u: {:?}", n_function(NodeType::Vertex(u)));
-
             let nodetype_to_pos = |node: NodeType| match node {
                 NodeType::Face(f_id) => granulated_mesh.centroid(f_id),
                 NodeType::Vertex(v_id) => granulated_mesh.position(v_id),
@@ -1262,7 +1342,6 @@ impl Dual {
                     face_id,
                     Subsurface {
                         verts: subsurface.into_iter().collect(),
-                        color: hutspot::color::hsl_to_rgb(rand::random::<f32>() * 360., 0.5, 0.5).into(),
                     },
                 )
             })
@@ -1297,47 +1376,38 @@ impl Dual {
 
         let mut timer = hutspot::timer::Timer::new();
 
-        println!("Computing intersections...");
         let intersections = self.intersections()?;
         timer.report("Intersections computation");
         timer.reset();
 
-        println!("Constructing faces...");
         let faces = self.loop_faces(&intersections)?;
         timer.report("Faces computation");
         timer.reset();
 
-        println!("Constructing segments...");
         let loop_segments = self.loop_segments(&intersections);
         timer.report("Segments computation");
         timer.reset();
 
-        println!("Constructing loop structure...");
         self.assign_loop_structure(&faces, &intersections, &loop_segments)?;
         timer.report("Loop structure computation");
         timer.reset();
 
-        println!("Assigning subsurfaces...");
         self.assign_subsurfaces()?;
         timer.report("Subsurfaces computation");
         timer.reset();
 
-        println!("Basic properties and assigning sides...");
         self.verify_properties_and_assign_sides()?;
         timer.report("Properties and sides computation");
         timer.reset();
 
-        println!("Computing zones...");
         self.assign_zones();
         timer.report("Zones computation");
         timer.reset();
 
-        println!("Computing zone graph...");
         self.zone_graph([0, 0, 0])?;
         timer.report("Zone graph computation");
         timer.reset();
 
-        println!("Computing Polycube...");
         // UNKNOWN HIGHER GENUS REQUIREMENTS HERE>>>
         // UNKNOWN HIGHER GENUS REQUIREMENTS HERE>>>
         // UNKNOWN HIGHER GENUS REQUIREMENTS HERE>>>
@@ -1346,10 +1416,11 @@ impl Dual {
         timer.report("Polycube computation");
         timer.reset();
 
-        println!("Computing paths");
         self.granulated_mesh = Some(self.place_paths(&mut polycube));
         timer.report("Place paths computation");
         timer.reset();
+
+        self.assign_patches(&mut polycube)?;
 
         Ok(polycube)
     }

@@ -34,7 +34,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use system::{fps, set_camera_viewports, setup, sync_cameras, update_mesh, Configuration};
 
 pub const BACKGROUND_COLOR: bevy::prelude::Color = bevy::prelude::Color::rgb(27. / 255., 27. / 255., 27. / 255.);
-pub const POLYCUBE_OFFSET: Vec3 = Vec3::new(-10000., -10000., -10000.);
+pub const MESH_OFFSET: Vector3D = Vector3D::new(0., 1_000., 0.);
+pub const POLYCUBE_OFFSET: Vector3D = Vector3D::new(0., -1_000., 0.);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SaveStateObject {
@@ -141,13 +142,8 @@ fn main() {
         .init_resource::<Configuration>()
         .insert_resource(ClearColor(BACKGROUND_COLOR))
         .insert_resource(AmbientLight {
-            color: Color::Rgba {
-                red: 0.,
-                green: 0.,
-                blue: 0.,
-                alpha: 0.,
-            },
-            brightness: 1.0,
+            color: Color::WHITE,
+            brightness: 0.6,
         })
         // Load default plugins
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -237,18 +233,47 @@ pub fn handle_events(
                 let aabb = mesh.compute_aabb().unwrap();
                 mesh_resmut.properties.scale = 10. * (1. / aabb.half_extents.max_element());
                 let translation = -mesh_resmut.properties.scale * aabb.center;
-                mesh_resmut.properties.translation = Vector3D::new(translation.x.into(), translation.y.into(), translation.z.into());
+                mesh_resmut.properties.translation = Vector3D::new(translation.x.into(), translation.y.into(), translation.z.into()) + MESH_OFFSET;
 
                 for edge_id in mesh_resmut.mesh.edge_ids() {
-                    draw::add_edge(&mut gizmos_cache.wireframe, edge_id, &mesh_resmut.mesh, &mesh_resmut.properties);
+                    let (u_id, v_id) = mesh_resmut.mesh.endpoints(edge_id);
+                    let u = mesh_resmut.mesh.position(u_id);
+                    let v = mesh_resmut.mesh.position(v_id);
+                    let n = mesh_resmut.mesh.edge_normal(edge_id);
+                    draw::add_line2(
+                        &mut gizmos_cache.wireframe,
+                        u,
+                        v,
+                        n * 0.05,
+                        hutspot::color::GRIJS.into(),
+                        &mesh_resmut.properties,
+                    );
                 }
 
                 for vert_id in mesh_resmut.mesh.vert_ids() {
-                    draw::add_vertex(&mut gizmos_cache.vertices, vert_id, &mesh_resmut.mesh, &mesh_resmut.properties);
+                    let position = mesh_resmut.mesh.position(vert_id);
+                    let normal = mesh_resmut.mesh.vert_normal(vert_id);
+                    draw::add_line2(
+                        &mut gizmos_cache.vertices,
+                        position,
+                        position + normal * 0.05,
+                        Vector3D::new(0., 0., 0.),
+                        hutspot::color::GRIJS.into(),
+                        &mesh_resmut.properties,
+                    );
                 }
 
                 for face_id in mesh_resmut.mesh.face_ids() {
-                    draw::add_face_normal(&mut gizmos_cache.normals, face_id, &mesh_resmut.mesh, &mesh_resmut.properties);
+                    let position = mesh_resmut.mesh.centroid(face_id);
+                    let normal = mesh_resmut.mesh.normal(face_id);
+                    draw::add_line2(
+                        &mut gizmos_cache.normals,
+                        position,
+                        position + normal * 0.05,
+                        Vector3D::new(0., 0., 0.),
+                        hutspot::color::GRIJS.into(),
+                        &mesh_resmut.properties,
+                    );
                 }
             }
             ActionEvent::ExportState => {
@@ -287,7 +312,8 @@ fn raycast(
     mut gizmos_cache: ResMut<GizmosCache>,
     mut configuration: ResMut<Configuration>,
 ) {
-    configuration.cur_selected = None;
+    configuration.selected_solution = None;
+    configuration.selected_face = None;
     gizmos_cache.raycaster.clear();
 
     if !configuration.interactive || cursor_ray.is_none() {
@@ -357,19 +383,21 @@ fn raycast(
         return;
     }
     let face_id = mesh_resmut.mesh.face_with_verts(&verts).unwrap();
-    configuration.cur_selected = Some((face_id, verts[0]));
+    configuration.selected_face = Some((face_id, verts[0]));
 
     // If shift button is pressed, we want to show the closest solution to the current face vertex combination.
     if keyboard.pressed(KeyCode::ShiftLeft) {
         keyboard.clear_just_pressed(KeyCode::ShiftLeft);
+
         // Find the closest face vertex combination to the current face vertex combination.
         // Map to distance. Then get the solution with the smallest distance.
         let closest_solution = solution.next[configuration.direction as usize]
             .iter()
-            .map(|(&(_, vert_id), sol)| (mesh_resmut.mesh.position(vert_id).metric_distance(&position), sol))
+            .map(|(&(face_id, vert_id), sol)| (mesh_resmut.mesh.position(vert_id).metric_distance(&position), sol, (face_id, vert_id)))
             .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
 
-        if let Some((_, valid_solution)) = closest_solution {
+        if let Some((_, valid_solution, signature)) = closest_solution {
+            configuration.selected_solution = Some(signature);
             if let Some((sol, poly)) = valid_solution.clone() {
                 if time.elapsed().as_millis() % 1000 < 800 {
                     for &loop_id in &sol.get_loop_ids() {
@@ -441,15 +469,19 @@ fn raycast(
                     gizmos_cache.paths.clear();
                     if let Ok(primal) = &poly {
                         if let Some(granulated_mesh) = &sol.granulated_mesh {
-                            for v in primal.vert_ids() {
-                                let vertex = primal.verts[v].pointer_primal_vertex;
-                                draw::add_vertex(&mut gizmos_cache.paths, vertex, granulated_mesh, &mesh_resmut.properties);
-                            }
+                            // for v in primal.vert_ids() {
+                            //     let vertex = primal.verts[v].pointer_primal_vertex;
+                            //     draw::add_vertex(&mut gizmos_cache.paths, vertex, granulated_mesh, &mesh_resmut.properties);
+                            // }
 
                             for path_id in primal.edge_ids() {
                                 for vertexpair in primal.edges[path_id].windows(2) {
                                     let edge_id = granulated_mesh.edge_between_verts(vertexpair[0], vertexpair[1]).unwrap().0;
-                                    draw::add_edge(&mut gizmos_cache.paths, edge_id, granulated_mesh, &mesh_resmut.properties);
+                                    let (u_id, v_id) = granulated_mesh.endpoints(edge_id);
+                                    let u = granulated_mesh.position(u_id);
+                                    let v = granulated_mesh.position(v_id);
+                                    let n = granulated_mesh.edge_normal(edge_id);
+                                    draw::add_line2(&mut gizmos_cache.paths, u, v, n * 0.05, hutspot::color::BLACK.into(), &mesh_resmut.properties);
                                 }
                             }
                         }
@@ -530,9 +562,9 @@ fn raycast(
     let [e1, e2] = mesh_resmut.mesh.edges_in_face_with_vert(face_id, verts[0]).unwrap();
 
     // TODO: why is this unwrap safe?
-    let option_a = hutspot::graph::find_shortest_cycle([e1, e2], nfunction, &wfunction, cache_ref).unwrap();
-    let option_b = hutspot::graph::find_shortest_cycle([e1, e2], nfunction, &wfunction, cache_ref).unwrap();
-    let best_option = if option_a.1 < option_b.1 {
+    let option_a = hutspot::graph::find_shortest_cycle([e1, e2], nfunction, &wfunction, cache_ref).unwrap_or_else(|| (vec![], OrderedFloat(0.)));
+    let option_b = hutspot::graph::find_shortest_cycle([e1, e2], nfunction, &wfunction, cache_ref).unwrap_or_else(|| (vec![], OrderedFloat(0.)));
+    let best_option = if option_a.1 > option_b.1 {
         option_a.0.into_iter().flatten().collect_vec()
     } else {
         option_b.0.into_iter().flatten().collect_vec()
@@ -541,7 +573,7 @@ fn raycast(
     timer.reset();
 
     // If the best option is empty, we have no valid path.
-    if best_option.len() < 3 {
+    if best_option.len() < 5 {
         println!("Path is empty and/or invalid.");
         return;
     }

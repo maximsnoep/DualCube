@@ -169,8 +169,12 @@ pub struct LoopSegment {
 pub struct Subsurface {
     // A subsurface is defined by a set of vertices
     pub verts: Vec<VertID>,
-    // Random color for visualization
-    pub color: Color,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Patch {
+    // A patch is defined by a set of faces
+    pub faces: HashSet<FaceID>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

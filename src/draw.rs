@@ -2,10 +2,8 @@ use crate::elements::to_principal_direction;
 use crate::elements::PrincipalDirection;
 use crate::elements::Side;
 use crate::system::Configuration;
-use crate::InputResource;
 use crate::MeshProperties;
 use crate::SolutionResource;
-use crate::POLYCUBE_OFFSET;
 use bevy::prelude::*;
 use douconel::douconel::Douconel;
 use douconel::douconel::EdgeID;
@@ -28,13 +26,7 @@ pub struct GizmosCache {
 type Line = (Vec3, Vec3, Color);
 
 // Draws the gizmos. This includes the wireframe, vertices, normals, and raycasts, etc.
-pub fn draw_gizmos(
-    mut gizmos: Gizmos,
-    gizmos_cache: Res<GizmosCache>,
-    configuration: Res<Configuration>,
-    solution: Res<SolutionResource>,
-    mesh_resmut: Res<InputResource>,
-) {
+pub fn draw_gizmos(mut gizmos: Gizmos, gizmos_cache: Res<GizmosCache>, solution: Res<SolutionResource>, configuration: Res<Configuration>) {
     if configuration.draw_wireframe {
         for &(u, v, c) in &gizmos_cache.wireframe {
             gizmos.line(u, v, c);
@@ -72,14 +64,14 @@ pub fn draw_gizmos(
     if let Ok(primal) = &solution.primal {
         if configuration.black {
             // Draw all loop segments / faces axis aligned.
-            for (face_id, original_id) in &primal.faces {
+            for (face_id, (original_id, _)) in &primal.faces {
                 let this_centroid = primal.centroid(face_id);
 
                 let normal = (primal.normal(face_id) as Vector3D).normalize();
                 let orientation = to_principal_direction(normal).0;
 
                 for &neighbor_id in &primal.fneighbors(face_id) {
-                    let next_original_id = &primal.faces[neighbor_id];
+                    let next_original_id = &primal.faces[neighbor_id].0;
 
                     let edge_between = primal.edge_between_faces(face_id, neighbor_id).unwrap().0;
                     let root = primal.root(edge_between);
@@ -126,7 +118,7 @@ pub fn draw_gizmos(
                             this_centroid,
                             direction_vector,
                             offset + normal * 0.01,
-                            solution.properties.translation + Vector3D::new(POLYCUBE_OFFSET.x as f64, POLYCUBE_OFFSET.y as f64, POLYCUBE_OFFSET.z as f64),
+                            solution.properties.translation,
                             solution.properties.scale,
                         );
 
@@ -145,58 +137,12 @@ pub fn draw_gizmos(
                 u,
                 v,
                 primal.normal(primal.face(edge_id)) * 0.001,
-                solution.properties.translation + Vector3D::new(POLYCUBE_OFFSET.x as f64, POLYCUBE_OFFSET.y as f64, POLYCUBE_OFFSET.z as f64),
+                solution.properties.translation,
                 solution.properties.scale,
             );
-            gizmos.line(line.u, line.v, hutspot::color::GRIJS.into());
+            gizmos.line(line.u, line.v, hutspot::color::BLACK.into());
         }
     }
-}
-
-pub fn add_face_normal<V, E, F>(lines: &mut Vec<Line>, face_id: FaceID, mesh: &Douconel<V, E, F>, props: &MeshProperties)
-where
-    E: std::default::Default + Clone,
-    F: std::default::Default + Clone,
-    V: std::default::Default + Clone + HasPosition,
-{
-    let p = mesh.centroid(face_id);
-    let n = mesh.normal(face_id);
-    for line in DrawableLine::from_arrow(
-        p,
-        p + n,
-        p.cross(&n).normalize(),
-        0.05,
-        Vector3D::new(0., 0., 0.),
-        props.translation,
-        props.scale,
-    ) {
-        lines.push((line.u, line.v, hutspot::color::ROODT.into()));
-    }
-}
-
-pub fn add_vertex<V, E, F>(lines: &mut Vec<Line>, vert_id: VertID, mesh: &Douconel<V, E, F>, props: &MeshProperties)
-where
-    E: std::default::Default + Clone,
-    F: std::default::Default + Clone,
-    V: std::default::Default + Clone + HasPosition,
-{
-    let p = mesh.position(vert_id);
-    let n = mesh.vert_normal(vert_id);
-    let line = DrawableLine::from_vertex(p, n, 0.01, props.translation, props.scale);
-    lines.push((line.u, line.v, hutspot::color::GRIJS.into()));
-}
-
-pub fn add_edge<V, E, F>(lines: &mut Vec<Line>, edge_id: EdgeID, mesh: &Douconel<V, E, F>, props: &MeshProperties)
-where
-    E: std::default::Default + Clone,
-    F: std::default::Default + Clone,
-    V: std::default::Default + Clone + HasPosition,
-{
-    let endpoints = mesh.endpoints(edge_id);
-    let u = mesh.position(endpoints.0);
-    let v = mesh.position(endpoints.1);
-    let line = DrawableLine::from_line(u, v, mesh.normal(mesh.face(edge_id)) * 0.001, props.translation, props.scale);
-    lines.push((line.u, line.v, hutspot::color::GRIJS.into()));
 }
 
 pub fn add_line(lines: &mut Vec<Line>, position: Vector3D, normal: Vector3D, length: f32, color: Color, props: &MeshProperties) {

@@ -1,180 +1,129 @@
 use crate::{elements::PrincipalDirection, ActionEvent, Configuration, InputResource, SolutionResource};
 use bevy::prelude::*;
-use bevy_egui::egui::{emath::Numeric, Color32, RichText, Slider, TopBottomPanel, Ui};
+use bevy_egui::egui::{emath::Numeric, Align, Color32, Layout, RichText, Slider, TopBottomPanel, Ui};
 
 pub fn ui(
     mut egui_ctx: bevy_egui::EguiContexts,
     mut ev_w: EventWriter<ActionEvent>,
     mut conf: ResMut<Configuration>,
     mut mesh_resmut: ResMut<InputResource>,
-    mut solution: ResMut<SolutionResource>,
+    solution: Res<SolutionResource>,
 ) {
     TopBottomPanel::top("panel").show(egui_ctx.ctx_mut(), |ui| {
-        sep(ui);
+        ui.add_space(10.);
 
         ui.horizontal(|ui| {
-            ui.add_space(50.);
-
-            ui.vertical(|ui| {
-                ui.horizontal(|ui| {
-                    if ui.button("Export").clicked() {
-                        ev_w.send(ActionEvent::ExportState);
-                    };
-
-                    if ui.button("Load file").clicked() {
-                        if let Some(path) = rfd::FileDialog::new().add_filter("triangulated geometry", &["obj", "stl", "save"]).pick_file() {
-                            ev_w.send(ActionEvent::LoadFile(path));
-                        }
-                    }
-
-                    if mesh_resmut.properties.source.is_empty() {
-                        ui.label("No file loaded.");
-                    } else {
+            ui.with_layout(Layout::top_down(Align::TOP), |ui| {
+                ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
+                    ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
                         ui.add_space(15.);
-                        ui.label(mesh_resmut.properties.source.to_string());
-                    }
 
-                    ui.add_space(15.);
+                        if ui.button("Export").clicked() {
+                            ev_w.send(ActionEvent::ExportState);
+                        };
 
-                    let vert_color = if mesh_resmut.properties.nr_of_vertices >= 100_000 {
-                        Color32::RED
-                    } else if mesh_resmut.properties.nr_of_vertices >= 50_000 {
-                        Color32::YELLOW
-                    } else {
-                        Color32::GREEN
-                    };
+                        ui.add_space(15.);
 
-                    ui.vertical(|ui| {
-                        ui.label("VERTS");
-                        if mesh_resmut.properties.nr_of_vertices > 0 {
-                            ui.label(RichText::new(format!("{:}", mesh_resmut.properties.nr_of_vertices)).color(vert_color));
-                        } else {
-                            ui.label("-");
-                        }
-                    });
-
-                    ui.add_space(5.);
-
-                    ui.vertical(|ui| {
-                        ui.label("EDGES");
-                        if mesh_resmut.properties.nr_of_edges > 0 {
-                            ui.label(RichText::new(format!("{:}", mesh_resmut.properties.nr_of_edges)).color(vert_color));
-                        } else {
-                            ui.label("-");
-                        }
-                    });
-
-                    ui.add_space(5.);
-
-                    ui.vertical(|ui| {
-                        ui.label("FACES");
-                        if mesh_resmut.properties.nr_of_faces > 0 {
-                            ui.label(RichText::new(format!("{:}", mesh_resmut.properties.nr_of_faces)).color(vert_color));
-                        } else {
-                            ui.label("-");
-                        }
-                    });
-
-                    ui.add_space(15.);
-
-                    ui.vertical(|ui| {
-                        ui.label("FPS");
-                        if conf.fps > 0. {
-                            let fps_color = if conf.fps >= 50.0 {
-                                Color32::from_rgb(0, 255, 0)
-                            } else if conf.fps >= 30.0 {
-                                let r = ((1.0 - (conf.fps - 60.0) / (120.0 - 60.0)) * 255.) as u8;
-                                Color32::from_rgb(r, 255, 0)
-                            } else if conf.fps >= 15.0 {
-                                let g = (((conf.fps - 30.0) / (60.0 - 30.0)) * 255.) as u8;
-                                Color32::from_rgb(255, g, 0)
-                            } else {
-                                Color32::from_rgb(255, 0, 0)
-                            };
-                            ui.label(RichText::new(format!("{:.0}", conf.fps)).color(fps_color));
-                        }
-                    });
-
-                    ui.add_space(15.);
-
-                    ui.vertical(|ui| {
-                        ui.label("STATUS");
-                        if let Err(err) = &solution.primal {
-                            warning(ui, &format!("ERROR: {err:?}"));
-                        } else {
-                            okido(ui, "OK");
-                        }
-                    });
-                });
-
-                ui.add_space(15.);
-
-                ui.horizontal(|ui| {
-                    ui.add_space(15.);
-
-                    ui.vertical(|ui| {
-                        if let Some(selected_edge) = conf.cur_selected {
-                            if let Some(sol) = solution.next[conf.direction as usize].get(&selected_edge) {
-                                ui.label("SELECTED");
-                                if let Some((_, Err(err))) = sol {
-                                    warning(ui, &format!("ERROR: {err:?}"));
-                                } else {
-                                    okido(ui, "OK");
-                                }
+                        if ui.button("Load file").clicked() {
+                            if let Some(path) = rfd::FileDialog::new().add_filter("triangulated geometry", &["obj", "stl", "save"]).pick_file() {
+                                ev_w.send(ActionEvent::LoadFile(path));
                             }
                         }
 
-                        if conf.cur_selected.is_some() {
-                            ui.label(format!("raycast: {:?}", conf.cur_selected.unwrap()));
-                            let cycle = mesh_resmut.mesh.edges(conf.cur_selected.unwrap().0);
-                            ui.label(format!("cycle: {:?}", cycle));
-                            let star = mesh_resmut.mesh.star(conf.cur_selected.unwrap().1);
-                            ui.label(format!("star: {:?}", star));
+                        ui.add_space(15.);
+
+                        if mesh_resmut.properties.source.is_empty() {
+                            ui.label("No file loaded.");
+                        } else {
+                            ui.add_space(15.);
+                            ui.label(mesh_resmut.properties.source.to_string());
                         }
+
+                        ui.add_space(15.);
                     });
 
-                    // ui.add_space(15.);
+                    ui.with_layout(Layout::right_to_left(Align::TOP), |ui| {
+                        ui.add_space(15.);
 
-                    // ui.vertical(|ui| {
-                    //     ui.checkbox(&mut conf.draw_wireframe, "graph");
-                    //     ui.checkbox(&mut conf.draw_vertices, "vertices");
-                    //     ui.checkbox(&mut conf.draw_normals, "normals");
-                    // });
+                        ui.with_layout(Layout::top_down(Align::BOTTOM), |ui| {
+                            ui.label("FPS");
+                            if conf.fps > 0. {
+                                let fps_color = if conf.fps >= 50.0 {
+                                    Color32::from_rgb(0, 255, 0)
+                                } else if conf.fps >= 30.0 {
+                                    let r = ((1.0 - (conf.fps - 60.0) / (120.0 - 60.0)) * 255.) as u8;
+                                    Color32::from_rgb(r, 255, 0)
+                                } else if conf.fps >= 15.0 {
+                                    let g = (((conf.fps - 30.0) / (60.0 - 30.0)) * 255.) as u8;
+                                    Color32::from_rgb(255, g, 0)
+                                } else {
+                                    Color32::from_rgb(255, 0, 0)
+                                };
+                                ui.label(RichText::new(format!("{:.0}", conf.fps)).color(fps_color));
+                            }
+                        });
 
-                    // ui.add_space(15.);
+                        ui.add_space(15.);
 
-                    // ui.vertical(|ui| {
-                    //     for render_type in [RenderType::Original, RenderType::Polycube] {
-                    //         if radio(ui, &mut conf.render_type, render_type) {
-                    //             mesh_resmut.as_mut();
-                    //         }
-                    //     }
-                    // });
+                        let vert_color = if mesh_resmut.properties.nr_of_vertices >= 100_000 {
+                            Color32::RED
+                        } else if mesh_resmut.properties.nr_of_vertices >= 50_000 {
+                            Color32::YELLOW
+                        } else {
+                            Color32::GREEN
+                        };
 
-                    // ui.vertical(|ui| {
-                    //     ui.label("Sublabels");
-                    //     for i in 0..3 {
-                    //         if stepper(
-                    //             ui,
-                    //             ["X-loops", "Y-loops", "Z-loops"][i],
-                    //             &mut conf.sides_mask[i],
-                    //             0,
-                    //             2_u32.pow(u32::try_from(solution.dual.side_ccs[i].len()).unwrap()) - 1,
-                    //         ) {
-                    //             let res = solution.dual.zone_graph(conf.sides_mask);
-                    //             if let Err(err) = res {
-                    //                 solution.primal = Err(err);
-                    //             }
-                    //             solution.primal = Ok(solution.dual.primal());
-                    //             mesh_resmut.as_mut();
-                    //         }
-                    //     }
-                    // });
+                        ui.with_layout(Layout::top_down(Align::BOTTOM), |ui| {
+                            ui.label("VERTS");
+                            if mesh_resmut.properties.nr_of_vertices > 0 {
+                                ui.label(RichText::new(format!("{:}", mesh_resmut.properties.nr_of_vertices)).color(vert_color));
+                            } else {
+                                ui.label("-");
+                            }
+                        });
+
+                        ui.add_space(5.);
+
+                        ui.with_layout(Layout::top_down(Align::BOTTOM), |ui| {
+                            ui.label("EDGES");
+                            if mesh_resmut.properties.nr_of_edges > 0 {
+                                ui.label(RichText::new(format!("{:}", mesh_resmut.properties.nr_of_edges)).color(vert_color));
+                            } else {
+                                ui.label("-");
+                            }
+                        });
+
+                        ui.add_space(5.);
+
+                        ui.with_layout(Layout::top_down(Align::BOTTOM), |ui| {
+                            ui.label("FACES");
+                            if mesh_resmut.properties.nr_of_faces > 0 {
+                                ui.label(RichText::new(format!("{:}", mesh_resmut.properties.nr_of_faces)).color(vert_color));
+                            } else {
+                                ui.label("-");
+                            }
+                        });
+
+                        ui.add_space(15.);
+
+                        ui.with_layout(Layout::top_down(Align::BOTTOM), |ui| {
+                            ui.label("STATUS");
+                            if let Err(err) = &solution.primal {
+                                warning(ui, &format!("ERROR: {err:?}"));
+                            } else {
+                                okido(ui, "OK");
+                            }
+                        });
+
+                        ui.add_space(15.);
+                    });
                 });
 
                 ui.add_space(10.);
 
-                ui.horizontal(|ui| {
+                ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
+                    ui.add_space(15.);
+
                     ui.checkbox(&mut conf.interactive, "interactive");
 
                     ui.add_space(15.);
@@ -196,23 +145,106 @@ pub fn ui(
 
                 ui.add_space(10.);
 
-                ui.horizontal(|ui| {
-                    if ui.button("SWAP VIEW").clicked() {
+                ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
+                    ui.add_space(15.);
+
+                    if ui.button("Swap").clicked() {
                         conf.swap_cameras = !conf.swap_cameras;
                     }
 
                     ui.add_space(15.);
 
-                    if ui.checkbox(&mut conf.black, "BLACK").changed() {
+                    if ui.checkbox(&mut conf.black, "Dual").changed() {
                         mesh_resmut.as_mut();
                     }
                 });
 
-                ui.add_space(5.);
+                ui.add_space(10.);
+
+                ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
+                    ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
+                        ui.add_space(15.);
+
+                        // Hovered solution status etc.
+                        ui.with_layout(Layout::top_down(Align::TOP), |ui| {
+                            ui.label("SELECTED SOL");
+                            if let Some(selected_edge) = conf.selected_solution {
+                                ui.label(format!("{}", selected_edge.0));
+                            } else {
+                                ui.label("-");
+                            }
+                        });
+
+                        ui.add_space(15.);
+
+                        ui.with_layout(Layout::top_down(Align::TOP), |ui| {
+                            ui.label("STATUS");
+
+                            if let Some(selected_edge) = conf.selected_solution {
+                                if let Some(sol) = solution.next[conf.direction as usize].get(&selected_edge) {
+                                    if let Some((_, Err(err))) = sol {
+                                        warning(ui, &format!("ERROR: {err:?}"));
+                                    } else {
+                                        okido(ui, "OK");
+                                    }
+                                } else {
+                                    ui.label("-");
+                                }
+                            } else {
+                                ui.label("-");
+                            }
+                        });
+
+                        ui.add_space(15.);
+                    });
+
+                    ui.with_layout(Layout::right_to_left(Align::TOP), |ui| {
+                        ui.add_space(15.);
+
+                        // Selected face etc.
+                        ui.with_layout(Layout::top_down(Align::BOTTOM), |ui| {
+                            ui.label("SELECTED FACE");
+                            if let Some(selected_face) = conf.selected_face {
+                                ui.label(selected_face.0.to_string());
+                            } else {
+                                ui.label("-");
+                            }
+                        });
+
+                        ui.add_space(15.);
+                    });
+                });
+                // ui.add_space(15.);
+
+                // ui.vertical(|ui| {
+                //     ui.checkbox(&mut conf.draw_wireframe, "graph");
+                //     ui.checkbox(&mut conf.draw_vertices, "vertices");
+                //     ui.checkbox(&mut conf.draw_normals, "normals");
+                // });
+
+                // ui.vertical(|ui| {
+                //     ui.label("Sublabels");
+                //     for i in 0..3 {
+                //         if stepper(
+                //             ui,
+                //             ["X-loops", "Y-loops", "Z-loops"][i],
+                //             &mut conf.sides_mask[i],
+                //             0,
+                //             2_u32.pow(u32::try_from(solution.dual.side_ccs[i].len()).unwrap()) - 1,
+                //         ) {
+                //             let res = solution.dual.zone_graph(conf.sides_mask);
+                //             if let Err(err) = res {
+                //                 solution.primal = Err(err);
+                //             }
+                //             solution.primal = Ok(solution.dual.primal());
+                //             mesh_resmut.as_mut();
+                //         }
+                //     }
+                // });
+
+                ui.add_space(10.);
             });
         });
-
-        sep(ui);
     });
 }
 
