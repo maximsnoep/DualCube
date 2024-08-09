@@ -1,5 +1,4 @@
-use crate::system::Configuration;
-use crate::{MESH_OFFSET, POLYCUBE_OFFSET};
+use crate::{Configuration, MESH_OFFSET, POLYCUBE_OFFSET};
 use bevy::core_pipeline::clear_color::ClearColorConfig;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::prelude::*;

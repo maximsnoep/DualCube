@@ -1,6 +1,5 @@
-use crate::elements::{to_principal_direction, PrincipalDirection, Side};
-use crate::system::Configuration;
-use crate::{InputResource, MeshProperties, RenderedMesh, SolutionResource, BACKGROUND_COLOR, MESH_OFFSET, POLYCUBE_OFFSET};
+use crate::dual::{to_principal_direction, PrincipalDirection, Side};
+use crate::{Configuration, InputResource, MeshProperties, RenderedMesh, SolutionResource, BACKGROUND_COLOR, MESH_OFFSET, POLYCUBE_OFFSET};
 use bevy::prelude::*;
 use bevy::render::view::RenderLayers;
 use hutspot::draw::DrawableLine;

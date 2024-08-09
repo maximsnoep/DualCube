@@ -1,28 +1,24 @@
 mod camera;
 mod dual;
-mod elements;
 mod render;
-mod system;
 mod ui;
 
-use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
+use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy::window::WindowMode;
 use bevy_egui::EguiPlugin;
 use bevy_mod_raycast::prelude::*;
 use douconel::douconel::{Douconel, EdgeID, Empty, FaceID, VertID};
 use douconel::douconel_embedded::EmbeddedVertex;
-use dual::{Dual, Polycube, PropertyViolationError};
-use elements::Loop;
-use graph::prelude::{CsrLayout, DirectedCsrGraph, GraphBuilder};
+use dual::{Dual, Loop, Polycube, PrincipalDirection, PropertyViolationError};
 use hutspot::draw::DrawableLine;
 use hutspot::geom::Vector3D;
 use itertools::Itertools;
 use kdtree::distance::squared_euclidean;
 use kdtree::KdTree;
 use ordered_float::OrderedFloat;
-use petgraph::visit::{IntoNodeIdentifiers, IntoNodeReferences};
-use petgraph::Directed;
+use petgraph::algo::astar;
+use petgraph::Graph;
 use rayon::prelude::*;
 use render::{add_line, add_line2, GizmosCache};
 use serde::{Deserialize, Serialize};
@@ -34,11 +30,41 @@ use std::io::BufReader;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use system::{fps, Configuration};
 
 pub const BACKGROUND_COLOR: bevy::prelude::Color = bevy::prelude::Color::rgb(248. / 255., 248. / 255., 248. / 255.);
 pub const MESH_OFFSET: Vector3D = Vector3D::new(0., 1_000., 0.);
 pub const POLYCUBE_OFFSET: Vector3D = Vector3D::new(0., -1_000., 0.);
+
+#[derive(Resource, Default, Debug, Clone, Serialize, Deserialize)]
+pub struct Configuration {
+    pub direction: PrincipalDirection,
+    pub alpha: i32,
+    pub beta: i32,
+
+    pub sides_mask: [u32; 3],
+
+    pub fps: f64,
+    pub selected_face: Option<(FaceID, VertID)>,
+    pub selected_solution: Option<(FaceID, VertID)>,
+
+    pub black: bool,
+    pub interactive: bool,
+    pub swap_cameras: bool,
+    pub draw_wireframe: bool,
+    pub draw_vertices: bool,
+    pub draw_normals: bool,
+}
+
+// Updates the FPS counter in `configuration`.
+pub fn fps(diagnostics: Res<DiagnosticsStore>, mut configuration: ResMut<Configuration>) {
+    configuration.fps = -1.;
+    if let Some(value) = diagnostics
+        .get(FrameTimeDiagnosticsPlugin::FPS)
+        .and_then(bevy::diagnostic::Diagnostic::smoothed)
+    {
+        configuration.fps = value;
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SaveStateObject {
@@ -430,25 +456,6 @@ fn raycast(
         .mesh
         .weight_function_angle_edgepairs_aligned(configuration.alpha, configuration.beta, configuration.direction.into());
 
-    // Cache for partial solutions.
-    let cache_ref = &mut cache.cache[configuration.direction as usize];
-
-    // Starting edges.
-    let [e1, e2] = mesh_resmut.mesh.edges_in_face_with_vert(face_id, verts[0]).unwrap();
-
-    // TODO: why is this unwrap safe?
-    let option_a = hutspot::graph::find_shortest_cycle([e1, e2], nfunction, &wfunction).unwrap_or_else(|| (vec![], OrderedFloat(0.)));
-    let option_b = hutspot::graph::find_shortest_cycle([e1, e2], nfunction, &wfunction).unwrap_or_else(|| (vec![], OrderedFloat(0.)));
-    let best_option = if option_a.1 > option_b.1 {
-        option_a.0.into_iter().flatten().collect_vec()
-    } else {
-        option_b.0.into_iter().flatten().collect_vec()
-    };
-    timer.report("CURRENT Path computation");
-    timer.reset();
-
-    // BENCHMARK WITH OTHER GRAPH CRATES:
-
     let mut nodes = vec![];
     let mut nodes_to_id = HashMap::new();
     for face_id in mesh_resmut.mesh.face_ids() {
@@ -474,34 +481,90 @@ fn raycast(
     timer.report("Found nodes");
     timer.reset();
 
-    // let mut edges = vec![];
-    // for (&node, &node_id) in &nodes_to_id {
-    //     for neighbor in mesh_resmut.mesh.neighbor_function_edgepairgraph()(node) {
-    //         let neighbor_id = nodes_to_id[&neighbor];
-    //         edges.push((node_id, neighbor_id, wfunction(node, neighbor)));
-    //     }
-    // }
-
-    let edges = nodes
-        .into_par_iter()
-        .flat_map(|node| {
-            mesh_resmut.mesh.neighbor_function_edgepairgraph()(node)
-                .into_iter()
-                .map(|neighbor| (nodes_to_id[&node], nodes_to_id[&neighbor], wfunction(node, neighbor)))
-                .collect_vec()
-        })
-        .collect::<Vec<_>>();
+    // let edges = nodes
+    //     .into_par_iter()
+    //     .map(|node| {
+    //         let neighbors = mesh_resmut.mesh.neighbor_function_edgepairgraph()(node)
+    //             .into_iter()
+    //             .map(|neighbor| (nodes_to_id[&neighbor], (wfunction(node, neighbor) * 10000000.).0 as usize + 1))
+    //             .collect_vec();
+    //         (nodes_to_id[&node], neighbors)
+    //     })
+    //     .collect::<HashMap<_, _>>();
 
     timer.report("Found edges");
     timer.reset();
 
-    let g: DirectedCsrGraph<usize, (), OrderedFloat<f64>> = GraphBuilder::new().csr_layout(CsrLayout::Sorted).edges_with_values(edges).build();
+    // begin with an empty graph
+    let mut g: petgraph::Graph<[EdgeID; 2], OrderedFloat<f64>, petgraph::Directed> = Graph::with_capacity(nodes.len(), nodes.len() * 2);
 
-    timer.report("Built graph");
+    let mut nodes_to_index = HashMap::new();
+    for &node in &nodes {
+        nodes_to_index.insert(node, g.add_node(node));
+    }
+
+    timer.report("added vertices");
     timer.reset();
 
+    let edges_flat = nodes
+        .clone()
+        .into_par_iter()
+        .flat_map(|node| {
+            mesh_resmut.mesh.neighbor_function_edgepairgraph()(node)
+                .into_iter()
+                .map(|neighbor| (nodes_to_index[&node], nodes_to_index[&neighbor], wfunction(node, neighbor)))
+                .collect_vec()
+        })
+        .collect::<Vec<_>>();
+
+    timer.report("found edges");
+    timer.reset();
+
+    g.extend_with_edges(edges_flat);
+
+    timer.report("added edges");
+    timer.reset();
+
+    // Starting edges.
+    let [e1, e2] = mesh_resmut.mesh.edges_in_face_with_vert(face_id, verts[0]).unwrap();
+
+    let a = nodes_to_index[&[e1, e2]];
+    let a_n = g.neighbors(a).collect_vec();
+    let b = nodes_to_index[&[e2, e1]];
+    let b_n = g.neighbors(b).collect_vec();
+
+    let combinations = a_n.into_iter().map(|x| (a, x)).chain(b_n.into_iter().map(|x| (b, x))).collect_vec();
+
+    let paths = combinations
+        .into_par_iter()
+        .filter_map(|(u, v)| {
+            let extra = g.edges_connecting(u, v).next().unwrap().weight();
+            let shortest_path = astar(&g, v, |finish| finish == u, |e| *e.weight(), |_| OrderedFloat(0.));
+            shortest_path.map(|(cost, path)| (path, cost + extra))
+        })
+        .collect::<Vec<_>>();
+
+    timer.report("CURRENT Path computation");
+    timer.reset();
+
+    let best_path = paths
+        .into_iter()
+        .min_by(|(_, cost1), (_, cost2)| cost1.cmp(cost2))
+        .map(|(path, _)| {
+            let (last, rest) = path.split_last().unwrap();
+            [&[*last], rest].concat().into_iter().flat_map(|node_index| g[node_index]).collect_vec()
+        })
+        .unwrap_or_else(std::vec::Vec::new);
+
+    timer.report("Select best Path computation");
+    timer.reset();
+
+    // TODO: why is this unwrap safe?
+    // let option_a = hutspot::graph::find_shortest_cycle([e1, e2], &edges).unwrap_or_else(|| (vec![], OrderedFloat(0.)));
+    // let option_b = hutspot::graph::find_shortest_cycle([e1, e2], &edges).unwrap_or_else(|| (vec![], OrderedFloat(0.)));
+
     // If the best option is empty, we have no valid path.
-    if best_option.len() < 5 {
+    if best_path.len() < 5 {
         println!("Path is empty and/or invalid.");
         return;
     }
@@ -509,7 +572,7 @@ fn raycast(
     // The path may contain self intersections. We can remove these.
     // If duplicated vertices are present, remove everything between them.
     let mut cleaned_option = vec![];
-    for edge_id in best_option {
+    for edge_id in best_path {
         if cleaned_option.contains(&edge_id) {
             cleaned_option = cleaned_option.into_iter().take_while(|&x| x != edge_id).collect_vec();
         }

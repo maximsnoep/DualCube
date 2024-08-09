@@ -1,4 +1,4 @@
-use crate::{elements::PrincipalDirection, ActionEvent, Configuration, InputResource, SolutionResource};
+use crate::{dual::PrincipalDirection, ActionEvent, Configuration, InputResource, SolutionResource};
 use bevy::prelude::*;
 use bevy_egui::egui::{emath::Numeric, Align, Color32, Layout, RichText, Slider, TopBottomPanel, Ui};
 
