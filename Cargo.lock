@@ -2480,6 +2480,7 @@ dependencies = [
  "bevy_render",
  "glam",
  "itertools 0.13.0",
+ "log",
  "nalgebra",
  "ordered-float",
  "pathfinding",
@@ -3451,6 +3452,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4a91171844676f8c7990ce64959210cd2eaef32c2612c50f9fae9f8aaa6065a6"
 dependencies = [
  "num-traits",
+ "rand",
+ "serde",
 ]
 
 [[package]]
@@ -3542,6 +3545,8 @@ dependencies = [
  "fixedbitset",
  "indexmap 2.3.0",
  "rayon",
+ "serde",
+ "serde_derive",
 ]
 
 [[package]]
@@ -3683,6 +3688,7 @@ dependencies = [
  "libc",
  "rand_chacha",
  "rand_core",
+ "serde",
 ]
 
 [[package]]
@@ -3702,6 +3708,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
 dependencies = [
  "getrandom",
+ "serde",
 ]
 
 [[package]]

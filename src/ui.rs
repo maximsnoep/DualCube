@@ -193,6 +193,14 @@ pub fn update(
                         }
 
                         ui.add_space(15.);
+
+                        ui.checkbox(&mut conf.compute_primal, "Comp. primal");
+
+                        ui.add_space(15.);
+
+                        ui.checkbox(&mut conf.delete_mode, "Delete mode");
+
+                        ui.add_space(15.);
                     });
 
                     // RIGHT SIDE
@@ -267,9 +275,21 @@ pub fn update(
 
                             if let Some(selected_edge) = conf.selected_solution {
                                 if let Some(sol) = solution.next[conf.direction as usize].get(&selected_edge) {
-                                    if let Some((_, Err(err))) = sol {
+                                    if let Some((_, Err(err), _)) = sol {
+                                        ui.label("dual:");
                                         warning(ui, &format!("ERROR: {err:?}"));
                                     } else {
+                                        ui.label("dual:");
+                                        okido(ui, "OK");
+                                    }
+                                    if let Some((_, _, None)) = sol {
+                                        ui.label("layout:");
+                                        warning(ui, "None");
+                                    } else if let Some((_, _, Some(Err(err)))) = sol {
+                                        ui.label("layout:");
+                                        warning(ui, &format!("ERROR: {err:?}"));
+                                    } else {
+                                        ui.label("layout:");
                                         okido(ui, "OK");
                                     }
                                 } else {

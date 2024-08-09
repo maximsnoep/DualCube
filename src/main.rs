@@ -1,5 +1,8 @@
 mod camera;
 mod dual;
+mod graph;
+mod layout;
+mod polycube;
 mod render;
 mod ui;
 
@@ -10,15 +13,16 @@ use bevy_egui::EguiPlugin;
 use bevy_mod_raycast::prelude::*;
 use douconel::douconel::{Douconel, EdgeID, Empty, FaceID, VertID};
 use douconel::douconel_embedded::EmbeddedVertex;
-use dual::{Dual, Loop, Polycube, PrincipalDirection, PropertyViolationError};
+use dual::{Dual, Loop, PrincipalDirection, PropertyViolationError};
+use graph::Graaf;
 use hutspot::draw::DrawableLine;
 use hutspot::geom::Vector3D;
 use itertools::Itertools;
 use kdtree::distance::squared_euclidean;
 use kdtree::KdTree;
+use layout::Layout;
 use ordered_float::OrderedFloat;
-use petgraph::algo::astar;
-use petgraph::Graph;
+use polycube::Polycube;
 use rayon::prelude::*;
 use render::{add_line, add_line2, GizmosCache};
 use serde::{Deserialize, Serialize};
@@ -47,6 +51,9 @@ pub struct Configuration {
     pub selected_face: Option<(FaceID, VertID)>,
     pub selected_solution: Option<(FaceID, VertID)>,
 
+    pub compute_primal: bool,
+    pub delete_mode: bool,
+
     pub black: bool,
     pub interactive: bool,
     pub swap_cameras: bool,
@@ -68,9 +75,8 @@ pub fn fps(diagnostics: Res<DiagnosticsStore>, mut configuration: ResMut<Configu
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SaveStateObject {
-    mesh: InputResource,
-    solution: SolutionResource,
-    configuration: Configuration,
+    mesh: EmbeddedMesh,
+    loops: Vec<Loop>,
 }
 
 #[derive(Component)]
@@ -124,13 +130,15 @@ pub struct InputResource {
     mesh: Arc<EmbeddedMesh>,
     properties: MeshProperties,
     vertex_lookup: TreeD,
+    flow_graphs: [Graaf<[EdgeID; 2], (f64, f64, f64)>; 3],
 }
 
-#[derive(Debug, Clone, Resource, Serialize, Deserialize)]
+#[derive(Debug, Clone, Resource)]
 pub struct SolutionResource {
     dual: Dual,
     primal: Result<Polycube, PropertyViolationError>,
-    next: [HashMap<(FaceID, VertID), Option<(Dual, Result<Polycube, PropertyViolationError>)>>; 3],
+    layout: Result<Layout, PropertyViolationError>,
+    next: [HashMap<(FaceID, VertID), Option<(Dual, Result<Polycube, PropertyViolationError>, Option<Result<Layout, PropertyViolationError>>)>>; 3],
     properties: MeshProperties,
 }
 
@@ -139,6 +147,7 @@ impl Default for SolutionResource {
         Self {
             dual: Dual::default(),
             primal: Err(PropertyViolationError::UnknownError),
+            layout: Err(PropertyViolationError::UnknownError),
             next: [HashMap::new(), HashMap::new(), HashMap::new()],
             properties: MeshProperties::default(),
         }
@@ -194,50 +203,108 @@ pub fn handle_events(
     mut ev_reader: EventReader<ActionEvent>,
     mut mesh_resmut: ResMut<InputResource>,
     mut solution: ResMut<SolutionResource>,
-    mut gizmos_cache: ResMut<GizmosCache>,
     mut configuration: ResMut<Configuration>,
 ) {
     for ev in ev_reader.read() {
         info!("Received event {ev:?}. Handling...");
         match ev {
             ActionEvent::LoadFile(path) => {
+                *configuration = Configuration::default();
+                *mesh_resmut = InputResource::default();
+                *solution = SolutionResource::default();
+
                 match path.extension().unwrap().to_str() {
                     Some("obj" | "stl") => {
-                        *configuration = Configuration::default();
-                        *mesh_resmut = InputResource::default();
-                        *solution = SolutionResource::default();
-
                         mesh_resmut.mesh = match Douconel::from_file(path) {
                             Ok(res) => Arc::new(res.0),
                             Err(err) => {
                                 panic!("Error while parsing STL file {path:?}: {err:?}");
                             }
                         };
-
-                        let mut patterns = TreeD::default();
-                        for v_id in mesh_resmut.mesh.vert_ids() {
-                            patterns.add(mesh_resmut.mesh.position(v_id).into(), v_id);
-                        }
-                        mesh_resmut.vertex_lookup = patterns;
-
                         solution.dual = Dual::new(mesh_resmut.mesh.clone());
                     }
                     Some("save") => {
                         let loaded_state: SaveStateObject = serde_json::from_reader(BufReader::new(File::open(path).unwrap())).unwrap();
-                        *mesh_resmut = loaded_state.mesh;
-                        *solution = loaded_state.solution;
-                        *configuration = loaded_state.configuration;
-                        mesh_resmut.as_mut();
+
+                        mesh_resmut.mesh = Arc::new(loaded_state.mesh);
+
+                        solution.dual = Dual::new(mesh_resmut.mesh.clone());
+
+                        for saved_loop in loaded_state.loops {
+                            solution.dual.add_loop(saved_loop);
+                        }
                     }
                     _ => panic!("File format not supported."),
                 }
-
-                mesh_resmut.properties.source = String::from(path.to_str().unwrap());
 
                 configuration.interactive = true;
                 configuration.alpha = 15;
                 configuration.beta = 15;
                 configuration.black = true;
+
+                let mut patterns = TreeD::default();
+                for v_id in mesh_resmut.mesh.vert_ids() {
+                    patterns.add(mesh_resmut.mesh.position(v_id).into(), v_id);
+                }
+                mesh_resmut.vertex_lookup = patterns;
+
+                mesh_resmut.properties.source = String::from(path.to_str().unwrap());
+
+                let nodes = mesh_resmut
+                    .mesh
+                    .face_ids()
+                    .into_par_iter()
+                    .flat_map(|face_id| {
+                        let edges = mesh_resmut.mesh.edges(face_id);
+                        assert!(edges.len() == 3);
+                        vec![
+                            [edges[0], edges[1]],
+                            [edges[1], edges[0]],
+                            [edges[0], edges[2]],
+                            [edges[2], edges[0]],
+                            [edges[1], edges[2]],
+                            [edges[2], edges[1]],
+                        ]
+                    })
+                    .collect::<Vec<_>>();
+
+                for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
+                    let edges = nodes
+                        .clone()
+                        .into_par_iter()
+                        .flat_map(|node| {
+                            mesh_resmut.mesh.neighbor_function_edgepairgraph()(node)
+                                .into_iter()
+                                .map(|neighbor| {
+                                    let vector_a = mesh_resmut.mesh.midpoint(node[1]) - mesh_resmut.mesh.midpoint(node[0]);
+                                    let vector_b = mesh_resmut.mesh.midpoint(neighbor[1]) - mesh_resmut.mesh.midpoint(neighbor[0]);
+                                    let weight = (
+                                        mesh_resmut.mesh.vec_angle(vector_a, vector_b),
+                                        mesh_resmut
+                                            .mesh
+                                            .vec_angle(vector_a.cross(&mesh_resmut.mesh.edge_normal(node[0])), direction.into()),
+                                        mesh_resmut
+                                            .mesh
+                                            .vec_angle(vector_b.cross(&mesh_resmut.mesh.edge_normal(neighbor[0])), direction.into()),
+                                    );
+                                    (node, neighbor, weight)
+                                })
+                                .collect_vec()
+                        })
+                        .collect::<Vec<_>>();
+
+                    mesh_resmut.flow_graphs[direction as usize] = Graaf::from(nodes.clone(), edges);
+                }
+
+                let polycube = solution.dual.dual_phase();
+
+                if let Ok(mut polycube) = polycube {
+                    if let Err(err) = solution.dual.primal_phase(&mut polycube) {
+                        solution.primal = Err(err);
+                    } else {
+                        solution.primal = Ok(polycube);
+                    }
+                }
             }
             ActionEvent::ExportState => {
                 let path = format!(
@@ -247,9 +314,8 @@ pub fn handle_events(
                 );
 
                 let state = SaveStateObject {
-                    mesh: mesh_resmut.as_mut().clone(),
-                    solution: solution.as_mut().clone(),
-                    configuration: configuration.as_mut().clone(),
+                    mesh: (*mesh_resmut.mesh).clone(),
+                    loops: solution.dual.get_loops(),
                 };
 
                 fs::write(&PathBuf::from(path), serde_json::to_string(&state).unwrap());
@@ -348,6 +414,34 @@ fn raycast(
     let face_id = mesh_resmut.mesh.face_with_verts(&verts).unwrap();
     configuration.selected_face = Some((face_id, verts[0]));
 
+    if configuration.delete_mode {
+        // Find highlighted loop.
+        let edgepair = mesh_resmut.mesh.edges_in_face_with_vert(face_id, verts[0]).unwrap();
+        let option_a = [edgepair[0], edgepair[1]];
+        let option_b = [edgepair[1], edgepair[0]];
+
+        let highlighted_loop = solution.dual.get_loop_ids().into_iter().find(|&loop_id| {
+            let edges = solution.dual.get_pairs_of_loop(loop_id);
+            edges.contains(&option_a) || edges.contains(&option_b)
+        });
+
+        if let Some(loop_id) = highlighted_loop {
+            let mut new_sol = solution.dual.clone();
+            new_sol.del_loop(loop_id);
+
+            let polycube = new_sol.dual_phase();
+
+            if configuration.compute_primal {
+                if let Ok(mut polycube) = polycube {
+                    let layout = new_sol.primal_phase(&mut polycube);
+                    solution.next[configuration.direction as usize].insert((face_id, verts[0]), Some((new_sol, Ok(polycube), Some(layout))));
+                }
+            } else {
+                solution.next[configuration.direction as usize].insert((face_id, verts[0]), Some((new_sol, polycube, None)));
+            }
+        }
+    }
+
     // If shift button is pressed, we want to show the closest solution to the current face vertex combination.
     if keyboard.pressed(KeyCode::ShiftLeft) {
         keyboard.clear_just_pressed(KeyCode::ShiftLeft);
@@ -361,7 +455,7 @@ fn raycast(
 
         if let Some((_, valid_solution, signature)) = closest_solution {
             configuration.selected_solution = Some(signature);
-            if let Some((sol, poly)) = valid_solution.clone() {
+            if let Some((sol, poly, Some(layout))) = valid_solution.clone() {
                 if time.elapsed().as_millis() % 1000 < 800 {
                     for &loop_id in &sol.get_loop_ids() {
                         let color = sol.loop_to_direction(loop_id).to_dual_color();
@@ -390,6 +484,7 @@ fn raycast(
                     mouse.clear_just_released(MouseButton::Right);
                     solution.dual = sol;
                     solution.primal = poly;
+                    solution.layout = layout;
                     solution.next[0].clear();
                     solution.next[1].clear();
                     solution.next[2].clear();
@@ -417,151 +512,44 @@ fn raycast(
     timer.report("Computed `occupied`, hashmap of occupied edges");
     timer.reset();
 
-    // TODO: probably use different approach for this.
-    // Map from edges to neighbors.
-    let edge_to_neighbors = mesh_resmut
-        .mesh
-        .edge_ids()
-        .par_iter()
-        .map(|&edge| {
-            if solution
-                .dual
-                .loops_on_edge(edge)
-                .iter()
-                .filter(|&&loop_id| solution.dual.loop_to_direction(loop_id) == configuration.direction)
-                .count()
-                > 0
-            {
-                (edge, vec![])
-            } else {
-                let neighbors = mesh_resmut.mesh.neighbor_function_edgepairgraph()([edge, edge]);
-                (edge, neighbors)
-            }
-        })
-        .collect::<HashMap<_, _>>();
-    timer.report("Edge to neighbors");
-    timer.reset();
-
-    // The neighborhood function: filters out all edges that are already used in the solution
-    let nfunction = |edgepair: [EdgeID; 2]| {
-        if occupied.contains(&edgepair) {
-            vec![]
-        } else {
-            edge_to_neighbors[&edgepair[1]].clone()
-        }
+    let filter = |(a, b): (&[EdgeID; 2], &[EdgeID; 2])| {
+        !occupied.contains(a)
+            && !occupied.contains(b)
+            && [a[0], a[1], b[0], b[1]].iter().all(|&edge| {
+                solution
+                    .dual
+                    .loops_on_edge(edge)
+                    .iter()
+                    .filter(|&&loop_id| solution.dual.loop_to_direction(loop_id) == configuration.direction)
+                    .count()
+                    == 0
+            })
     };
 
-    // The weight function
-    let wfunction = mesh_resmut
-        .mesh
-        .weight_function_angle_edgepairs_aligned(configuration.alpha, configuration.beta, configuration.direction.into());
+    let g_original = &mesh_resmut.flow_graphs[configuration.direction as usize];
+    let g = g_original.filter(filter);
 
-    let mut nodes = vec![];
-    let mut nodes_to_id = HashMap::new();
-    for face_id in mesh_resmut.mesh.face_ids() {
-        // Add a node for each edge combination.
-        let edges = mesh_resmut.mesh.edges(face_id);
-        assert!(edges.len() == 3);
-        let combinations = vec![
-            [edges[0], edges[1]],
-            [edges[1], edges[0]],
-            [edges[0], edges[2]],
-            [edges[2], edges[0]],
-            [edges[1], edges[2]],
-            [edges[2], edges[1]],
-        ];
-        for combination in combinations {
-            if !nodes_to_id.contains_key(&combination) {
-                nodes.push(combination);
-                nodes_to_id.insert(combination, nodes.len() - 1);
-            }
-        }
-    }
-
-    timer.report("Found nodes");
-    timer.reset();
-
-    // let edges = nodes
-    //     .into_par_iter()
-    //     .map(|node| {
-    //         let neighbors = mesh_resmut.mesh.neighbor_function_edgepairgraph()(node)
-    //             .into_iter()
-    //             .map(|neighbor| (nodes_to_id[&neighbor], (wfunction(node, neighbor) * 10000000.).0 as usize + 1))
-    //             .collect_vec();
-    //         (nodes_to_id[&node], neighbors)
-    //     })
-    //     .collect::<HashMap<_, _>>();
-
-    timer.report("Found edges");
-    timer.reset();
-
-    // begin with an empty graph
-    let mut g: petgraph::Graph<[EdgeID; 2], OrderedFloat<f64>, petgraph::Directed> = Graph::with_capacity(nodes.len(), nodes.len() * 2);
-
-    let mut nodes_to_index = HashMap::new();
-    for &node in &nodes {
-        nodes_to_index.insert(node, g.add_node(node));
-    }
-
-    timer.report("added vertices");
-    timer.reset();
-
-    let edges_flat = nodes
-        .clone()
-        .into_par_iter()
-        .flat_map(|node| {
-            mesh_resmut.mesh.neighbor_function_edgepairgraph()(node)
-                .into_iter()
-                .map(|neighbor| (nodes_to_index[&node], nodes_to_index[&neighbor], wfunction(node, neighbor)))
-                .collect_vec()
-        })
-        .collect::<Vec<_>>();
-
-    timer.report("found edges");
-    timer.reset();
-
-    g.extend_with_edges(edges_flat);
-
-    timer.report("added edges");
-    timer.reset();
+    let measure = |(a, b, c): (f64, f64, f64)| a.powi(configuration.alpha) + b.powi(configuration.beta) + c.powi(configuration.beta);
 
     // Starting edges.
     let [e1, e2] = mesh_resmut.mesh.edges_in_face_with_vert(face_id, verts[0]).unwrap();
+    let a = g.node_to_index(&[e1, e2]).unwrap();
+    let b = g.node_to_index(&[e2, e1]).unwrap();
+    let option_a = g.shortest_cycle(a, &measure).unwrap_or_default();
+    let option_b = g.shortest_cycle(b, &measure).unwrap_or_default();
+    let best_option = if option_a.len() > option_b.len() { option_a } else { option_b };
 
-    let a = nodes_to_index[&[e1, e2]];
-    let a_n = g.neighbors(a).collect_vec();
-    let b = nodes_to_index[&[e2, e1]];
-    let b_n = g.neighbors(b).collect_vec();
-
-    let combinations = a_n.into_iter().map(|x| (a, x)).chain(b_n.into_iter().map(|x| (b, x))).collect_vec();
-
-    let paths = combinations
-        .into_par_iter()
-        .filter_map(|(u, v)| {
-            let extra = g.edges_connecting(u, v).next().unwrap().weight();
-            let shortest_path = astar(&g, v, |finish| finish == u, |e| *e.weight(), |_| OrderedFloat(0.));
-            shortest_path.map(|(cost, path)| (path, cost + extra))
-        })
-        .collect::<Vec<_>>();
-
-    timer.report("CURRENT Path computation");
+    timer.report("Path computation");
     timer.reset();
 
-    let best_path = paths
+    // Map back to EdgeID
+    let best_path = best_option
         .into_iter()
-        .min_by(|(_, cost1), (_, cost2)| cost1.cmp(cost2))
-        .map(|(path, _)| {
-            let (last, rest) = path.split_last().unwrap();
-            [&[*last], rest].concat().into_iter().flat_map(|node_index| g[node_index]).collect_vec()
-        })
-        .unwrap_or_else(std::vec::Vec::new);
+        .flat_map(|node_index| g.index_to_node(node_index).unwrap().to_owned())
+        .collect_vec();
 
     timer.report("Select best Path computation");
     timer.reset();
-
-    // TODO: why is this unwrap safe?
-    // let option_a = hutspot::graph::find_shortest_cycle([e1, e2], &edges).unwrap_or_else(|| (vec![], OrderedFloat(0.)));
-    // let option_b = hutspot::graph::find_shortest_cycle([e1, e2], &edges).unwrap_or_else(|| (vec![], OrderedFloat(0.)));
 
     // If the best option is empty, we have no valid path.
     if best_path.len() < 5 {
@@ -587,6 +575,14 @@ fn raycast(
         edges: cleaned_option,
         direction: configuration.direction,
     });
-    let polycube = new_sol.build_loop_structure();
-    solution.next[configuration.direction as usize].insert((face_id, verts[0]), Some((new_sol, polycube)));
+    let polycube = new_sol.dual_phase();
+
+    if configuration.compute_primal {
+        if let Ok(mut polycube) = polycube {
+            let layout = new_sol.primal_phase(&mut polycube);
+            solution.next[configuration.direction as usize].insert((face_id, verts[0]), Some((new_sol, Ok(polycube), Some(layout))));
+        }
+    } else {
+        solution.next[configuration.direction as usize].insert((face_id, verts[0]), Some((new_sol, polycube, None)));
+    }
 }

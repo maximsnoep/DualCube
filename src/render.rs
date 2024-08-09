@@ -41,29 +41,32 @@ pub fn update(
         let polycube = solution.primal.clone().unwrap();
         let mut polycube_mesh = polycube.bevy(&HashMap::new());
 
-        if !configuration.black {
-            let mut mesh_color_map = HashMap::new();
-            let mut poly_color_map = HashMap::new();
+        if solution.layout.is_ok() {
+            let granny = solution.layout.as_ref().unwrap().granulated_mesh.as_ref().unwrap();
 
-            for &face_id in &polycube.face_ids() {
-                let normal = (polycube.normal(face_id) as Vector3D).normalize();
-                let (dir, side) = to_principal_direction(normal);
-                let color = dir.to_primal_color_sided(side);
-                let c = [color.r(), color.g(), color.b()];
+            if !configuration.black {
+                let mut mesh_color_map = HashMap::new();
+                let mut poly_color_map = HashMap::new();
 
-                // Color the mesh color map
-                for &face_id_t in &polycube.faces[face_id].1.faces {
-                    mesh_color_map.insert(face_id_t, c);
+                for &face_id in &polycube.face_ids() {
+                    let normal = (polycube.normal(face_id) as Vector3D).normalize();
+                    let (dir, side) = to_principal_direction(normal);
+                    let color = dir.to_primal_color_sided(side);
+                    let c = [color.r(), color.g(), color.b()];
+
+                    // Color the mesh color map
+                    for &face_id_t in &polycube.faces[face_id].1.faces {
+                        mesh_color_map.insert(face_id_t, c);
+                    }
+
+                    // Color the polycube color map
+                    poly_color_map.insert(face_id, c);
                 }
 
-                // Color the polycube color map
-                poly_color_map.insert(face_id, c);
+                mesh = granny.bevy(&mesh_color_map);
+                polycube_mesh = polycube.bevy(&poly_color_map);
             }
-
-            mesh = solution.dual.granulated_mesh.as_ref().unwrap().bevy(&mesh_color_map);
-            polycube_mesh = polycube.bevy(&poly_color_map);
         }
-
         // Draw polycube
         let aabb = polycube_mesh.compute_aabb().unwrap();
         let scale = 10. * (1. / aabb.half_extents.max_element());
@@ -152,8 +155,6 @@ pub fn update(
                 scale: Vec3::splat(mesh_resmut.properties.scale),
             },
             material: materials.add(StandardMaterial {
-                reflectance: 0.0,
-
                 perceptual_roughness: 0.7,
                 unlit: !configuration.black && solution.primal.is_ok(),
                 ..default()
@@ -169,6 +170,7 @@ pub fn update(
     let sol = &solution.dual;
     let ls = sol.get_loop_structure();
     let poly = solution.primal.as_ref();
+    let layout = solution.layout.as_ref();
     if !ls.edge_ids().is_empty() && poly.is_ok() {
         for segment in sol.get_loop_structure().edge_ids() {
             let direction = sol.segment_to_direction(segment);
@@ -208,10 +210,10 @@ pub fn update(
     }
 
     gizmos_cache.paths.clear();
-    if let Ok(primal) = &poly {
-        if let Some(granulated_mesh) = &sol.granulated_mesh {
-            for path_id in primal.edge_ids() {
-                for vertexpair in primal.edges[path_id].windows(2) {
+    if let Ok(lay) = &layout {
+        if let Some(granulated_mesh) = &lay.granulated_mesh {
+            for (path_id, path) in &lay.edge_to_path {
+                for vertexpair in path.windows(2) {
                     let edge_id = granulated_mesh.edge_between_verts(vertexpair[0], vertexpair[1]).unwrap().0;
                     let (u_id, v_id) = granulated_mesh.endpoints(edge_id);
                     let u = granulated_mesh.position(u_id);
