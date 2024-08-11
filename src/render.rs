@@ -37,45 +37,43 @@ pub fn update(
     // Color maps for the mesh and polycube. Only filled with (primal) colors used if `black` is set to `false`. Default color is black.
     let mut mesh = mesh_resmut.mesh.bevy(&HashMap::new());
 
-    if solution.primal.is_ok() {
-        let polycube = solution.primal.clone().unwrap();
-        let mut polycube_mesh = polycube.bevy(&HashMap::new());
+    if let Some(polycube) = &solution.current_solution.polycube.clone() {
+        let mut polycube_mesh = polycube.structure.bevy(&HashMap::new());
 
-        if solution.layout.is_ok() {
-            let granny = solution.layout.as_ref().unwrap().granulated_mesh.as_ref().unwrap();
-
+        if let Some(Ok(lay)) = &solution.current_solution.layout {
             if !configuration.black {
                 let mut mesh_color_map = HashMap::new();
                 let mut poly_color_map = HashMap::new();
 
-                for &face_id in &polycube.face_ids() {
-                    let normal = (polycube.normal(face_id) as Vector3D).normalize();
+                for &face_id in &polycube.structure.face_ids() {
+                    let normal = (polycube.structure.normal(face_id) as Vector3D).normalize();
                     let (dir, side) = to_principal_direction(normal);
                     let color = dir.to_primal_color_sided(side);
                     let c = [color.r(), color.g(), color.b()];
 
                     // Color the mesh color map
-                    for &face_id_t in &polycube.faces[face_id].1.faces {
-                        mesh_color_map.insert(face_id_t, c);
+                    for &triangle_id in &lay.face_to_patch[&face_id].faces {
+                        mesh_color_map.insert(triangle_id, c);
                     }
 
                     // Color the polycube color map
                     poly_color_map.insert(face_id, c);
                 }
 
-                mesh = granny.bevy(&mesh_color_map);
-                polycube_mesh = polycube.bevy(&poly_color_map);
+                mesh = lay.granulated_mesh.bevy(&mesh_color_map);
+                polycube_mesh = polycube.structure.bevy(&poly_color_map);
             }
         }
+
         // Draw polycube
         let aabb = polycube_mesh.compute_aabb().unwrap();
         let scale = 10. * (1. / aabb.half_extents.max_element());
         solution.properties.scale = scale;
         let translation = -scale * aabb.center;
         solution.properties.translation = Vector3D::new(translation.x.into(), translation.y.into(), translation.z.into()) + POLYCUBE_OFFSET;
-        solution.properties.nr_of_vertices = polycube.nr_verts();
-        solution.properties.nr_of_edges = polycube.nr_edges() / 2; // dcel -> single edge
-        solution.properties.nr_of_faces = polycube.nr_faces();
+        solution.properties.nr_of_vertices = polycube.structure.nr_verts();
+        solution.properties.nr_of_edges = polycube.structure.nr_edges() / 2; // dcel -> single edge
+        solution.properties.nr_of_faces = polycube.structure.nr_faces();
 
         // Spawn the polycube mesh
         commands.spawn((
@@ -156,7 +154,7 @@ pub fn update(
             },
             material: materials.add(StandardMaterial {
                 perceptual_roughness: 0.7,
-                unlit: !configuration.black && solution.primal.is_ok(),
+                unlit: !configuration.black,
                 ..default()
             }),
             ..default()
@@ -167,14 +165,10 @@ pub fn update(
 
     // Add gizmos to cache.
     gizmos_cache.loops.clear();
-    let sol = &solution.dual;
-    let ls = sol.get_loop_structure();
-    let poly = solution.primal.as_ref();
-    let layout = solution.layout.as_ref();
-    if !ls.edge_ids().is_empty() && poly.is_ok() {
-        for segment in sol.get_loop_structure().edge_ids() {
-            let direction = sol.segment_to_direction(segment);
-            let side = sol.segment_to_side(segment, configuration.sides_mask);
+    if let Ok(dual) = &solution.current_solution.dual {
+        for segment_id in dual.loop_structure.edge_ids() {
+            let direction = dual.loop_structure.edges[segment_id].direction;
+            let side = dual.segment_to_side(segment_id, configuration.sides_mask);
             let mut offset = Vector3D::new(0., 0., 0.);
             let dist = 0.001 * f64::from(mesh_resmut.properties.scale);
             match side {
@@ -190,7 +184,7 @@ pub fn update(
                 },
             };
             let color = direction.to_dual_color_sided(side);
-            for edgepair in sol.get_pairs_of_sequence(&sol.segment_to_edges(segment)) {
+            for edgepair in solution.current_solution.get_pairs_of_sequence(&dual.segment_to_edges(segment_id)) {
                 let u = mesh_resmut.mesh.midpoint(edgepair[0]);
                 let v = mesh_resmut.mesh.midpoint(edgepair[1]);
                 let n = mesh_resmut.mesh.edge_normal(edgepair[0]);
@@ -198,9 +192,9 @@ pub fn update(
             }
         }
     } else {
-        for loop_id in sol.get_loop_ids() {
-            let color = sol.loop_to_direction(loop_id).to_dual_color();
-            for edgepair in sol.get_pairs_of_loop(loop_id) {
+        for loop_id in solution.current_solution.loops.keys() {
+            let color = solution.current_solution.loop_to_direction(loop_id).to_dual_color();
+            for edgepair in solution.current_solution.get_pairs_of_loop(loop_id) {
                 let u = mesh_resmut.mesh.midpoint(edgepair[0]);
                 let v = mesh_resmut.mesh.midpoint(edgepair[1]);
                 let n = mesh_resmut.mesh.edge_normal(edgepair[0]);
@@ -210,17 +204,15 @@ pub fn update(
     }
 
     gizmos_cache.paths.clear();
-    if let Ok(lay) = &layout {
-        if let Some(granulated_mesh) = &lay.granulated_mesh {
-            for (path_id, path) in &lay.edge_to_path {
-                for vertexpair in path.windows(2) {
-                    let edge_id = granulated_mesh.edge_between_verts(vertexpair[0], vertexpair[1]).unwrap().0;
-                    let (u_id, v_id) = granulated_mesh.endpoints(edge_id);
-                    let u = granulated_mesh.position(u_id);
-                    let v = granulated_mesh.position(v_id);
-                    let n = granulated_mesh.edge_normal(edge_id);
-                    add_line2(&mut gizmos_cache.paths, u, v, n * 0.05, hutspot::color::BLACK.into(), &mesh_resmut.properties);
-                }
+    if let Some(Ok(lay)) = &solution.current_solution.layout {
+        for (path_id, path) in &lay.edge_to_path {
+            for vertexpair in path.windows(2) {
+                let edge_id = lay.granulated_mesh.edge_between_verts(vertexpair[0], vertexpair[1]).unwrap().0;
+                let (u_id, v_id) = lay.granulated_mesh.endpoints(edge_id);
+                let u = lay.granulated_mesh.position(u_id);
+                let v = lay.granulated_mesh.position(v_id);
+                let n = lay.granulated_mesh.edge_normal(edge_id);
+                add_line2(&mut gizmos_cache.paths, u, v, n * 0.05, hutspot::color::BLACK.into(), &mesh_resmut.properties);
             }
         }
     }
@@ -318,30 +310,34 @@ pub fn gizmos(mut gizmos: Gizmos, gizmos_cache: Res<GizmosCache>, solution: Res<
     }
 
     // Polycube wireframe, does not need to be cached, since it is so simple.
-    if let Ok(primal) = &solution.primal {
+    if let Some(primal) = &solution.current_solution.polycube {
         if configuration.black {
             // Draw all loop segments / faces axis aligned.
-            for (face_id, (original_id, _)) in &primal.faces {
-                let this_centroid = primal.centroid(face_id);
+            for &face_id in &primal.structure.face_ids() {
+                let original_id = primal.intersection_to_face.get_by_right(&face_id).unwrap();
+                let this_centroid = primal.structure.centroid(face_id);
 
-                let normal = (primal.normal(face_id) as Vector3D).normalize();
+                let normal = (primal.structure.normal(face_id) as Vector3D).normalize();
                 let orientation = to_principal_direction(normal).0;
 
-                for &neighbor_id in &primal.fneighbors(face_id) {
-                    let next_original_id = &primal.faces[neighbor_id].0;
+                for &neighbor_id in &primal.structure.fneighbors(face_id) {
+                    let next_original_id = primal.intersection_to_face.get_by_right(&neighbor_id).unwrap();
 
-                    let edge_between = primal.edge_between_faces(face_id, neighbor_id).unwrap().0;
-                    let root = primal.root(edge_between);
-                    let root_pos = primal.position(root);
+                    let edge_between = primal.structure.edge_between_faces(face_id, neighbor_id).unwrap().0;
+                    let root = primal.structure.root(edge_between);
+                    let root_pos = primal.structure.position(root);
 
                     let segment = solution
+                        .current_solution
                         .dual
-                        .get_loop_structure()
+                        .as_ref()
+                        .unwrap()
+                        .loop_structure
                         .edge_between_verts(*original_id, *next_original_id)
                         .unwrap()
                         .0;
 
-                    let direction = solution.dual.segment_to_direction(segment);
+                    let direction = solution.current_solution.dual.as_ref().unwrap().loop_structure.edges[segment].direction;
 
                     for side in [Side::Upper, Side::Lower] {
                         let segment_direction = match (orientation, direction) {
@@ -386,14 +382,14 @@ pub fn gizmos(mut gizmos: Gizmos, gizmos_cache: Res<GizmosCache>, solution: Res<
         }
 
         // Draw the edges of the polycube.
-        for edge_id in primal.edge_ids() {
-            let endpoints = primal.endpoints(edge_id);
-            let u = primal.position(endpoints.0);
-            let v = primal.position(endpoints.1);
+        for edge_id in primal.structure.edge_ids() {
+            let endpoints = primal.structure.endpoints(edge_id);
+            let u = primal.structure.position(endpoints.0);
+            let v = primal.structure.position(endpoints.1);
             let line = DrawableLine::from_line(
                 u,
                 v,
-                primal.normal(primal.face(edge_id)) * 0.001,
+                primal.structure.normal(primal.structure.face(edge_id)) * 0.001,
                 solution.properties.translation,
                 solution.properties.scale,
             );

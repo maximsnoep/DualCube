@@ -1,6 +1,6 @@
-use crate::{dual::PrincipalDirection, ActionEvent, Configuration, InputResource, SolutionResource};
+use crate::{dual::PrincipalDirection, solutions::Solution, ActionEvent, Configuration, InputResource, SolutionResource};
 use bevy::prelude::*;
-use bevy_egui::egui::{emath::Numeric, Align, Color32, Layout, RichText, Slider, TopBottomPanel, Ui};
+use bevy_egui::egui::{emath::Numeric, text::LayoutJob, Align, Color32, FontId, Layout, RichText, Slider, TextFormat, TopBottomPanel, Ui};
 
 pub fn setup(mut ui: bevy_egui::EguiContexts) {
     // Font
@@ -18,7 +18,7 @@ pub fn setup(mut ui: bevy_egui::EguiContexts) {
         .families
         .entry(bevy_egui::egui::FontFamily::Monospace)
         .or_default()
-        .push("BerkeleyMonoTrial".to_owned());
+        .insert(0, "BerkeleyMonoTrial".to_owned());
     ui.ctx_mut().set_fonts(fonts);
 
     // Theme
@@ -43,13 +43,13 @@ pub fn update(
                     ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
                         ui.add_space(15.);
 
-                        if ui.button("Export").clicked() {
+                        if ui.button(text("Export")).clicked() {
                             ev_w.send(ActionEvent::ExportState);
                         };
 
                         ui.add_space(15.);
 
-                        if ui.button("Load file").clicked() {
+                        if ui.button(text("Load")).clicked() {
                             if let Some(path) = rfd::FileDialog::new().add_filter("triangulated geometry", &["obj", "stl", "save"]).pick_file() {
                                 ev_w.send(ActionEvent::LoadFile(path));
                             }
@@ -58,10 +58,10 @@ pub fn update(
                         ui.add_space(15.);
 
                         if mesh_resmut.properties.source.is_empty() {
-                            ui.label("No file loaded.");
+                            ui.label(colored_text("No file loaded.", Color32::RED));
                         } else {
                             ui.add_space(15.);
-                            ui.label(mesh_resmut.properties.source.to_string());
+                            ui.label(text(&mesh_resmut.properties.source.to_string()));
                         }
 
                         ui.add_space(15.);
@@ -71,34 +71,48 @@ pub fn update(
                     ui.with_layout(Layout::right_to_left(Align::TOP), |ui| {
                         ui.add_space(15.);
 
-                        ui.with_layout(Layout::top_down(Align::BOTTOM), |ui| {
-                            ui.label("FPS");
-                            if conf.fps > 0. {
-                                let fps_color = if conf.fps >= 50.0 {
-                                    Color32::from_rgb(0, 255, 0)
-                                } else if conf.fps >= 30.0 {
-                                    let r = ((1.0 - (conf.fps - 60.0) / (120.0 - 60.0)) * 255.) as u8;
-                                    Color32::from_rgb(r, 255, 0)
-                                } else if conf.fps >= 15.0 {
-                                    let g = (((conf.fps - 30.0) / (60.0 - 30.0)) * 255.) as u8;
-                                    Color32::from_rgb(255, g, 0)
-                                } else {
-                                    Color32::from_rgb(255, 0, 0)
-                                };
-                                ui.label(RichText::new(format!("{:.0}", conf.fps)).color(fps_color));
-                            }
-                        });
+                        let size = 13.0;
+
+                        let mut job = LayoutJob::default();
+                        job.append("FPS[", 0.0, text_format(size, Color32::BLACK));
+                        let fps_color = if conf.fps >= 50.0 {
+                            Color32::from_rgb(0, 255, 0)
+                        } else if conf.fps >= 30.0 {
+                            let r = ((1.0 - (conf.fps - 60.0) / (120.0 - 60.0)) * 255.) as u8;
+                            Color32::from_rgb(r, 255, 0)
+                        } else if conf.fps >= 15.0 {
+                            let g = (((conf.fps - 30.0) / (60.0 - 30.0)) * 255.) as u8;
+                            Color32::from_rgb(255, g, 0)
+                        } else {
+                            Color32::from_rgb(255, 0, 0)
+                        };
+                        job.append(&format!("{:.0}", conf.fps), 0.0, text_format(size, fps_color));
+                        job.append("]", 0.0, text_format(size, Color32::BLACK));
+                        ui.label(job);
 
                         ui.add_space(15.);
 
-                        ui.with_layout(Layout::top_down(Align::BOTTOM), |ui| {
-                            ui.label("CURRENT STATUS");
-                            if let Err(err) = &solution.primal {
-                                warning(ui, &format!("ERROR: {err:?}"));
+                        let sol = &solution.current_solution;
+                        let mut job = LayoutJob::default();
+                        job.append("DUAL[", 0.0, text_format(size, Color32::BLACK));
+                        if sol.dual.is_ok() {
+                            job.append("OK", 0.0, text_format(size, Color32::GREEN));
+                        } else {
+                            job.append(&format!("{:?}", sol.dual.as_ref().err()), 0.0, text_format(size, Color32::RED));
+                        }
+                        job.append("] LAYOUT[", 0.0, text_format(size, Color32::BLACK));
+                        if let Some(layout) = &sol.layout {
+                            if layout.is_ok() {
+                                job.append("OK", 0.0, text_format(size, Color32::GREEN));
                             } else {
-                                okido(ui, "OK");
+                                job.append(&format!("{:?}", layout.as_ref().err()), 0.0, text_format(size, Color32::RED));
                             }
-                        });
+                        } else {
+                            job.append("None", 0.0, text_format(size, Color32::RED));
+                        }
+                        job.append("]", 0.0, text_format(size, Color32::BLACK));
+
+                        ui.label(job);
                     });
                 });
 
@@ -110,7 +124,7 @@ pub fn update(
                     ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
                         ui.add_space(15.);
 
-                        ui.checkbox(&mut conf.interactive, "interactive");
+                        ui.checkbox(&mut conf.interactive, text("INTERACTIVE MODE"));
 
                         ui.add_space(15.);
 
@@ -135,42 +149,43 @@ pub fn update(
                     ui.with_layout(Layout::right_to_left(Align::BOTTOM), |ui| {
                         ui.add_space(15.);
 
-                        ui.with_layout(Layout::top_down(Align::BOTTOM), |ui| {
-                            ui.label("FACES");
-                            if mesh_resmut.properties.nr_of_faces > 0 {
-                                ui.label(format!("{:}", mesh_resmut.properties.nr_of_faces));
-                            } else {
-                                ui.label("-");
-                            }
-                        });
+                        let mut job = LayoutJob::default();
+                        job.append("F[", 0.0, text_format(13.0, Color32::BLACK));
+                        if mesh_resmut.properties.nr_of_faces > 0 {
+                            job.append(&format!("{:}", mesh_resmut.properties.nr_of_faces), 0.0, text_format(13.0, Color32::BLACK));
+                        } else {
+                            job.append("-", 0.0, text_format(13.0, Color32::GRAY));
+                        }
+                        job.append("]", 0.0, text_format(13.0, Color32::BLACK));
+                        ui.label(job);
 
                         ui.add_space(5.);
 
-                        ui.with_layout(Layout::top_down(Align::BOTTOM), |ui| {
-                            ui.label("EDGES");
-                            if mesh_resmut.properties.nr_of_edges > 0 {
-                                ui.label(format!("{:}", mesh_resmut.properties.nr_of_edges));
-                            } else {
-                                ui.label("-");
-                            }
-                        });
+                        let mut job = LayoutJob::default();
+                        job.append("E[", 0.0, text_format(13.0, Color32::BLACK));
+                        if mesh_resmut.properties.nr_of_edges > 0 {
+                            job.append(&format!("{:}", mesh_resmut.properties.nr_of_edges), 0.0, text_format(13.0, Color32::BLACK));
+                        } else {
+                            job.append("-", 0.0, text_format(13.0, Color32::GRAY));
+                        }
+                        job.append("]", 0.0, text_format(13.0, Color32::BLACK));
+                        ui.label(job);
 
                         ui.add_space(5.);
 
-                        ui.with_layout(Layout::top_down(Align::BOTTOM), |ui| {
-                            ui.label("VERTS");
-                            if mesh_resmut.properties.nr_of_vertices > 0 {
-                                ui.label(format!("{:}", mesh_resmut.properties.nr_of_vertices));
-                            } else {
-                                ui.label("-");
-                            }
-                        });
+                        let mut job = LayoutJob::default();
+                        job.append("V[", 0.0, text_format(13.0, Color32::BLACK));
+                        if mesh_resmut.properties.nr_of_vertices > 0 {
+                            job.append(&format!("{:}", mesh_resmut.properties.nr_of_vertices), 0.0, text_format(13.0, Color32::BLACK));
+                        } else {
+                            job.append("-", 0.0, text_format(13.0, Color32::GRAY));
+                        }
+                        job.append("]", 0.0, text_format(13.0, Color32::BLACK));
+                        ui.label(job);
 
-                        ui.add_space(15.);
+                        ui.add_space(10.);
 
-                        ui.with_layout(Layout::top_down(Align::BOTTOM), |ui| {
-                            ui.label("INPUT");
-                        });
+                        ui.label(text("MESH"));
                     });
                 });
 
@@ -182,23 +197,23 @@ pub fn update(
                     ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
                         ui.add_space(15.);
 
-                        if ui.button("Swap").clicked() {
+                        if ui.button(text("SWAP CAMS")).clicked() {
                             conf.swap_cameras = !conf.swap_cameras;
                         }
 
                         ui.add_space(15.);
 
-                        if ui.checkbox(&mut conf.black, "Dual").changed() {
+                        if ui.checkbox(&mut conf.black, text("DUAL MODE")).changed() {
                             mesh_resmut.as_mut();
                         }
 
                         ui.add_space(15.);
 
-                        ui.checkbox(&mut conf.compute_primal, "Comp. primal");
+                        ui.checkbox(&mut conf.compute_primal, text("AUTOMATIC LAYOUT"));
 
                         ui.add_space(15.);
 
-                        ui.checkbox(&mut conf.delete_mode, "Delete mode");
+                        ui.checkbox(&mut conf.delete_mode, text("DELETE MODE"));
 
                         ui.add_space(15.);
                     });
@@ -207,138 +222,98 @@ pub fn update(
                     ui.with_layout(Layout::right_to_left(Align::BOTTOM), |ui| {
                         ui.add_space(15.);
 
-                        ui.with_layout(Layout::top_down(Align::BOTTOM), |ui| {
-                            ui.label("FACES");
-                            if solution.properties.nr_of_faces > 0 {
-                                ui.label(format!("{:}", solution.properties.nr_of_faces));
-                            } else {
-                                ui.label("-");
-                            }
-                        });
+                        let mut job = LayoutJob::default();
+                        job.append("F[", 0.0, text_format(13.0, Color32::BLACK));
+                        if solution.properties.nr_of_faces > 0 {
+                            job.append(&format!("{:}", solution.properties.nr_of_faces), 0.0, text_format(13.0, Color32::BLACK));
+                        } else {
+                            job.append("-", 0.0, text_format(13.0, Color32::GRAY));
+                        }
+                        job.append("]", 0.0, text_format(13.0, Color32::BLACK));
+                        ui.label(job);
 
                         ui.add_space(5.);
 
-                        ui.with_layout(Layout::top_down(Align::BOTTOM), |ui| {
-                            ui.label("EDGES");
-                            if solution.properties.nr_of_edges > 0 {
-                                ui.label(format!("{:}", solution.properties.nr_of_edges));
-                            } else {
-                                ui.label("-");
-                            }
-                        });
+                        let mut job = LayoutJob::default();
+                        job.append("E[", 0.0, text_format(13.0, Color32::BLACK));
+                        if solution.properties.nr_of_edges > 0 {
+                            job.append(&format!("{:}", solution.properties.nr_of_edges), 0.0, text_format(13.0, Color32::BLACK));
+                        } else {
+                            job.append("-", 0.0, text_format(13.0, Color32::GRAY));
+                        }
+                        job.append("]", 0.0, text_format(13.0, Color32::BLACK));
+                        ui.label(job);
 
                         ui.add_space(5.);
 
-                        ui.with_layout(Layout::top_down(Align::BOTTOM), |ui| {
-                            ui.label("VERTS");
-                            if solution.properties.nr_of_vertices > 0 {
-                                ui.label(format!("{:}", solution.properties.nr_of_vertices));
-                            } else {
-                                ui.label("-");
-                            }
-                        });
+                        let mut job = LayoutJob::default();
+                        job.append("V[", 0.0, text_format(13.0, Color32::BLACK));
+                        if solution.properties.nr_of_vertices > 0 {
+                            job.append(&format!("{:}", solution.properties.nr_of_vertices), 0.0, text_format(13.0, Color32::BLACK));
+                        } else {
+                            job.append("-", 0.0, text_format(13.0, Color32::GRAY));
+                        }
+                        job.append("]", 0.0, text_format(13.0, Color32::BLACK));
+                        ui.label(job);
 
-                        ui.add_space(15.);
+                        ui.add_space(10.);
 
-                        ui.with_layout(Layout::top_down(Align::BOTTOM), |ui| {
-                            ui.label("POLYCUBE");
-                        });
+                        ui.label(text("POLYCUBE"));
                     });
                 });
 
                 ui.add_space(15.);
 
+                // FOURTH ROW
                 ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
                     ui.with_layout(Layout::right_to_left(Align::TOP), |ui| {
                         ui.add_space(15.);
-
-                        // Selected face etc.
                         ui.with_layout(Layout::top_down(Align::BOTTOM), |ui| {
-                            ui.label("RAYCASTED FACE");
-                            if let Some(selected_face) = conf.selected_face {
-                                ui.label(selected_face.0.to_string());
-                            } else {
-                                ui.label("-");
-                            }
-
-                            ui.add_space(15.);
-
-                            ui.label("HIGHLIGHTED SOLUTION");
-
-                            if let Some(selected_edge) = conf.selected_solution {
-                                ui.label(format!("{}", selected_edge.0));
-                            } else {
-                                ui.label("-");
-                            }
-
-                            ui.label("STATUS");
-
-                            if let Some(selected_edge) = conf.selected_solution {
-                                if let Some(sol) = solution.next[conf.direction as usize].get(&selected_edge) {
-                                    if let Some((_, Err(err), _)) = sol {
-                                        ui.label("dual:");
-                                        warning(ui, &format!("ERROR: {err:?}"));
+                            ui.label(text("SELECTED"));
+                            if let Some(edgepair) = conf.selected {
+                                if let Some(Some(sol)) = solution.next[conf.direction as usize].get(&edgepair) {
+                                    let size = 13.0;
+                                    let mut job = LayoutJob::default();
+                                    job.append(&format!("{edgepair:?} "), 0.0, text_format(size, Color32::BLACK));
+                                    job.append("DUAL[", 0.0, text_format(size, Color32::BLACK));
+                                    if sol.dual.is_ok() {
+                                        job.append("OK", 0.0, text_format(size, Color32::GREEN));
                                     } else {
-                                        ui.label("dual:");
-                                        okido(ui, "OK");
+                                        job.append(&format!("{:?}", sol.dual.as_ref().err()), 0.0, text_format(size, Color32::RED));
                                     }
-                                    if let Some((_, _, None)) = sol {
-                                        ui.label("layout:");
-                                        warning(ui, "None");
-                                    } else if let Some((_, _, Some(Err(err)))) = sol {
-                                        ui.label("layout:");
-                                        warning(ui, &format!("ERROR: {err:?}"));
+                                    job.append("] LAYOUT[", 0.0, text_format(size, Color32::BLACK));
+                                    if let Some(layout) = &sol.layout {
+                                        if layout.is_ok() {
+                                            job.append("OK", 0.0, text_format(size, Color32::GREEN));
+                                        } else {
+                                            job.append(&format!("{:?}", layout.as_ref().err()), 0.0, text_format(size, Color32::RED));
+                                        }
                                     } else {
-                                        ui.label("layout:");
-                                        okido(ui, "OK");
+                                        job.append("None", 0.0, text_format(size, Color32::RED));
                                     }
+                                    job.append("]", 0.0, text_format(size, Color32::BLACK));
+
+                                    ui.label(job);
                                 } else {
-                                    ui.label("-");
+                                    ui.label(colored_text("-", Color32::GRAY));
                                 }
                             } else {
-                                ui.label("-");
+                                ui.label(colored_text("-", Color32::GRAY));
                             }
                         });
 
                         ui.add_space(15.);
                     });
                 });
-                // ui.add_space(15.);
 
-                // ui.vertical(|ui| {
-                //     ui.checkbox(&mut conf.draw_wireframe, "graph");
-                //     ui.checkbox(&mut conf.draw_vertices, "vertices");
-                //     ui.checkbox(&mut conf.draw_normals, "normals");
-                // });
-
-                // ui.vertical(|ui| {
-                //     ui.label("Sublabels");
-                //     for i in 0..3 {
-                //         if stepper(
-                //             ui,
-                //             ["X-loops", "Y-loops", "Z-loops"][i],
-                //             &mut conf.sides_mask[i],
-                //             0,
-                //             2_u32.pow(u32::try_from(solution.dual.side_ccs[i].len()).unwrap()) - 1,
-                //         ) {
-                //             let res = solution.dual.zone_graph(conf.sides_mask);
-                //             if let Err(err) = res {
-                //                 solution.primal = Err(err);
-                //             }
-                //             solution.primal = Ok(solution.dual.primal());
-                //             mesh_resmut.as_mut();
-                //         }
-                //     }
-                // });
-
-                ui.add_space(10.);
+                ui.add_space(15.);
             });
         });
     });
 }
 
 fn slider<T: Numeric>(ui: &mut Ui, label: &str, value: &mut T, range: std::ops::RangeInclusive<T>) {
-    ui.add(Slider::new(value, range).text(label));
+    ui.add(Slider::new(value, range).text(text(label)));
 }
 
 fn stepper(ui: &mut Ui, label: &str, value: &mut u32, min: u32, max: u32) -> bool {
@@ -368,7 +343,7 @@ fn stepper(ui: &mut Ui, label: &str, value: &mut u32, min: u32, max: u32) -> boo
 }
 
 fn radio<T: PartialEq<T> + std::fmt::Display>(ui: &mut Ui, item: &mut T, value: T) -> bool {
-    if ui.radio(*item == value, format!("{value}")).clicked() {
+    if ui.radio(*item == value, text(&format!("{value}"))).clicked() {
         *item = value;
         true
     } else {
@@ -382,4 +357,27 @@ fn warning(ui: &mut Ui, text: &str) {
 
 fn okido(ui: &mut Ui, text: &str) {
     ui.label(RichText::new(text).color(Color32::GREEN));
+}
+
+pub fn text(string: &str) -> LayoutJob {
+    let mut job = LayoutJob::default();
+    job.append(string, 0.0, text_format(13.0, Color32::BLACK));
+    job
+}
+
+pub fn colored_text(string: &str, color: Color32) -> LayoutJob {
+    let mut job = LayoutJob::default();
+    job.append(string, 0.0, text_format(13.0, color));
+    job
+}
+
+pub fn text_format(size: f32, color: Color32) -> TextFormat {
+    TextFormat {
+        font_id: FontId {
+            size,
+            family: bevy_egui::egui::FontFamily::Monospace,
+        },
+        color,
+        ..Default::default()
+    }
 }
