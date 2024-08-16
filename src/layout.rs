@@ -1,4 +1,4 @@
-use crate::dual::{Dual, PrincipalDirection, PropertyViolationError};
+use crate::dual::{to_principal_direction, Dual, LoopStructure, PrincipalDirection, PropertyViolationError};
 use crate::polycube::{Polycube, PolycubeEdgeID, PolycubeFaceID, PolycubeVertID};
 use crate::{EmbeddedMesh, FaceID, VertID};
 use bimap::BiHashMap;
@@ -6,6 +6,7 @@ use douconel::douconel_embedded::HasPosition;
 use hutspot::geom::Vector3D;
 use itertools::Itertools;
 use ordered_float::OrderedFloat;
+use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -25,6 +26,7 @@ pub struct Patch {
 #[derive(Clone, Debug, Default)]
 pub struct Layout {
     pub polycube_ref: Arc<Polycube>,
+    pub loop_structure_ref: LoopStructure,
 
     // mapping:
     pub granulated_mesh: EmbeddedMesh,
@@ -35,53 +37,90 @@ pub struct Layout {
 
 impl Layout {
     pub fn embed(dual_ref: &Dual, polycube_ref: &Arc<Polycube>) -> Result<Self, PropertyViolationError<PolycubeVertID>> {
+        println!("Embedding layout");
         let mut layout = Self {
             polycube_ref: polycube_ref.clone(),
             granulated_mesh: (*dual_ref.mesh_ref).clone(),
+            loop_structure_ref: dual_ref.loop_structure.clone(),
+
             vert_to_corner: BiHashMap::new(),
             face_to_patch: HashMap::new(),
             edge_to_path: HashMap::new(),
         };
 
         layout.place_vertices(dual_ref);
-        layout.place_paths();
+        layout.place_paths()?;
         layout.assign_patches()?;
         Ok(layout)
     }
 
     fn place_vertices(&mut self, dual: &Dual) {
+        // find the best candidate position for each region
+        let mut region_to_candidate = HashMap::new();
+        for (region_id, region_obj) in &dual.loop_structure.faces {
+            // Naive labeling of the vertices in the region
+            let naive_labeling = region_obj.verts.iter().map(|&v| {
+                let p = dual.mesh_ref.position(v);
+                let n = dual.mesh_ref.vert_normal(v);
+                let (d, s) = to_principal_direction(n);
+                (p, (d, s))
+            });
+
+            let boundary = dual
+                .loop_structure
+                .corners(region_id)
+                .iter()
+                .map(|&intersection_id| {
+                    let polycube_face = self.polycube_ref.intersection_to_face.get_by_left(&intersection_id).unwrap().to_owned();
+                    let face_normal = self.polycube_ref.structure.normal(polycube_face);
+                    let (d, s) = to_principal_direction(face_normal);
+                    (d, s)
+                })
+                .collect_vec();
+
+            // find the vertex, that minimizes the worst distance to each
+
+            let boundary_average = boundary
+                .iter()
+                .filter_map(|(d, s)| {
+                    let filtered_verts = naive_labeling.clone().filter(|(_, (d2, s2))| d == d2 && s == s2);
+                    let res = hutspot::math::calculate_average_f64(filtered_verts.map(|(p, _)| p));
+                    if res[0].is_nan() || res[1].is_nan() || res[2].is_nan() {
+                        return None;
+                    }
+                    Some(res)
+                })
+                .collect_vec();
+
+            let region_average = hutspot::math::calculate_average_f64(boundary_average.into_iter());
+
+            region_to_candidate.insert(region_id, region_average);
+        }
+
         // for each zone, find a coordinate that minimizes Hausdorf distance to each subsurface in the zone
         let mut zone_to_coordinate = HashMap::new();
         for (zone_id, zone_obj) in &dual.zones {
             let direction_of_zone = zone_obj.direction;
-            let subsurfaces_in_this_zone = zone_obj.regions.clone();
 
             // get all DIRECTION coordinates of the vertices of the subsurfaces in this zone
-            let coordinates = subsurfaces_in_this_zone
+            let subsurface_coordinates = zone_obj
+                .regions
                 .iter()
-                .map(|&subsurface_id| {
-                    dual.loop_structure.faces[subsurface_id]
-                        .verts
-                        .iter()
-                        .map(|&vert_id| dual.mesh_ref.position(vert_id)[direction_of_zone as usize])
-                        .collect_vec()
-                })
+                .map(|&region_id| region_to_candidate[&region_id][direction_of_zone as usize])
                 .collect_vec();
 
             // get min and max
-            let min = coordinates.iter().flatten().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap().to_owned();
-            let max = coordinates.iter().flatten().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap().to_owned();
+            let min = subsurface_coordinates.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap().to_owned();
+            let max = subsurface_coordinates.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap().to_owned();
 
             // find the coordinate that minimizes the worst distance to all subsurfaces
             let mut best_coordinate = min;
-            let mut best_distance = f64::INFINITY;
+            let mut best_worst_distance = f64::INFINITY;
             for x in (0..100).map(|i| min + (max - min) * (i as f64) / 100.0) {
-                let smallest_distance_to_each_subsurface = coordinates
-                    .iter()
-                    .map(|c| c.iter().map(|&y| (x - y).abs()).min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap());
-                let distance = smallest_distance_to_each_subsurface.max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
-                if distance < best_distance {
-                    best_distance = distance;
+                let distance_to_each_subsurface = subsurface_coordinates.iter().map(|&y| (x - y).abs());
+                let worst_distance = distance_to_each_subsurface.max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
+                if worst_distance < best_worst_distance {
+                    best_worst_distance = worst_distance;
                     best_coordinate = x;
                 }
             }
@@ -107,36 +146,8 @@ impl Layout {
         }
     }
 
-    fn place_paths(&mut self) {
+    fn place_paths(&mut self) -> Result<(), PropertyViolationError<PolycubeVertID>> {
         let primal = self.polycube_ref.as_ref();
-
-        // Start at a random vertex
-        let start_vertex = primal.structure.vert_ids()[0];
-
-        let mut spanning_tree_edges = VecDeque::new();
-
-        let mut queue = VecDeque::new();
-        queue.push_back(start_vertex);
-        let mut visited = HashSet::new();
-        visited.insert(start_vertex);
-
-        while let Some(vertex_id) = queue.pop_front() {
-            for neighbor_id in primal.structure.vneighbors(vertex_id) {
-                if visited.contains(&neighbor_id) {
-                    continue;
-                }
-                let (edge_id, _) = primal.structure.edge_between_verts(vertex_id, neighbor_id).unwrap();
-                spanning_tree_edges.push_back(edge_id);
-                queue.push_back(neighbor_id);
-                visited.insert(neighbor_id);
-            }
-        }
-
-        for edge_id in primal.structure.edge_ids() {
-            if !spanning_tree_edges.contains(&edge_id) {
-                spanning_tree_edges.push_back(edge_id);
-            }
-        }
 
         let primal_vertices = primal
             .structure
@@ -149,13 +160,50 @@ impl Layout {
 
         self.edge_to_path = HashMap::new();
 
-        while let Some(edge_id) = spanning_tree_edges.pop_front() {
+        let mut edge_queue = primal.structure.edges.keys().collect_vec();
+
+        edge_queue.shuffle(&mut rand::thread_rng());
+
+        let mut edge_queue = VecDeque::from(edge_queue);
+
+        let mut first_separating_edge = None;
+        let mut is_maximal = false;
+
+        while let Some(edge_id) = edge_queue.pop_front() {
             // if already found (because of twin), skip
             if self.edge_to_path.contains_key(&edge_id) {
                 continue;
             }
 
+            // check if edge is separating (in combination with the edges already done)
+            let covered_edges = self.edge_to_path.keys().chain([&edge_id]).collect::<HashSet<_>>();
+
+            let cc = hutspot::graph::find_cc(primal.structure.face(edge_id), |face_id| {
+                primal
+                    .structure
+                    .fneighbors(face_id)
+                    .into_iter()
+                    .filter(|&n_id| !covered_edges.contains(&primal.structure.edge_between_faces(face_id, n_id).unwrap().0))
+                    .collect()
+            });
+
+            //println!("cc: {:?} == {:?}", cc.len(), primal.structure.faces.len());
+
+            if !is_maximal && first_separating_edge == Some(edge_id) {
+                is_maximal = true;
+            }
+
+            if cc.len() != primal.structure.faces.len() && !is_maximal {
+                // separating edge -> add to the end of the queue
+                if first_separating_edge.is_none() {
+                    first_separating_edge = Some(edge_id);
+                }
+                edge_queue.push_back(edge_id);
+                continue;
+            }
+
             let (u_new, v_new) = primal.structure.endpoints(edge_id);
+
             let (u, v) = (
                 self.vert_to_corner.get_by_left(&u_new).unwrap().to_owned(),
                 self.vert_to_corner.get_by_left(&v_new).unwrap().to_owned(),
@@ -314,14 +362,10 @@ impl Layout {
                 NodeType::Vertex(v_id) => self.granulated_mesh.position(v_id),
             };
 
-            let w_function = |a: NodeType, b: NodeType| {
-                let a_pos = nodetype_to_pos(a);
-                let b_pos = nodetype_to_pos(b);
-                OrderedFloat(a_pos.metric_distance(&b_pos))
-            };
+            let w_function = |a: NodeType, b: NodeType| OrderedFloat(nodetype_to_pos(a).metric_distance(&nodetype_to_pos(b)));
 
             let mut granulated_path = vec![];
-            if let Some((path, _)) = hutspot::graph::find_shortest_path(NodeType::Vertex(u), NodeType::Vertex(v), n_function, w_function) {
+            if let Some((path, _)) = hutspot::graph::find_shortest_path_astar(NodeType::Vertex(u), NodeType::Vertex(v), n_function, w_function, w_function) {
                 let mut last_f_ids_maybe: Option<[FaceID; 3]> = None;
                 for node in path {
                     match node {
@@ -368,11 +412,32 @@ impl Layout {
 
             let granulated_path = granulated_path.into_iter().map(|(v_id, _)| v_id).collect_vec();
 
-            //println!("granulated path: {granulated_path:?}");
-
             if granulated_path.is_empty() {
-                println!("!\n!\n!\nEmpty path found\n!\n!\n");
-                break;
+                return Err(PropertyViolationError::PathEmpty);
+            }
+
+            let lowerbound_path = hutspot::graph::find_shortest_path_astar(
+                u,
+                v,
+                |a| self.granulated_mesh.vneighbors(a),
+                |a, b| ordered_float::OrderedFloat(self.granulated_mesh.distance(a, b)),
+                |a, b| ordered_float::OrderedFloat(self.granulated_mesh.distance(a, b)),
+            )
+            .unwrap()
+            .0;
+            let lowerbound_score = lowerbound_path
+                .windows(2)
+                .map(|pair| self.granulated_mesh.distance(pair[0], pair[1]))
+                .sum::<f64>();
+
+            let actual_score = granulated_path
+                .windows(2)
+                .map(|pair| self.granulated_mesh.distance(pair[0], pair[1]))
+                .sum::<f64>();
+
+            let ratio = (actual_score / lowerbound_score) - 1.0;
+            if ratio > 0.5 {
+                return Err(PropertyViolationError::PathTooLong);
             }
 
             for &v_id in &granulated_path {
@@ -384,11 +449,6 @@ impl Layout {
                 occupied_edges.insert((u, v));
                 occupied_edges.insert((v, u));
             }
-
-            // if granulated_path.is_empty() {
-            //     panic!("Empty path found");
-            // }
-
             self.edge_to_path.insert(edge_id, granulated_path.clone());
 
             // for the twin, we insert the reverse
@@ -396,6 +456,7 @@ impl Layout {
             rev_path.reverse();
             self.edge_to_path.insert(primal.structure.twin(edge_id), rev_path);
         }
+        Ok(())
     }
 
     fn assign_patches(&mut self) -> Result<(), PropertyViolationError<PolycubeVertID>> {
@@ -437,8 +498,6 @@ impl Layout {
         // Find all connected components (should be equal to the number of faces)
         let ccs = hutspot::graph::find_ccs(&self.granulated_mesh.faces.keys().collect_vec(), nfunction);
         if ccs.len() != polycube.structure.face_ids().len() {
-            println!("{}, {} ", ccs.len(), polycube.structure.face_ids().len());
-            println!("here... 999");
             return Err(PropertyViolationError::PatchesMissing);
         }
 
@@ -497,5 +556,59 @@ impl Layout {
         }
 
         Ok(())
+    }
+
+    pub fn score(&self) -> (f64, f64) {
+        let total_area = self
+            .granulated_mesh
+            .faces
+            .keys()
+            .map(|face_id| self.granulated_mesh.vector_area(face_id).norm())
+            .sum::<f64>();
+        let weighted_angle = self
+            .face_to_patch
+            .iter()
+            .flat_map(|(polycube_face_id, patch)| {
+                patch.faces.iter().map(|&face_id| {
+                    let target_normal = self.polycube_ref.structure.normal(*polycube_face_id);
+                    let face_area = self.granulated_mesh.vector_area(face_id).norm();
+                    let face_normal = self.granulated_mesh.normal(face_id);
+                    let angle = (target_normal.angle(&face_normal) / 2.).sin();
+                    (face_area / total_area) * angle
+                })
+            })
+            .sum::<f64>();
+
+        let paths_lowerbound = self
+            .edge_to_path
+            .iter()
+            .map(|(edge_id, actual_path)| {
+                let (u, v) = self.polycube_ref.structure.endpoints(*edge_id);
+                let (u_vert, v_vert) = (
+                    self.vert_to_corner.get_by_left(&u).unwrap().to_owned(),
+                    self.vert_to_corner.get_by_left(&v).unwrap().to_owned(),
+                );
+                let lowerbound_path = hutspot::graph::find_shortest_path_astar(
+                    u_vert,
+                    v_vert,
+                    |a| self.granulated_mesh.vneighbors(a),
+                    |a, b| ordered_float::OrderedFloat(self.granulated_mesh.distance(a, b)),
+                    |a, b| ordered_float::OrderedFloat(self.granulated_mesh.distance(a, b)),
+                )
+                .unwrap()
+                .0;
+                let lowerbound_score = lowerbound_path
+                    .windows(2)
+                    .map(|pair| self.granulated_mesh.distance(pair[0], pair[1]))
+                    .sum::<f64>();
+
+                let actual_score = actual_path.windows(2).map(|pair| self.granulated_mesh.distance(pair[0], pair[1])).sum::<f64>();
+
+                let ratio = (actual_score / lowerbound_score) - 1.0;
+                ratio * (1. / self.edge_to_path.len() as f64)
+            })
+            .sum::<f64>();
+
+        (paths_lowerbound, weighted_angle)
     }
 }

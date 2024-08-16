@@ -1,6 +1,6 @@
-use crate::{dual::PrincipalDirection, solutions::Solution, ActionEvent, Configuration, InputResource, SolutionResource};
+use crate::{dual::PrincipalDirection, ActionEvent, Configuration, InputResource, SolutionResource};
 use bevy::prelude::*;
-use bevy_egui::egui::{emath::Numeric, text::LayoutJob, Align, Color32, FontId, Layout, RichText, Slider, TextFormat, TopBottomPanel, Ui};
+use bevy_egui::egui::{emath::Numeric, text::LayoutJob, Align, Color32, FontId, Layout, Slider, TextFormat, TopBottomPanel, Ui};
 
 pub fn setup(mut ui: bevy_egui::EguiContexts) {
     // Font
@@ -22,7 +22,7 @@ pub fn setup(mut ui: bevy_egui::EguiContexts) {
     ui.ctx_mut().set_fonts(fonts);
 
     // Theme
-    ui.ctx_mut().set_visuals(bevy_egui::egui::Visuals::light());
+    ui.ctx_mut().set_visuals(bevy_egui::egui::Visuals::dark());
 }
 
 pub fn update(
@@ -32,7 +32,7 @@ pub fn update(
     mut mesh_resmut: ResMut<InputResource>,
     solution: Res<SolutionResource>,
 ) {
-    TopBottomPanel::top("panel").show(egui_ctx.ctx_mut(), |ui| {
+    TopBottomPanel::top("panel").show_separator_line(false).show(egui_ctx.ctx_mut(), |ui| {
         ui.add_space(10.);
 
         ui.horizontal(|ui| {
@@ -74,7 +74,7 @@ pub fn update(
                         let size = 13.0;
 
                         let mut job = LayoutJob::default();
-                        job.append("FPS[", 0.0, text_format(size, Color32::BLACK));
+                        job.append("FPS[", 0.0, text_format(size, Color32::WHITE));
                         let fps_color = if conf.fps >= 50.0 {
                             Color32::from_rgb(0, 255, 0)
                         } else if conf.fps >= 30.0 {
@@ -87,20 +87,20 @@ pub fn update(
                             Color32::from_rgb(255, 0, 0)
                         };
                         job.append(&format!("{:.0}", conf.fps), 0.0, text_format(size, fps_color));
-                        job.append("]", 0.0, text_format(size, Color32::BLACK));
+                        job.append("]", 0.0, text_format(size, Color32::WHITE));
                         ui.label(job);
 
                         ui.add_space(15.);
 
                         let sol = &solution.current_solution;
                         let mut job = LayoutJob::default();
-                        job.append("DUAL[", 0.0, text_format(size, Color32::BLACK));
+                        job.append("DUAL[", 0.0, text_format(size, Color32::WHITE));
                         if sol.dual.is_ok() {
                             job.append("OK", 0.0, text_format(size, Color32::GREEN));
                         } else {
                             job.append(&format!("{:?}", sol.dual.as_ref().err()), 0.0, text_format(size, Color32::RED));
                         }
-                        job.append("] LAYOUT[", 0.0, text_format(size, Color32::BLACK));
+                        job.append("] LAYOUT[", 0.0, text_format(size, Color32::WHITE));
                         if let Some(layout) = &sol.layout {
                             if layout.is_ok() {
                                 job.append("OK", 0.0, text_format(size, Color32::GREEN));
@@ -110,7 +110,7 @@ pub fn update(
                         } else {
                             job.append("None", 0.0, text_format(size, Color32::RED));
                         }
-                        job.append("]", 0.0, text_format(size, Color32::BLACK));
+                        job.append("]", 0.0, text_format(size, Color32::WHITE));
 
                         ui.label(job);
                     });
@@ -150,42 +150,76 @@ pub fn update(
                         ui.add_space(15.);
 
                         let mut job = LayoutJob::default();
-                        job.append("F[", 0.0, text_format(13.0, Color32::BLACK));
-                        if mesh_resmut.properties.nr_of_faces > 0 {
-                            job.append(&format!("{:}", mesh_resmut.properties.nr_of_faces), 0.0, text_format(13.0, Color32::BLACK));
+                        job.append("Fm[", 0.0, text_format(13.0, Color32::WHITE));
+                        if mesh_resmut.mesh.nr_faces() > 0 {
+                            job.append(&format!("{:}", mesh_resmut.mesh.nr_faces()), 0.0, text_format(13.0, Color32::WHITE));
                         } else {
                             job.append("-", 0.0, text_format(13.0, Color32::GRAY));
                         }
-                        job.append("]", 0.0, text_format(13.0, Color32::BLACK));
+                        job.append("]", 0.0, text_format(13.0, Color32::WHITE));
                         ui.label(job);
 
                         ui.add_space(5.);
 
                         let mut job = LayoutJob::default();
-                        job.append("E[", 0.0, text_format(13.0, Color32::BLACK));
-                        if mesh_resmut.properties.nr_of_edges > 0 {
-                            job.append(&format!("{:}", mesh_resmut.properties.nr_of_edges), 0.0, text_format(13.0, Color32::BLACK));
+                        job.append("Em[", 0.0, text_format(13.0, Color32::WHITE));
+                        if mesh_resmut.mesh.nr_edges() > 0 {
+                            job.append(&format!("{:}", mesh_resmut.mesh.nr_edges() / 2), 0.0, text_format(13.0, Color32::WHITE));
                         } else {
                             job.append("-", 0.0, text_format(13.0, Color32::GRAY));
                         }
-                        job.append("]", 0.0, text_format(13.0, Color32::BLACK));
+                        job.append("]", 0.0, text_format(13.0, Color32::WHITE));
                         ui.label(job);
 
                         ui.add_space(5.);
 
                         let mut job = LayoutJob::default();
-                        job.append("V[", 0.0, text_format(13.0, Color32::BLACK));
-                        if mesh_resmut.properties.nr_of_vertices > 0 {
-                            job.append(&format!("{:}", mesh_resmut.properties.nr_of_vertices), 0.0, text_format(13.0, Color32::BLACK));
+                        job.append("Vm[", 0.0, text_format(13.0, Color32::WHITE));
+                        if mesh_resmut.mesh.nr_verts() > 0 {
+                            job.append(&format!("{:}", mesh_resmut.mesh.nr_verts()), 0.0, text_format(13.0, Color32::WHITE));
                         } else {
                             job.append("-", 0.0, text_format(13.0, Color32::GRAY));
                         }
-                        job.append("]", 0.0, text_format(13.0, Color32::BLACK));
+                        job.append("]", 0.0, text_format(13.0, Color32::WHITE));
                         ui.label(job);
 
-                        ui.add_space(10.);
+                        ui.add_space(5.);
 
-                        ui.label(text("MESH"));
+                        if let Some(polycube) = &solution.current_solution.polycube {
+                            let mut job = LayoutJob::default();
+                            job.append("Fp[", 0.0, text_format(13.0, Color32::WHITE));
+                            if polycube.structure.nr_faces() > 0 {
+                                job.append(&format!("{:}", polycube.structure.nr_faces()), 0.0, text_format(13.0, Color32::WHITE));
+                            } else {
+                                job.append("-", 0.0, text_format(13.0, Color32::GRAY));
+                            }
+                            job.append("]", 0.0, text_format(13.0, Color32::WHITE));
+                            ui.label(job);
+
+                            ui.add_space(5.);
+
+                            let mut job = LayoutJob::default();
+                            job.append("Ep[", 0.0, text_format(13.0, Color32::WHITE));
+                            if polycube.structure.nr_edges() > 0 {
+                                job.append(&format!("{:}", polycube.structure.nr_edges() / 2), 0.0, text_format(13.0, Color32::WHITE));
+                            } else {
+                                job.append("-", 0.0, text_format(13.0, Color32::GRAY));
+                            }
+                            job.append("]", 0.0, text_format(13.0, Color32::WHITE));
+                            ui.label(job);
+
+                            ui.add_space(5.);
+
+                            let mut job = LayoutJob::default();
+                            job.append("Vp[", 0.0, text_format(13.0, Color32::WHITE));
+                            if polycube.structure.nr_verts() > 0 {
+                                job.append(&format!("{:}", polycube.structure.nr_verts()), 0.0, text_format(13.0, Color32::WHITE));
+                            } else {
+                                job.append("-", 0.0, text_format(13.0, Color32::GRAY));
+                            }
+                            job.append("]", 0.0, text_format(13.0, Color32::WHITE));
+                            ui.label(job);
+                        }
                     });
                 });
 
@@ -219,47 +253,7 @@ pub fn update(
                     });
 
                     // RIGHT SIDE
-                    ui.with_layout(Layout::right_to_left(Align::BOTTOM), |ui| {
-                        ui.add_space(15.);
-
-                        let mut job = LayoutJob::default();
-                        job.append("F[", 0.0, text_format(13.0, Color32::BLACK));
-                        if solution.properties.nr_of_faces > 0 {
-                            job.append(&format!("{:}", solution.properties.nr_of_faces), 0.0, text_format(13.0, Color32::BLACK));
-                        } else {
-                            job.append("-", 0.0, text_format(13.0, Color32::GRAY));
-                        }
-                        job.append("]", 0.0, text_format(13.0, Color32::BLACK));
-                        ui.label(job);
-
-                        ui.add_space(5.);
-
-                        let mut job = LayoutJob::default();
-                        job.append("E[", 0.0, text_format(13.0, Color32::BLACK));
-                        if solution.properties.nr_of_edges > 0 {
-                            job.append(&format!("{:}", solution.properties.nr_of_edges), 0.0, text_format(13.0, Color32::BLACK));
-                        } else {
-                            job.append("-", 0.0, text_format(13.0, Color32::GRAY));
-                        }
-                        job.append("]", 0.0, text_format(13.0, Color32::BLACK));
-                        ui.label(job);
-
-                        ui.add_space(5.);
-
-                        let mut job = LayoutJob::default();
-                        job.append("V[", 0.0, text_format(13.0, Color32::BLACK));
-                        if solution.properties.nr_of_vertices > 0 {
-                            job.append(&format!("{:}", solution.properties.nr_of_vertices), 0.0, text_format(13.0, Color32::BLACK));
-                        } else {
-                            job.append("-", 0.0, text_format(13.0, Color32::GRAY));
-                        }
-                        job.append("]", 0.0, text_format(13.0, Color32::BLACK));
-                        ui.label(job);
-
-                        ui.add_space(10.);
-
-                        ui.label(text("POLYCUBE"));
-                    });
+                    ui.with_layout(Layout::right_to_left(Align::BOTTOM), |ui| {});
                 });
 
                 ui.add_space(15.);
@@ -274,14 +268,14 @@ pub fn update(
                                 if let Some(Some(sol)) = solution.next[conf.direction as usize].get(&edgepair) {
                                     let size = 13.0;
                                     let mut job = LayoutJob::default();
-                                    job.append(&format!("{edgepair:?} "), 0.0, text_format(size, Color32::BLACK));
-                                    job.append("DUAL[", 0.0, text_format(size, Color32::BLACK));
+                                    job.append(&format!("{edgepair:?} "), 0.0, text_format(size, Color32::WHITE));
+                                    job.append("DUAL[", 0.0, text_format(size, Color32::WHITE));
                                     if sol.dual.is_ok() {
                                         job.append("OK", 0.0, text_format(size, Color32::GREEN));
                                     } else {
                                         job.append(&format!("{:?}", sol.dual.as_ref().err()), 0.0, text_format(size, Color32::RED));
                                     }
-                                    job.append("] LAYOUT[", 0.0, text_format(size, Color32::BLACK));
+                                    job.append("] LAYOUT[", 0.0, text_format(size, Color32::WHITE));
                                     if let Some(layout) = &sol.layout {
                                         if layout.is_ok() {
                                             job.append("OK", 0.0, text_format(size, Color32::GREEN));
@@ -291,7 +285,7 @@ pub fn update(
                                     } else {
                                         job.append("None", 0.0, text_format(size, Color32::RED));
                                     }
-                                    job.append("]", 0.0, text_format(size, Color32::BLACK));
+                                    job.append("]", 0.0, text_format(size, Color32::WHITE));
 
                                     ui.label(job);
                                 } else {
@@ -351,17 +345,9 @@ fn radio<T: PartialEq<T> + std::fmt::Display>(ui: &mut Ui, item: &mut T, value: 
     }
 }
 
-fn warning(ui: &mut Ui, text: &str) {
-    ui.label(RichText::new(text).color(Color32::RED));
-}
-
-fn okido(ui: &mut Ui, text: &str) {
-    ui.label(RichText::new(text).color(Color32::GREEN));
-}
-
 pub fn text(string: &str) -> LayoutJob {
     let mut job = LayoutJob::default();
-    job.append(string, 0.0, text_format(13.0, Color32::BLACK));
+    job.append(string, 0.0, text_format(13.0, Color32::WHITE));
     job
 }
 

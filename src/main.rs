@@ -21,8 +21,8 @@ use itertools::Itertools;
 use kdtree::distance::squared_euclidean;
 use kdtree::KdTree;
 use ordered_float::OrderedFloat;
-use rayon::prelude::*;
-use render::{add_line, add_line2, GizmosCache};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use render::{add_line, add_line2, GizmosCache, MeshProperties};
 use serde::{Deserialize, Serialize};
 use smooth_bevy_cameras::controllers::orbit::OrbitCameraPlugin;
 use smooth_bevy_cameras::LookTransformPlugin;
@@ -34,9 +34,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const BACKGROUND_COLOR: bevy::prelude::Color = bevy::prelude::Color::rgb(248. / 255., 248. / 255., 248. / 255.);
-pub const MESH_OFFSET: Vector3D = Vector3D::new(0., 1_000., 0.);
-pub const POLYCUBE_OFFSET: Vector3D = Vector3D::new(0., -1_000., 0.);
+pub const BACKGROUND_COLOR: bevy::prelude::Color = bevy::prelude::Color::rgb(27. / 255., 27. / 255., 27. / 255.);
+pub const OBJ_1_OFFSET: Vector3D = Vector3D::new(0., 1_000., 0.);
+pub const OBJ_2_OFFSET: Vector3D = Vector3D::new(0., -1_000., 0.);
+pub const OBJ_3_OFFSET: Vector3D = Vector3D::new(0., -3_000., 0.);
 
 slotmap::new_key_type! {
     pub struct VertID;
@@ -59,14 +60,11 @@ pub struct Configuration {
     pub selected: Option<[EdgeID; 2]>,
 
     pub compute_primal: bool,
+    pub interactive: bool,
     pub delete_mode: bool,
 
-    pub black: bool,
-    pub interactive: bool,
     pub swap_cameras: bool,
-    pub draw_wireframe: bool,
-    pub draw_vertices: bool,
-    pub draw_normals: bool,
+    pub black: bool,
 }
 
 // Updates the FPS counter in `configuration`.
@@ -93,16 +91,6 @@ pub struct RenderedMesh;
 pub enum ActionEvent {
     LoadFile(PathBuf),
     ExportState,
-}
-
-#[derive(Default, Debug, Clone, Serialize, Deserialize)]
-pub struct MeshProperties {
-    pub source: String,
-    pub nr_of_faces: usize,
-    pub nr_of_edges: usize,
-    pub nr_of_vertices: usize,
-    pub scale: f32,
-    pub translation: Vector3D,
 }
 
 // implement default for KdTree using the New Type Idiom
@@ -134,6 +122,7 @@ pub struct CacheResource {
 pub struct InputResource {
     mesh: Arc<EmbeddedMesh>,
     properties: MeshProperties,
+    properties2: MeshProperties,
     vertex_lookup: TreeD,
     flow_graphs: [Graaf<[EdgeID; 2], (f64, f64, f64)>; 3],
 }
@@ -330,7 +319,6 @@ fn vec3_to_vector3d(v: Vec3) -> Vector3D {
 }
 
 fn raycast(
-    time: Res<Time>,
     cursor_ray: Res<CursorRay>,
     mut raycast: Raycast,
     mut mouse: ResMut<Input<MouseButton>>,
@@ -514,7 +502,6 @@ fn raycast(
 
     // Compute the occupied edges (edges that are already part of the solution, they are covered by loops)
     let occupied = solution.current_solution.occupied_edgepairs();
-    println!("{:?}", occupied);
     timer.report("Computed `occupied`, hashmap of occupied edges");
     timer.reset();
 

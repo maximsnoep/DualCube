@@ -36,39 +36,39 @@ impl Display for PrincipalDirection {
 impl PrincipalDirection {
     pub fn to_primal_color(self) -> Color {
         match self {
-            Self::X => hutspot::color::ROODT.into(),
-            Self::Y => hutspot::color::BLAUW.into(),
-            Self::Z => hutspot::color::YELLO.into(),
+            Self::X => hutspot::color::RED.into(),
+            Self::Y => hutspot::color::BLUE.into(),
+            Self::Z => hutspot::color::YELLOW.into(),
         }
     }
 
     pub fn to_primal_color_sided(self, s: Side) -> Color {
         match (self, s) {
-            (Self::X, Side::Upper) => hutspot::color::ROODT.into(),
-            (Self::X, Side::Lower) => hutspot::color::ROODT_L.into(),
-            (Self::Y, Side::Upper) => hutspot::color::BLAUW.into(),
-            (Self::Y, Side::Lower) => hutspot::color::BLAUW_L.into(),
-            (Self::Z, Side::Upper) => hutspot::color::YELLO.into(),
-            (Self::Z, Side::Lower) => hutspot::color::YELLO_L.into(),
+            (Self::X, Side::Upper) => hutspot::color::RED.into(),
+            (Self::X, Side::Lower) => hutspot::color::RED_LIGHT.into(),
+            (Self::Y, Side::Upper) => hutspot::color::BLUE.into(),
+            (Self::Y, Side::Lower) => hutspot::color::BLUE_LIGHT.into(),
+            (Self::Z, Side::Upper) => hutspot::color::YELLOW.into(),
+            (Self::Z, Side::Lower) => hutspot::color::YELLOW_LIGHT.into(),
         }
     }
 
     pub fn to_dual_color(self) -> Color {
         match self {
             Self::X => hutspot::color::GREEN.into(),
-            Self::Y => hutspot::color::ORANG.into(),
-            Self::Z => hutspot::color::PURPL.into(),
+            Self::Y => hutspot::color::ORANGE.into(),
+            Self::Z => hutspot::color::PURPLE.into(),
         }
     }
 
     pub fn to_dual_color_sided(self, s: Side) -> Color {
         match (self, s) {
             (Self::X, Side::Upper) => hutspot::color::GREEN.into(),
-            (Self::X, Side::Lower) => hutspot::color::GREEN_L.into(),
-            (Self::Y, Side::Upper) => hutspot::color::ORANG.into(),
-            (Self::Y, Side::Lower) => hutspot::color::ORANG_L.into(),
-            (Self::Z, Side::Upper) => hutspot::color::PURPL.into(),
-            (Self::Z, Side::Lower) => hutspot::color::PURPL_L.into(),
+            (Self::X, Side::Lower) => hutspot::color::GREEN_LIGHT.into(),
+            (Self::Y, Side::Upper) => hutspot::color::ORANGE.into(),
+            (Self::Y, Side::Lower) => hutspot::color::ORANG_LIGHT.into(),
+            (Self::Z, Side::Upper) => hutspot::color::PURPLE.into(),
+            (Self::Z, Side::Lower) => hutspot::color::PURPLE_LIGHT.into(),
         }
     }
 }
@@ -134,7 +134,7 @@ slotmap::new_key_type! {
     pub struct RegionID;
 }
 
-type LoopStructure = Douconel<IntersectionID, Intersection, SegmentID, Segment, RegionID, Region>;
+pub type LoopStructure = Douconel<IntersectionID, Intersection, SegmentID, Segment, RegionID, Region>;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Segment {
@@ -197,6 +197,8 @@ pub enum PropertyViolationError<IntersectionID> {
     CyclicDependency,
     PatchesMissing,
     LoopStructureError(MeshError<IntersectionID>),
+    PathTooLong,
+    PathEmpty,
 }
 
 #[derive(Debug)]
@@ -282,10 +284,9 @@ impl Dual {
         .concat()
     }
 
-    // pub fn segment_to_direction(&self, segment: SegmentID) -> PrincipalDirection {
-    //     let loop_id = self.segment_to_loop(segment);
-    //     self.loops[loop_id].direction
-    // }
+    pub fn segment_to_direction(&self, segment: SegmentID) -> PrincipalDirection {
+        self.loop_structure.edges[segment].direction
+    }
 
     pub fn segment_to_side(&self, segment: SegmentID, mask: [u32; 3]) -> Side {
         let cc = self.side_ccs[self.loop_structure.edges[segment].direction as usize]
@@ -431,20 +432,52 @@ impl Dual {
             return Err(PropertyViolationError::CyclicDependency);
         }
 
-        for &zone_id in &topological_sort.unwrap() {
-            let dependencies = adjacency_backwards
-                .get(&zone_id)
-                .cloned()
-                .unwrap_or_default()
-                .iter()
-                .filter_map(|&z| self.zones[z].coordinate)
+        for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
+            let mut topo = topological_sort
+                .clone()
+                .unwrap()
+                .into_iter()
+                .filter(|&z| self.zones[z].direction == direction)
                 .collect_vec();
 
-            self.zones[zone_id].coordinate = if dependencies.is_empty() {
-                Some(0.0)
-            } else {
-                Some(dependencies.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap() + 0.1)
-            };
+            let mut zero_is_set = false;
+
+            for &zone_id in &topo {
+                let dependencies = adjacency_backwards
+                    .get(&zone_id)
+                    .cloned()
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|&z| self.zones[z].coordinate)
+                    .collect_vec();
+
+                if dependencies.is_empty() {
+                    if zero_is_set {
+                        continue;
+                    }
+                    zero_is_set = true;
+                    self.zones[zone_id].coordinate = Some(0.0);
+                } else {
+                    self.zones[zone_id].coordinate = Some(dependencies.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap() + 1.0);
+                };
+            }
+
+            topo.reverse();
+
+            for &zone_id in &topo {
+                if self.zones[zone_id].coordinate.is_none() {
+                    let dependencies = adjacency
+                        .get(&zone_id)
+                        .cloned()
+                        .unwrap_or_default()
+                        .iter()
+                        .filter_map(|&z| self.zones[z].coordinate)
+                        .collect_vec();
+
+                    assert!(!dependencies.is_empty());
+                    self.zones[zone_id].coordinate = Some(dependencies.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap() - 1.0);
+                }
+            }
         }
 
         Ok(())

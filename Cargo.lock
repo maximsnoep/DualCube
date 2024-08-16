@@ -1804,6 +1804,7 @@ dependencies = [
  "log",
  "ordered-float",
  "petgraph",
+ "rand",
  "rayon",
  "rfd",
  "serde",

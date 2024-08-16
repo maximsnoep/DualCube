@@ -58,6 +58,27 @@ impl<V: Eq + PartialEq + Hash + Default + Copy, E: Copy> Graaf<V, E> {
         astar(&self.petgraph, a, |finish| finish == b, |e| measure(e.weight().to_owned()), |_| W::default())
     }
 
+    pub fn shortest_path_with_approx<W: Measure + Copy, F: Fn(E) -> W, F2: Fn(V, V) -> W>(
+        &self,
+        a: NodeIndex,
+        b: NodeIndex,
+        measure: &F,
+        approx: &F2,
+    ) -> Option<(W, Vec<NodeIndex>)> {
+        astar(
+            &self.petgraph,
+            a,
+            |finish| finish == b,
+            |e| measure(e.weight().to_owned()),
+            |v| {
+                approx(
+                    self.petgraph.node_weight(v).unwrap().to_owned(),
+                    self.petgraph.node_weight(b).unwrap().to_owned(),
+                )
+            },
+        )
+    }
+
     pub fn shortest_cycle<W: Measure + Copy + FloatCore, F: Fn(E) -> W>(&self, a: NodeIndex, measure: &F) -> Option<Vec<NodeIndex>> {
         self.petgraph
             .neighbors(a)

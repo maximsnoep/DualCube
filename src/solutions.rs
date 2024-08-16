@@ -203,9 +203,19 @@ impl Solution {
 
     pub fn compute_layout(&mut self) {
         if let (Ok(dual), Some(polycube)) = (&self.dual, &self.polycube) {
-            let layout = Layout::embed(dual, polycube);
-            info!("Layout computed. Validity: {:?}", layout.is_ok());
-            self.layout = Some(layout);
+            for _ in 0..10 {
+                let layout = Layout::embed(dual, polycube);
+                if let Ok(ok_layout) = &layout {
+                    let (score_a, score_b) = ok_layout.score();
+                    let score = score_a + score_b;
+                    println!("Found: {score_a:?} + {score_b:?} = {score:?}");
+                    if score_a < 0.1 {
+                        self.layout = Some(layout);
+                        return;
+                    }
+                }
+            }
+            self.layout = None;
         } else {
             warn!("Layout not computed. Dual and/or polycube not found.");
             self.layout = None;

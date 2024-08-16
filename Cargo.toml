@@ -40,3 +40,4 @@ kdtree = { version = "0.7.0", features = ["serialize"]}
 ordered-float = { version = "4.2.0", features = ["serde"]}
 bimap = "0.6.3"
 log = "0.4.22"
+rand = "0.8.5"
