@@ -48,13 +48,16 @@ impl Layout {
             edge_to_path: HashMap::new(),
         };
 
-        layout.place_vertices(dual_ref);
+        println!("Placing vertices");
+        layout.place_vertices(dual_ref)?;
+        println!("Placing paths");
         layout.place_paths()?;
+        println!("Assigning patches");
         layout.assign_patches()?;
         Ok(layout)
     }
 
-    fn place_vertices(&mut self, dual: &Dual) {
+    fn place_vertices(&mut self, dual: &Dual) -> Result<(), PropertyViolationError<PolycubeVertID>> {
         // find the best candidate position for each region
         let mut region_to_candidate = HashMap::new();
         for (region_id, region_obj) in &dual.loop_structure.faces {
@@ -92,7 +95,14 @@ impl Layout {
                 })
                 .collect_vec();
 
-            let region_average = hutspot::math::calculate_average_f64(boundary_average.into_iter());
+            if boundary_average.len() == 0 {
+                return Err(PropertyViolationError::UnknownError);
+            }
+
+            let region_average = hutspot::math::calculate_average_f64(boundary_average.clone().into_iter());
+
+            println!("Region average: {:?}", region_average);
+            println!("Boundary average: {:?}", boundary_average);
 
             region_to_candidate.insert(region_id, region_average);
         }
@@ -109,6 +119,8 @@ impl Layout {
                 .map(|&region_id| region_to_candidate[&region_id][direction_of_zone as usize])
                 .collect_vec();
 
+            println!("Subsurface coordinates: {:?}", subsurface_coordinates);
+
             // get min and max
             let min = subsurface_coordinates.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap().to_owned();
             let max = subsurface_coordinates.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap().to_owned();
@@ -116,7 +128,7 @@ impl Layout {
             // find the coordinate that minimizes the worst distance to all subsurfaces
             let mut best_coordinate = min;
             let mut best_worst_distance = f64::INFINITY;
-            for x in (0..100).map(|i| min + (max - min) * (i as f64) / 100.0) {
+            for x in (0..10).map(|i| min + (max - min) * (i as f64) / 10.0) {
                 let distance_to_each_subsurface = subsurface_coordinates.iter().map(|&y| (x - y).abs());
                 let worst_distance = distance_to_each_subsurface.max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
                 if worst_distance < best_worst_distance {
@@ -144,6 +156,8 @@ impl Layout {
 
             self.vert_to_corner.insert(vert_id, best_vertex_in_subsurface);
         }
+
+        return Ok(());
     }
 
     fn place_paths(&mut self) -> Result<(), PropertyViolationError<PolycubeVertID>> {
@@ -169,7 +183,15 @@ impl Layout {
         let mut first_separating_edge = None;
         let mut is_maximal = false;
 
+        let mut counter = 0;
+
         while let Some(edge_id) = edge_queue.pop_front() {
+            if counter > 10000 {
+                return Err(PropertyViolationError::UnknownError);
+            }
+            counter += 1;
+            //println!("Edge queue: {}", edge_queue.len());
+
             // if already found (because of twin), skip
             if self.edge_to_path.contains_key(&edge_id) {
                 continue;
@@ -178,7 +200,7 @@ impl Layout {
             // check if edge is separating (in combination with the edges already done)
             let covered_edges = self.edge_to_path.keys().chain([&edge_id]).collect::<HashSet<_>>();
 
-            let cc = hutspot::graph::find_cc(primal.structure.face(edge_id), |face_id| {
+            let ccs = hutspot::graph::find_ccs(&primal.structure.faces.keys().collect_vec(), |face_id| {
                 primal
                     .structure
                     .fneighbors(face_id)
@@ -193,7 +215,7 @@ impl Layout {
                 is_maximal = true;
             }
 
-            if cc.len() != primal.structure.faces.len() && !is_maximal {
+            if ccs.len() != 1 && !is_maximal {
                 // separating edge -> add to the end of the queue
                 if first_separating_edge.is_none() {
                     first_separating_edge = Some(edge_id);

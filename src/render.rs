@@ -197,7 +197,7 @@ pub fn update(
                 let u = lay.granulated_mesh.position(u_id);
                 let v = lay.granulated_mesh.position(v_id);
                 let n = lay.granulated_mesh.edge_normal(edge_id);
-                add_line2(&mut gizmos_cache.paths, u, v, n * 0.05, hutspot::color::BLACK.into(), &mesh_resmut.properties2);
+                add_line2(&mut gizmos_cache.paths, u, v, n * 0.01, hutspot::color::BLACK.into(), &mesh_resmut.properties2);
             }
         }
     }
@@ -436,7 +436,7 @@ pub fn gizmos(mut gizmos: Gizmos, gizmos_cache: Res<GizmosCache>, solution: Res<
             let line = DrawableLine::from_line(
                 u,
                 v,
-                primal.structure.normal(primal.structure.face(edge_id)) * 0.001,
+                primal.structure.normal(primal.structure.face(edge_id)) * 0.01,
                 solution.properties.translation,
                 solution.properties.scale,
             );

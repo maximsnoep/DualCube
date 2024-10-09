@@ -34,7 +34,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const BACKGROUND_COLOR: bevy::prelude::Color = bevy::prelude::Color::rgb(27. / 255., 27. / 255., 27. / 255.);
+pub const BACKGROUND_COLOR: bevy::prelude::Color = bevy::prelude::Color::rgb(255. / 255., 255. / 255., 255. / 255.);
 pub const OBJ_1_OFFSET: Vector3D = Vector3D::new(0., 1_000., 0.);
 pub const OBJ_2_OFFSET: Vector3D = Vector3D::new(0., -1_000., 0.);
 pub const OBJ_3_OFFSET: Vector3D = Vector3D::new(0., -3_000., 0.);
