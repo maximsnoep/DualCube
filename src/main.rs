@@ -12,6 +12,7 @@ use bevy::prelude::*;
 use bevy::window::WindowMode;
 use bevy_egui::EguiPlugin;
 use bevy_mod_raycast::prelude::*;
+use camera::{Obj1Camera, Obj2Camera, Obj3Camera, ObjCamera};
 use douconel::douconel::Douconel;
 use douconel::{douconel::Empty, douconel_embedded::EmbeddedVertex};
 use dual::PrincipalDirection;
@@ -65,6 +66,8 @@ pub struct Configuration {
 
     pub swap_cameras: bool,
     pub black: bool,
+
+    pub camera_speed: f32,
 }
 
 // Updates the FPS counter in `configuration`.
@@ -91,6 +94,7 @@ pub struct RenderedMesh;
 pub enum ActionEvent {
     LoadFile(PathBuf),
     ExportState,
+    ResetCamera,
 }
 
 // implement default for KdTree using the New Type Idiom
@@ -194,6 +198,9 @@ pub fn handle_events(
     mut mesh_resmut: ResMut<InputResource>,
     mut solution: ResMut<SolutionResource>,
     mut configuration: ResMut<Configuration>,
+
+    mut commands: Commands,
+    cameras: Query<Entity, With<ObjCamera>>,
 ) {
     for ev in ev_reader.read() {
         info!("Received event {ev:?}. Handling...");
@@ -308,6 +315,9 @@ pub fn handle_events(
                 };
 
                 fs::write(&PathBuf::from(path), serde_json::to_string(&state).unwrap());
+            }
+            ActionEvent::ResetCamera => {
+                camera::reset(&mut commands, &cameras);
             }
         }
     }

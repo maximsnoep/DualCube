@@ -4,7 +4,10 @@ use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::prelude::*;
 use bevy::render::camera::Viewport;
 use bevy::render::view::RenderLayers;
-use smooth_bevy_cameras::controllers::orbit::{OrbitCameraBundle, OrbitCameraController};
+use smooth_bevy_cameras::{
+    controllers::orbit::{OrbitCameraBundle, OrbitCameraController},
+    LookTransform, Smoother,
+};
 
 #[derive(Component)]
 pub struct Obj1Camera;
@@ -15,7 +18,14 @@ pub struct Obj2Camera;
 #[derive(Component)]
 pub struct Obj3Camera;
 
-pub fn setup(mut commands: Commands) {
+#[derive(Component)]
+pub struct ObjCamera;
+
+pub fn reset(commands: &mut Commands, cameras: &Query<Entity, With<ObjCamera>>) {
+    for camera in cameras.iter() {
+        commands.entity(camera).despawn();
+    }
+
     // Obj 1 camera
     commands
         .spawn(Camera3dBundle {
@@ -28,11 +38,12 @@ pub fn setup(mut commands: Commands) {
         })
         .insert((OrbitCameraBundle::new(
             OrbitCameraController::default(),
-            Vec3::new(0.0, 5.0, 20.0) + Vec3::new(OBJ_1_OFFSET.x as f32, OBJ_1_OFFSET.y as f32, OBJ_1_OFFSET.z as f32),
+            Vec3::new(25.0, 25.0, 35.0) + Vec3::new(OBJ_1_OFFSET.x as f32, OBJ_1_OFFSET.y as f32, OBJ_1_OFFSET.z as f32),
             Vec3::new(0., 0., 0.) + Vec3::new(OBJ_1_OFFSET.x as f32, OBJ_1_OFFSET.y as f32, OBJ_1_OFFSET.z as f32),
             Vec3::Y,
         ),))
         .insert(Obj1Camera)
+        .insert(ObjCamera)
         .insert(RenderLayers::from_layers(&[0, 1]));
 
     // Obj 2 camera
@@ -46,6 +57,7 @@ pub fn setup(mut commands: Commands) {
             ..default()
         })
         .insert(Obj2Camera)
+        .insert(ObjCamera)
         .insert(RenderLayers::from_layers(&[0, 2]));
 
     // Obj 3 camera
@@ -59,18 +71,28 @@ pub fn setup(mut commands: Commands) {
             ..default()
         })
         .insert(Obj3Camera)
+        .insert(ObjCamera)
         .insert(RenderLayers::from_layers(&[0, 3]));
 
     // pseudocam for clearcolor
-    commands.spawn(Camera3dBundle { ..default() }).insert(RenderLayers::from_layers(&[9]));
+    commands
+        .spawn(Camera3dBundle { ..default() })
+        .insert(ObjCamera)
+        .insert(RenderLayers::from_layers(&[9]));
+}
+
+pub fn setup(mut commands: Commands, cameras: Query<Entity, With<ObjCamera>>) {
+    self::reset(&mut commands, &cameras);
 }
 
 pub fn update(
     mut obj1camera: Query<(&mut Camera, &mut Transform), (With<Obj1Camera>, Without<Obj2Camera>, Without<Obj3Camera>)>,
     mut obj2camera: Query<(&mut Camera, &mut Transform), (With<Obj2Camera>, Without<Obj1Camera>, Without<Obj3Camera>)>,
     mut obj3camera: Query<(&mut Camera, &mut Transform), (With<Obj3Camera>, Without<Obj1Camera>, Without<Obj2Camera>)>,
+    mut cameras: Query<(&mut LookTransform, &mut Smoother), With<ObjCamera>>,
     configuration: Res<Configuration>,
     windows: Query<&Window>,
+    time: Res<Time>,
 ) {
     let obj1camera_mut = &mut obj1camera.single_mut();
     let obj2camera_mut = &mut obj2camera.single_mut();
@@ -114,4 +136,17 @@ pub fn update(
         ..default()
     });
     cam3.0.order = 1;
+
+    let progress = (time.elapsed().as_secs_f32() * configuration.camera_speed * 10.).to_radians();
+
+    for (mut camera, mut smoother) in &mut cameras {
+        if configuration.camera_speed > 0.0 {
+            let camera_height = 25.;
+            let camera_radius = Vec2::new(camera.target.x, camera.target.z).distance(Vec2::new(camera.eye.x, camera.eye.z));
+            smoother.set_lag_weight(0.1);
+            camera.eye = camera.target + Vec3::new(-camera_radius * progress.cos(), camera_height, camera_radius * progress.sin());
+        } else {
+            smoother.set_lag_weight(0.8);
+        }
+    }
 }

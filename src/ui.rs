@@ -63,8 +63,6 @@ pub fn update(
                             ui.add_space(15.);
                             ui.label(text(&mesh_resmut.properties.source.to_string()));
                         }
-
-                        ui.add_space(15.);
                     });
 
                     // RIGHT SIDE
@@ -233,6 +231,16 @@ pub fn update(
 
                         if ui.button(text("SWAP CAMS")).clicked() {
                             conf.swap_cameras = !conf.swap_cameras;
+                        }
+
+                        ui.add_space(15.);
+
+                        slider(ui, "CAM SPEED", &mut conf.camera_speed, 0.0..=5.);
+
+                        ui.add_space(15.);
+
+                        if ui.button(text("RESET CAMS")).clicked() {
+                            ev_w.send(ActionEvent::ResetCamera);
                         }
 
                         ui.add_space(15.);
