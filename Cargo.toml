@@ -22,10 +22,10 @@ missing_errors_doc = "allow"
 douconel = { path = "../douconel"}
 hutspot = { path = "../hutspot" }
 
-bevy = "0.12.0"
-bevy_egui = "0.24.0"
-smooth-bevy-cameras = "0.10.0"
-bevy_mod_raycast = "0.16"
+bevy = "0.14.2"
+bevy_egui = "0.30.1"
+smooth-bevy-cameras = "0.12.0"
+bevy_mod_raycast = "0.18"
 
 rfd = "0.14.1"
 rayon = "1.8.1"

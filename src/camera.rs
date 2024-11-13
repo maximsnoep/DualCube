@@ -1,7 +1,7 @@
 use crate::{Configuration, OBJ_1_OFFSET, OBJ_2_OFFSET, OBJ_3_OFFSET};
-use bevy::core_pipeline::clear_color::ClearColorConfig;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::prelude::*;
+use bevy::render::camera::ClearColorConfig;
 use bevy::render::camera::Viewport;
 use bevy::render::view::RenderLayers;
 use smooth_bevy_cameras::{
@@ -30,10 +30,10 @@ pub fn reset(commands: &mut Commands, cameras: &Query<Entity, With<ObjCamera>>) 
     commands
         .spawn(Camera3dBundle {
             tonemapping: Tonemapping::None,
-            camera_3d: Camera3d {
-                clear_color: ClearColorConfig::None,
-                ..default()
-            },
+            // camera_3d: Camera3d {
+            //     clear_color: ClearColorConfig::None,
+            //     ..default()
+            // },
             ..default()
         })
         .insert((OrbitCameraBundle::new(
@@ -50,10 +50,10 @@ pub fn reset(commands: &mut Commands, cameras: &Query<Entity, With<ObjCamera>>) 
     commands
         .spawn(Camera3dBundle {
             tonemapping: Tonemapping::None,
-            camera_3d: Camera3d {
-                clear_color: ClearColorConfig::None,
-                ..default()
-            },
+            // camera_3d: Camera3d {
+            //     clear_color: ClearColorConfig::None,
+            //     ..default()
+            // },
             ..default()
         })
         .insert(Obj2Camera)
@@ -64,10 +64,10 @@ pub fn reset(commands: &mut Commands, cameras: &Query<Entity, With<ObjCamera>>) 
     commands
         .spawn(Camera3dBundle {
             tonemapping: Tonemapping::None,
-            camera_3d: Camera3d {
-                clear_color: ClearColorConfig::None,
-                ..default()
-            },
+            // camera_3d: Camera3d {
+            //     clear_color: ClearColorConfig::None,
+            //     ..default()
+            // },
             ..default()
         })
         .insert(Obj3Camera)

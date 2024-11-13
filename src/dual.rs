@@ -2,7 +2,6 @@ use crate::{
     solutions::{Loop, LoopID},
     EdgeID, EmbeddedMesh, VertID,
 };
-use bevy::render::color::Color;
 use douconel::douconel::{Douconel, MeshError};
 use hutspot::geom::Vector3D;
 use itertools::Itertools;
@@ -34,41 +33,41 @@ impl Display for PrincipalDirection {
 }
 
 impl PrincipalDirection {
-    pub fn to_primal_color(self) -> Color {
+    pub fn to_primal_color(self) -> hutspot::color::Color {
         match self {
-            Self::X => hutspot::color::RED.into(),
-            Self::Y => hutspot::color::BLUE.into(),
-            Self::Z => hutspot::color::YELLOW.into(),
+            Self::X => hutspot::color::RED,
+            Self::Y => hutspot::color::BLUE,
+            Self::Z => hutspot::color::YELLOW,
         }
     }
 
-    pub fn to_primal_color_sided(self, s: Side) -> Color {
+    pub fn to_primal_color_sided(self, s: Side) -> hutspot::color::Color {
         match (self, s) {
-            (Self::X, Side::Upper) => hutspot::color::RED.into(),
-            (Self::X, Side::Lower) => hutspot::color::RED_LIGHT.into(),
-            (Self::Y, Side::Upper) => hutspot::color::BLUE.into(),
-            (Self::Y, Side::Lower) => hutspot::color::BLUE_LIGHT.into(),
-            (Self::Z, Side::Upper) => hutspot::color::YELLOW.into(),
-            (Self::Z, Side::Lower) => hutspot::color::YELLOW_LIGHT.into(),
+            (Self::X, Side::Upper) => hutspot::color::RED,
+            (Self::X, Side::Lower) => hutspot::color::RED_LIGHT,
+            (Self::Y, Side::Upper) => hutspot::color::BLUE,
+            (Self::Y, Side::Lower) => hutspot::color::BLUE_LIGHT,
+            (Self::Z, Side::Upper) => hutspot::color::YELLOW,
+            (Self::Z, Side::Lower) => hutspot::color::YELLOW_LIGHT,
         }
     }
 
-    pub fn to_dual_color(self) -> Color {
+    pub fn to_dual_color(self) -> hutspot::color::Color {
         match self {
-            Self::X => hutspot::color::GREEN.into(),
-            Self::Y => hutspot::color::ORANGE.into(),
-            Self::Z => hutspot::color::PURPLE.into(),
+            Self::X => hutspot::color::GREEN,
+            Self::Y => hutspot::color::ORANGE,
+            Self::Z => hutspot::color::PURPLE,
         }
     }
 
-    pub fn to_dual_color_sided(self, s: Side) -> Color {
+    pub fn to_dual_color_sided(self, s: Side) -> hutspot::color::Color {
         match (self, s) {
-            (Self::X, Side::Upper) => hutspot::color::GREEN.into(),
-            (Self::X, Side::Lower) => hutspot::color::GREEN_LIGHT.into(),
-            (Self::Y, Side::Upper) => hutspot::color::ORANGE.into(),
-            (Self::Y, Side::Lower) => hutspot::color::ORANG_LIGHT.into(),
-            (Self::Z, Side::Upper) => hutspot::color::PURPLE.into(),
-            (Self::Z, Side::Lower) => hutspot::color::PURPLE_LIGHT.into(),
+            (Self::X, Side::Upper) => hutspot::color::GREEN,
+            (Self::X, Side::Lower) => hutspot::color::GREEN_LIGHT,
+            (Self::Y, Side::Upper) => hutspot::color::ORANGE,
+            (Self::Y, Side::Lower) => hutspot::color::ORANG_LIGHT,
+            (Self::Z, Side::Upper) => hutspot::color::PURPLE,
+            (Self::Z, Side::Lower) => hutspot::color::PURPLE_LIGHT,
         }
     }
 }

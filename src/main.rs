@@ -9,10 +9,12 @@ mod ui;
 
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
+use bevy::tasks::{block_on, AsyncComputeTaskPool, Task};
 use bevy::window::WindowMode;
 use bevy_egui::EguiPlugin;
 use bevy_mod_raycast::prelude::*;
-use camera::{Obj1Camera, Obj2Camera, Obj3Camera, ObjCamera};
+// use bevy::tasks::futures_lite::future;
+use camera::ObjCamera;
 use douconel::douconel::Douconel;
 use douconel::{douconel::Empty, douconel_embedded::EmbeddedVertex};
 use dual::PrincipalDirection;
@@ -29,13 +31,16 @@ use smooth_bevy_cameras::controllers::orbit::OrbitCameraPlugin;
 use smooth_bevy_cameras::LookTransformPlugin;
 use solutions::{Loop, Solution};
 use std::collections::HashMap;
+use std::fmt::Display;
+use std::fmt::Formatter;
 use std::fs::{self, File};
 use std::io::BufReader;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const BACKGROUND_COLOR: bevy::prelude::Color = bevy::prelude::Color::rgb(255. / 255., 255. / 255., 255. / 255.);
+// pub const BACKGROUND_COLOR: bevy::prelude::Color = bevy::prelude::Color::rgb(255. / 255., 255. / 255., 255. / 255.);
+pub const BACKGROUND_COLOR: bevy::prelude::Color = bevy::prelude::Color::srgb(27. / 255., 27. / 255., 27. / 255.);
 pub const OBJ_1_OFFSET: Vector3D = Vector3D::new(0., 1_000., 0.);
 pub const OBJ_2_OFFSET: Vector3D = Vector3D::new(0., -1_000., 0.);
 pub const OBJ_3_OFFSET: Vector3D = Vector3D::new(0., -3_000., 0.);
@@ -56,6 +61,8 @@ pub struct Configuration {
 
     pub sides_mask: [u32; 3],
 
+    pub color_mode: ColorMode,
+
     pub fps: f64,
     pub raycasted: Option<[EdgeID; 2]>,
     pub selected: Option<[EdgeID; 2]>,
@@ -70,15 +77,38 @@ pub struct Configuration {
     pub camera_speed: f32,
 }
 
+#[derive(Copy, Clone, Default, PartialEq, Eq, Debug, Hash, Serialize, Deserialize)]
+pub enum ColorMode {
+    #[default]
+    Default,
+    Alignment,
+    Orthogonality,
+}
+
+impl Display for ColorMode {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Default => write!(f, "Default"),
+            Self::Alignment => write!(f, "Alignment"),
+            Self::Orthogonality => write!(f, "Orthogonality"),
+        }
+    }
+}
+
 // Updates the FPS counter in `configuration`.
 pub fn fps(diagnostics: Res<DiagnosticsStore>, mut configuration: ResMut<Configuration>) {
     configuration.fps = -1.;
     if let Some(value) = diagnostics
-        .get(FrameTimeDiagnosticsPlugin::FPS)
+        .get(&FrameTimeDiagnosticsPlugin::FPS)
         .and_then(bevy::diagnostic::Diagnostic::smoothed)
     {
         configuration.fps = value;
     }
+}
+
+#[derive(Resource, Default, Debug)]
+struct Tasks {
+    solutions: Vec<Task<Solution>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -95,6 +125,7 @@ pub enum ActionEvent {
     LoadFile(PathBuf),
     ExportState,
     ResetCamera,
+    Mutate,
 }
 
 // implement default for KdTree using the New Type Idiom
@@ -155,6 +186,7 @@ fn main() {
         .init_resource::<GizmosCache>()
         .init_resource::<SolutionResource>()
         .init_resource::<Configuration>()
+        .init_resource::<Tasks>()
         .insert_resource(ClearColor(BACKGROUND_COLOR))
         .insert_resource(AmbientLight {
             color: Color::WHITE,
@@ -169,8 +201,8 @@ fn main() {
             }),
             ..Default::default()
         }))
-        // Plugin for raycasting
-        .add_plugins(DefaultRaycastingPlugin)
+        // Cursor ray
+        .add_plugins(CursorRayPlugin)
         // Plugin for FPS
         .add_plugins(FrameTimeDiagnosticsPlugin)
         // Plugin for GUI
@@ -189,15 +221,36 @@ fn main() {
         .add_systems(Update, handle_events)
         .add_systems(Update, raycast)
         .add_systems(Update, fps)
+        // .add_systems(Update, handle_tasks)
         .add_event::<ActionEvent>()
         .run();
 }
+
+// pub fn handle_tasks(mut tasks: ResMut<Tasks>, mut solution: ResMut<SolutionResource>) {
+//     let task_pool = AsyncComputeTaskPool::get();
+
+//     // tasks.solutions.retain(|task| {
+//     //     let status = block_on(future::poll_once(task));
+
+//     //     if task.is_finished() {
+//     //         solution.current_solution = task.().unwrap();
+//     //         solution.next[0].clear();
+//     //         solution.next[1].clear();
+//     //         solution.next[2].clear();
+//     //         true
+//     //     } else {
+//     //         false
+//     //     }
+//     // });
+// }
 
 pub fn handle_events(
     mut ev_reader: EventReader<ActionEvent>,
     mut mesh_resmut: ResMut<InputResource>,
     mut solution: ResMut<SolutionResource>,
     mut configuration: ResMut<Configuration>,
+
+    mut tasks: ResMut<Tasks>,
 
     mut commands: Commands,
     cameras: Query<Entity, With<ObjCamera>>,
@@ -300,6 +353,8 @@ pub fn handle_events(
 
                 if configuration.compute_primal {
                     solution.current_solution.compute_layout();
+                    solution.current_solution.compute_alignment();
+                    solution.current_solution.compute_orthogonality();
                 }
             }
             ActionEvent::ExportState => {
@@ -319,6 +374,16 @@ pub fn handle_events(
             ActionEvent::ResetCamera => {
                 camera::reset(&mut commands, &cameras);
             }
+            ActionEvent::Mutate => {
+                let task_pool = AsyncComputeTaskPool::get();
+
+                let cloned_solution = solution.current_solution.clone();
+                let cloned_flow_graphs = mesh_resmut.flow_graphs.clone();
+                let cloned_configuration = configuration.clone();
+                let task = task_pool
+                    .spawn(async move { cloned_solution.mutate_add_loop(10, cloned_configuration.alpha, cloned_configuration.beta, &cloned_flow_graphs) });
+                tasks.solutions.push(task);
+            }
         }
     }
 }
@@ -331,12 +396,13 @@ fn vec3_to_vector3d(v: Vec3) -> Vector3D {
 fn raycast(
     cursor_ray: Res<CursorRay>,
     mut raycast: Raycast,
-    mut mouse: ResMut<Input<MouseButton>>,
-    mut keyboard: ResMut<Input<KeyCode>>,
+    mut mouse: ResMut<ButtonInput<MouseButton>>,
+    mut keyboard: ResMut<ButtonInput<KeyCode>>,
     mesh_resmut: Res<InputResource>,
     mut solution: ResMut<SolutionResource>,
     mut cache: ResMut<CacheResource>,
     mut gizmos_cache: ResMut<GizmosCache>,
+    mut gizmos: Gizmos,
     mut configuration: ResMut<Configuration>,
 ) {
     configuration.raycasted = None;
@@ -349,6 +415,7 @@ fn raycast(
 
     // Safe unwrap because `cursor_ray` is not none
     let intersections = raycast.cast_ray(cursor_ray.unwrap(), &default());
+
     if intersections.is_empty() {
         return;
     }
@@ -388,9 +455,9 @@ fn raycast(
         return;
     }
     let verts = [
-        vec3_to_vector3d(intersection.triangle().unwrap().v0.into()),
-        vec3_to_vector3d(intersection.triangle().unwrap().v1.into()),
-        vec3_to_vector3d(intersection.triangle().unwrap().v2.into()),
+        vec3_to_vector3d(intersection.triangle().unwrap()[0].into()),
+        vec3_to_vector3d(intersection.triangle().unwrap()[1].into()),
+        vec3_to_vector3d(intersection.triangle().unwrap()[2].into()),
     ]
     .into_iter()
     .map(|p| hutspot::draw::invert_transform_coordinates(p, mesh_resmut.properties.translation, mesh_resmut.properties.scale))
@@ -604,6 +671,14 @@ fn raycast(
     if configuration.compute_primal {
         real_solution.compute_layout();
         timer.report("Computed layout");
+        timer.reset();
+
+        real_solution.compute_alignment();
+        timer.report("Computed alignment");
+        timer.reset();
+
+        real_solution.compute_orthogonality();
+        timer.report("Computed orthogonality");
         timer.reset();
     }
 

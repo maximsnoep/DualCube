@@ -1,11 +1,12 @@
 use crate::dual::{to_principal_direction, PrincipalDirection, Side};
-use crate::{vec3_to_vector3d, Configuration, InputResource, RenderedMesh, SolutionResource, BACKGROUND_COLOR, OBJ_1_OFFSET, OBJ_2_OFFSET, OBJ_3_OFFSET};
+use crate::{
+    vec3_to_vector3d, ColorMode, Configuration, InputResource, RenderedMesh, SolutionResource, BACKGROUND_COLOR, OBJ_1_OFFSET, OBJ_2_OFFSET, OBJ_3_OFFSET,
+};
 use bevy::prelude::*;
 use bevy::render::view::RenderLayers;
 use hutspot::draw::DrawableLine;
 use hutspot::geom::Vector3D;
 use serde::{Deserialize, Serialize};
-use shape::Circle;
 use std::collections::HashMap;
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
@@ -78,7 +79,7 @@ pub fn update(
                 let normal = (polycube.structure.normal(face_id) as Vector3D).normalize();
                 let (dir, side) = to_principal_direction(normal);
                 let color = dir.to_primal_color_sided(side);
-                colormap.insert(face_id, [color.r(), color.g(), color.b()]);
+                colormap.insert(face_id, color);
             }
         }
 
@@ -113,14 +114,36 @@ pub fn update(
         if let Some(Ok(lay)) = &solution.current_solution.layout {
             let mut layout_color_map = HashMap::new();
 
-            for &face_id in &polycube.structure.face_ids() {
-                let normal = (polycube.structure.normal(face_id) as Vector3D).normalize();
-                let (dir, side) = to_principal_direction(normal);
-                let color = dir.to_primal_color_sided(side);
-                for &triangle_id in &lay.face_to_patch[&face_id].faces {
-                    layout_color_map.insert(triangle_id, [color.r(), color.g(), color.b()]);
+            // depending on color mode...
+            match configuration.color_mode {
+                ColorMode::Default => {
+                    for &face_id in &polycube.structure.face_ids() {
+                        let normal = (polycube.structure.normal(face_id) as Vector3D).normalize();
+                        let (dir, side) = to_principal_direction(normal);
+                        let color = dir.to_primal_color_sided(side);
+                        for &triangle_id in &lay.face_to_patch[&face_id].faces {
+                            layout_color_map.insert(triangle_id, color);
+                        }
+                    }
+                }
+                ColorMode::Alignment => {
+                    for &triangle_id in &lay.granulated_mesh.face_ids() {
+                        let score = solution.current_solution.alignment_per_triangle[triangle_id];
+                        let color = hutspot::color::map(score as f32, &hutspot::color::SCALE_MAGMA);
+                        layout_color_map.insert(triangle_id, color);
+                    }
+                }
+                ColorMode::Orthogonality => {
+                    for &face_id in &polycube.structure.face_ids() {
+                        let score = solution.current_solution.orthogonality_per_patch[face_id];
+                        let color = hutspot::color::map(score as f32, &hutspot::color::SCALE_MAGMA);
+                        for &triangle_id in &lay.face_to_patch[&face_id].faces {
+                            layout_color_map.insert(triangle_id, color);
+                        }
+                    }
                 }
             }
+
             let layout = lay.granulated_mesh.bevy(&layout_color_map);
             let aabb = layout.compute_aabb().unwrap();
             mesh_resmut.properties2.scale = 10. * (1. / aabb.half_extents.max_element());
@@ -197,7 +220,7 @@ pub fn update(
                 let u = lay.granulated_mesh.position(u_id);
                 let v = lay.granulated_mesh.position(v_id);
                 let n = lay.granulated_mesh.edge_normal(edge_id);
-                add_line2(&mut gizmos_cache.paths, u, v, n * 0.01, hutspot::color::BLACK.into(), &mesh_resmut.properties2);
+                add_line2(&mut gizmos_cache.paths, u, v, n * 0.01, hutspot::color::BLACK, &mesh_resmut.properties2);
             }
         }
     }
@@ -208,14 +231,7 @@ pub fn update(
         let u = mesh_resmut.mesh.position(u_id);
         let v = mesh_resmut.mesh.position(v_id);
         let n = mesh_resmut.mesh.edge_normal(edge_id);
-        add_line2(
-            &mut gizmos_cache.wireframe,
-            u,
-            v,
-            n * 0.02,
-            hutspot::color::DARK_GRAY.into(),
-            &mesh_resmut.properties,
-        );
+        add_line2(&mut gizmos_cache.wireframe, u, v, n * 0.02, hutspot::color::DARK_GRAY, &mesh_resmut.properties);
     }
 
     gizmos_cache.vertices.clear();
@@ -227,7 +243,7 @@ pub fn update(
             position,
             position + normal * 0.05,
             Vector3D::new(0., 0., 0.),
-            hutspot::color::GRAY.into(),
+            hutspot::color::GRAY,
             &mesh_resmut.properties,
         );
     }
@@ -241,18 +257,18 @@ pub fn update(
             position,
             position + normal * 0.05,
             Vector3D::new(0., 0., 0.),
-            hutspot::color::GRAY.into(),
+            hutspot::color::GRAY,
             &mesh_resmut.properties,
         );
     }
 
     // Spawning covers such that the objects are seperated from each other.
     commands.spawn(PbrBundle {
-        mesh: meshes.add(Circle::new(100.0).into()),
+        mesh: meshes.add(Circle::new(100.0)),
         transform: Transform {
             translation: Vec3::new(0., 0., 0.),
             rotation: Quat::from_rotation_x(std::f32::consts::FRAC_PI_2),
-            scale: Vec3::splat(1.),
+            scale: Vec3::splat(3.),
         },
         material: materials.add(StandardMaterial {
             base_color: BACKGROUND_COLOR,
@@ -264,11 +280,11 @@ pub fn update(
     });
 
     commands.spawn(PbrBundle {
-        mesh: meshes.add(Circle::new(100.0).into()),
+        mesh: meshes.add(Circle::new(100.0)),
         transform: Transform {
             translation: Vec3::new(0., 0., 0.),
             rotation: Quat::from_rotation_x(std::f32::consts::FRAC_PI_2 + std::f32::consts::PI),
-            scale: Vec3::splat(1.),
+            scale: Vec3::splat(3.),
         },
         material: materials.add(StandardMaterial {
             base_color: BACKGROUND_COLOR,
@@ -280,11 +296,11 @@ pub fn update(
     });
 
     commands.spawn(PbrBundle {
-        mesh: meshes.add(Circle::new(100.0).into()),
+        mesh: meshes.add(Circle::new(100.0)),
         transform: Transform {
             translation: Vec3::new(0., -2_000., 0.),
             rotation: Quat::from_rotation_x(std::f32::consts::FRAC_PI_2),
-            scale: Vec3::splat(1.),
+            scale: Vec3::splat(3.),
         },
         material: materials.add(StandardMaterial {
             base_color: BACKGROUND_COLOR,
@@ -296,11 +312,11 @@ pub fn update(
     });
 
     commands.spawn(PbrBundle {
-        mesh: meshes.add(Circle::new(100.0).into()),
+        mesh: meshes.add(Circle::new(100.0)),
         transform: Transform {
             translation: Vec3::new(0., -2_000.0, 0.),
             rotation: Quat::from_rotation_x(std::f32::consts::FRAC_PI_2 + std::f32::consts::PI),
-            scale: Vec3::splat(1.),
+            scale: Vec3::splat(3.),
         },
         material: materials.add(StandardMaterial {
             base_color: BACKGROUND_COLOR,
@@ -324,12 +340,12 @@ pub struct GizmosCache {
 
     pub raycaster: Vec<Line>,
 }
-type Line = (Vec3, Vec3, Color);
+type Line = (Vec3, Vec3, hutspot::color::Color);
 
 // Draws the gizmos. This includes the wireframe, vertices, normals, and raycasts, etc.
 pub fn gizmos(mut gizmos: Gizmos, gizmos_cache: Res<GizmosCache>, solution: Res<SolutionResource>, configuration: Res<Configuration>) {
     for &(u, v, c) in &gizmos_cache.wireframe {
-        gizmos.line(u, v, c);
+        gizmos.line(u, v, Color::srgb(c[0], c[1], c[2]));
     }
 
     // if configuration.draw_vertices {
@@ -344,16 +360,16 @@ pub fn gizmos(mut gizmos: Gizmos, gizmos_cache: Res<GizmosCache>, solution: Res<
     // }
     if configuration.interactive {
         for &(u, v, c) in &gizmos_cache.raycaster {
-            gizmos.line(u, v, c);
+            gizmos.line(u, v, Color::srgb(c[0], c[1], c[2]));
         }
     }
 
     for &(u, v, c) in &gizmos_cache.loops {
-        gizmos.line(u, v, c);
+        gizmos.line(u, v, Color::srgb(c[0], c[1], c[2]));
     }
 
     for &(u, v, c) in &gizmos_cache.paths {
-        gizmos.line(u, v, c);
+        gizmos.line(u, v, Color::srgb(c[0], c[1], c[2]));
     }
 
     // Polycube wireframe, does not need to be cached, since it is so simple.
@@ -421,8 +437,8 @@ pub fn gizmos(mut gizmos: Gizmos, gizmos_cache: Res<GizmosCache>, solution: Res<
                             solution.properties.translation,
                             solution.properties.scale,
                         );
-
-                        gizmos.line(line.u, line.v, direction.to_dual_color_sided(side));
+                        let c = direction.to_dual_color_sided(side);
+                        gizmos.line(line.u, line.v, Color::srgb(c[0], c[1], c[2]));
                     }
                 }
             }
@@ -440,17 +456,18 @@ pub fn gizmos(mut gizmos: Gizmos, gizmos_cache: Res<GizmosCache>, solution: Res<
                 solution.properties.translation,
                 solution.properties.scale,
             );
-            gizmos.line(line.u, line.v, hutspot::color::BLACK.into());
+            let c = hutspot::color::BLACK;
+            gizmos.line(line.u, line.v, Color::srgb(c[0], c[1], c[2]));
         }
     }
 }
 
-pub fn add_line(lines: &mut Vec<Line>, position: Vector3D, normal: Vector3D, length: f32, color: Color, props: &MeshProperties) {
+pub fn add_line(lines: &mut Vec<Line>, position: Vector3D, normal: Vector3D, length: f32, color: hutspot::color::Color, props: &MeshProperties) {
     let line = DrawableLine::from_vertex(position, normal, length, props.translation, props.scale);
     lines.push((line.u, line.v, color));
 }
 
-pub fn add_line2(lines: &mut Vec<Line>, position_a: Vector3D, position_b: Vector3D, offset: Vector3D, color: Color, props: &MeshProperties) {
+pub fn add_line2(lines: &mut Vec<Line>, position_a: Vector3D, position_b: Vector3D, offset: Vector3D, color: hutspot::color::Color, props: &MeshProperties) {
     let line = DrawableLine::from_line(position_a, position_b, offset, props.translation, props.scale);
     lines.push((line.u, line.v, color));
 }

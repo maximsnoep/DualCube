@@ -1,4 +1,4 @@
-use crate::{dual::PrincipalDirection, ActionEvent, Configuration, InputResource, SolutionResource};
+use crate::{dual::PrincipalDirection, ActionEvent, ColorMode, Configuration, InputResource, SolutionResource};
 use bevy::prelude::*;
 use bevy_egui::egui::{emath::Numeric, text::LayoutJob, Align, Color32, FontId, Layout, Slider, TextFormat, TopBottomPanel, Ui};
 
@@ -98,13 +98,39 @@ pub fn update(
                         } else {
                             job.append(&format!("{:?}", sol.dual.as_ref().err()), 0.0, text_format(size, Color32::RED));
                         }
-                        job.append("] LAYOUT[", 0.0, text_format(size, Color32::WHITE));
+                        job.append("]    LAYOUT[", 0.0, text_format(size, Color32::WHITE));
                         if let Some(layout) = &sol.layout {
                             if layout.is_ok() {
                                 job.append("OK", 0.0, text_format(size, Color32::GREEN));
                             } else {
                                 job.append(&format!("{:?}", layout.as_ref().err()), 0.0, text_format(size, Color32::RED));
                             }
+                        } else {
+                            job.append("None", 0.0, text_format(size, Color32::RED));
+                        }
+                        job.append("]    ALIGNMENT [", 0.0, text_format(size, Color32::WHITE));
+                        if let Some(alignment) = sol.alignment {
+                            let alignment_color = if alignment >= 0.95 {
+                                Color32::GREEN
+                            } else if alignment >= 0.75 {
+                                Color32::YELLOW
+                            } else {
+                                Color32::RED
+                            };
+                            job.append(&format!("{alignment:.3}"), 0.0, text_format(size, alignment_color));
+                        } else {
+                            job.append("None", 0.0, text_format(size, Color32::RED));
+                        }
+                        job.append("]    ORTHOGONALITY [", 0.0, text_format(size, Color32::WHITE));
+                        if let Some(orthogonality) = sol.orthogonality {
+                            let orthogonality_color = if orthogonality >= 0.95 {
+                                Color32::GREEN
+                            } else if orthogonality >= 0.75 {
+                                Color32::YELLOW
+                            } else {
+                                Color32::RED
+                            };
+                            job.append(&format!("{orthogonality:.3}"), 0.0, text_format(size, orthogonality_color));
                         } else {
                             job.append("None", 0.0, text_format(size, Color32::RED));
                         }
@@ -122,22 +148,26 @@ pub fn update(
                     ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
                         ui.add_space(15.);
 
-                        ui.checkbox(&mut conf.interactive, text("INTERACTIVE MODE"));
-
-                        ui.add_space(15.);
-
                         ui.spacing_mut().slider_width = 30.0;
 
-                        slider(ui, "α", &mut conf.alpha, 1..=20);
+                        // slider(ui, "α", &mut conf.alpha, 1..=20);
+
+                        // ui.add_space(15.);
+
+                        // slider(ui, "β", &mut conf.beta, 1..=20);
+
+                        // ui.add_space(15.);
+
+                        if ui.button(text("SOLVE")).on_hover_text("Solve the current mesh.").clicked() {
+                            ev_w.send(ActionEvent::Mutate);
+                        }
 
                         ui.add_space(15.);
 
-                        slider(ui, "β", &mut conf.beta, 1..=20);
-
-                        ui.add_space(15.);
-
-                        for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
-                            radio(ui, &mut conf.direction, direction);
+                        for color_mode in [ColorMode::Default, ColorMode::Alignment, ColorMode::Orthogonality] {
+                            if radio(ui, &mut conf.color_mode, color_mode) {
+                                mesh_resmut.as_mut();
+                            }
                         }
 
                         ui.add_space(15.);
@@ -235,15 +265,15 @@ pub fn update(
 
                         ui.add_space(15.);
 
-                        slider(ui, "CAM SPEED", &mut conf.camera_speed, 0.0..=5.);
+                        // slider(ui, "CAM SPEED", &mut conf.camera_speed, 0.0..=5.);
 
-                        ui.add_space(15.);
+                        // ui.add_space(15.);
 
-                        if ui.button(text("RESET CAMS")).clicked() {
-                            ev_w.send(ActionEvent::ResetCamera);
-                        }
+                        // if ui.button(text("RESET CAMS")).clicked() {
+                        //     ev_w.send(ActionEvent::ResetCamera);
+                        // }
 
-                        ui.add_space(15.);
+                        // ui.add_space(15.);
 
                         if ui.checkbox(&mut conf.black, text("DUAL MODE")).changed() {
                             mesh_resmut.as_mut();
@@ -251,7 +281,17 @@ pub fn update(
 
                         ui.add_space(15.);
 
-                        ui.checkbox(&mut conf.compute_primal, text("AUTOMATIC LAYOUT"));
+                        // ui.checkbox(&mut conf.compute_primal, text("AUTOMATIC LAYOUT"));
+
+                        // ui.add_space(15.);
+
+                        ui.checkbox(&mut conf.interactive, text("INTERACTIVE MODE"));
+
+                        ui.add_space(15.);
+
+                        for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
+                            radio(ui, &mut conf.direction, direction);
+                        }
 
                         ui.add_space(15.);
 
@@ -276,20 +316,45 @@ pub fn update(
                                 if let Some(Some(sol)) = solution.next[conf.direction as usize].get(&edgepair) {
                                     let size = 13.0;
                                     let mut job = LayoutJob::default();
-                                    job.append(&format!("{edgepair:?} "), 0.0, text_format(size, Color32::WHITE));
                                     job.append("DUAL[", 0.0, text_format(size, Color32::WHITE));
                                     if sol.dual.is_ok() {
                                         job.append("OK", 0.0, text_format(size, Color32::GREEN));
                                     } else {
                                         job.append(&format!("{:?}", sol.dual.as_ref().err()), 0.0, text_format(size, Color32::RED));
                                     }
-                                    job.append("] LAYOUT[", 0.0, text_format(size, Color32::WHITE));
+                                    job.append("]    LAYOUT[", 0.0, text_format(size, Color32::WHITE));
                                     if let Some(layout) = &sol.layout {
                                         if layout.is_ok() {
                                             job.append("OK", 0.0, text_format(size, Color32::GREEN));
                                         } else {
                                             job.append(&format!("{:?}", layout.as_ref().err()), 0.0, text_format(size, Color32::RED));
                                         }
+                                    } else {
+                                        job.append("None", 0.0, text_format(size, Color32::RED));
+                                    }
+                                    job.append("]    ALIGNMENT [", 0.0, text_format(size, Color32::WHITE));
+                                    if let Some(alignment) = sol.alignment {
+                                        let alignment_color = if alignment >= 0.95 {
+                                            Color32::GREEN
+                                        } else if alignment >= 0.75 {
+                                            Color32::YELLOW
+                                        } else {
+                                            Color32::RED
+                                        };
+                                        job.append(&format!("{alignment:.3}"), 0.0, text_format(size, alignment_color));
+                                    } else {
+                                        job.append("None", 0.0, text_format(size, Color32::RED));
+                                    }
+                                    job.append("]    ORTHOGONALITY [", 0.0, text_format(size, Color32::WHITE));
+                                    if let Some(orthogonality) = sol.orthogonality {
+                                        let orthogonality_color = if orthogonality >= 0.95 {
+                                            Color32::GREEN
+                                        } else if orthogonality >= 0.75 {
+                                            Color32::YELLOW
+                                        } else {
+                                            Color32::RED
+                                        };
+                                        job.append(&format!("{orthogonality:.3}"), 0.0, text_format(size, orthogonality_color));
                                     } else {
                                         job.append("None", 0.0, text_format(size, Color32::RED));
                                     }
