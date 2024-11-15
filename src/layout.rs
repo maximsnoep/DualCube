@@ -25,8 +25,7 @@ pub struct Patch {
 
 #[derive(Clone, Debug, Default)]
 pub struct Layout {
-    pub polycube_ref: Arc<Polycube>,
-    pub loop_structure_ref: LoopStructure,
+    pub polycube_ref: Polycube,
 
     // mapping:
     pub granulated_mesh: EmbeddedMesh,
@@ -36,23 +35,17 @@ pub struct Layout {
 }
 
 impl Layout {
-    pub fn embed(dual_ref: &Dual, polycube_ref: &Arc<Polycube>) -> Result<Self, PropertyViolationError<PolycubeVertID>> {
-        println!("Embedding layout");
+    pub fn embed(dual_ref: &Dual, polycube_ref: &Polycube) -> Result<Self, PropertyViolationError<PolycubeVertID>> {
         let mut layout = Self {
             polycube_ref: polycube_ref.clone(),
             granulated_mesh: (*dual_ref.mesh_ref).clone(),
-            loop_structure_ref: dual_ref.loop_structure.clone(),
 
             vert_to_corner: BiHashMap::new(),
             face_to_patch: HashMap::new(),
             edge_to_path: HashMap::new(),
         };
-
-        println!("Placing vertices");
         layout.place_vertices(dual_ref)?;
-        println!("Placing paths");
         layout.place_paths()?;
-        println!("Assigning patches");
         layout.assign_patches()?;
         Ok(layout)
     }
@@ -101,9 +94,6 @@ impl Layout {
 
             let region_average = hutspot::math::calculate_average_f64(boundary_average.clone().into_iter());
 
-            println!("Region average: {:?}", region_average);
-            println!("Boundary average: {:?}", boundary_average);
-
             region_to_candidate.insert(region_id, region_average);
         }
 
@@ -118,8 +108,6 @@ impl Layout {
                 .iter()
                 .map(|&region_id| region_to_candidate[&region_id][direction_of_zone as usize])
                 .collect_vec();
-
-            println!("Subsurface coordinates: {:?}", subsurface_coordinates);
 
             // get min and max
             let min = subsurface_coordinates.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap().to_owned();
@@ -157,11 +145,11 @@ impl Layout {
             self.vert_to_corner.insert(vert_id, best_vertex_in_subsurface);
         }
 
-        return Ok(());
+        Ok(())
     }
 
     fn place_paths(&mut self) -> Result<(), PropertyViolationError<PolycubeVertID>> {
-        let primal = self.polycube_ref.as_ref();
+        let primal = &self.polycube_ref;
 
         let primal_vertices = primal
             .structure
@@ -482,7 +470,7 @@ impl Layout {
     }
 
     fn assign_patches(&mut self) -> Result<(), PropertyViolationError<PolycubeVertID>> {
-        let polycube = self.polycube_ref.as_ref();
+        let polycube = &self.polycube_ref;
         // Get all blocked edges (ALL PATHS)
 
         let blocked = self
@@ -569,7 +557,6 @@ impl Layout {
             .collect_vec();
 
         if face_and_cc.len() != polycube.structure.face_ids().len() {
-            println!("here... 123");
             return Err(PropertyViolationError::PatchesMissing);
         }
 

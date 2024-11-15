@@ -9,11 +9,11 @@ mod ui;
 
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
+use bevy::tasks::futures_lite::future;
 use bevy::tasks::{block_on, AsyncComputeTaskPool, Task};
 use bevy::window::WindowMode;
 use bevy_egui::EguiPlugin;
 use bevy_mod_raycast::prelude::*;
-// use bevy::tasks::futures_lite::future;
 use camera::ObjCamera;
 use douconel::douconel::Douconel;
 use douconel::{douconel::Empty, douconel_embedded::EmbeddedVertex};
@@ -58,6 +58,8 @@ pub struct Configuration {
     pub direction: PrincipalDirection,
     pub alpha: i32,
     pub beta: i32,
+
+    pub should_continue: bool,
 
     pub sides_mask: [u32; 3],
 
@@ -106,9 +108,9 @@ pub fn fps(diagnostics: Res<DiagnosticsStore>, mut configuration: ResMut<Configu
     }
 }
 
-#[derive(Resource, Default, Debug)]
+#[derive(Resource, Default)]
 struct Tasks {
-    solutions: Vec<Task<Solution>>,
+    generating_chunks: HashMap<usize, Task<Option<Solution>>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -219,6 +221,7 @@ fn main() {
         .add_systems(Update, render::update)
         .add_systems(Update, render::gizmos)
         .add_systems(Update, handle_events)
+        .add_systems(Update, handle_tasks)
         .add_systems(Update, raycast)
         .add_systems(Update, fps)
         // .add_systems(Update, handle_tasks)
@@ -226,23 +229,39 @@ fn main() {
         .run();
 }
 
-// pub fn handle_tasks(mut tasks: ResMut<Tasks>, mut solution: ResMut<SolutionResource>) {
-//     let task_pool = AsyncComputeTaskPool::get();
+pub fn handle_tasks(
+    mut tasks: ResMut<Tasks>,
+    mut solution: ResMut<SolutionResource>,
+    mut ev_writer: EventWriter<ActionEvent>,
+    configuration: Res<Configuration>,
+) {
+    tasks.generating_chunks.retain(|id, task| {
+        // check on our task to see how it's doing :)
+        let status = block_on(future::poll_once(task));
 
-//     // tasks.solutions.retain(|task| {
-//     //     let status = block_on(future::poll_once(task));
+        // keep the entry in our HashMap only if the task is not done yet
+        let retain = status.is_none();
 
-//     //     if task.is_finished() {
-//     //         solution.current_solution = task.().unwrap();
-//     //         solution.next[0].clear();
-//     //         solution.next[1].clear();
-//     //         solution.next[2].clear();
-//     //         true
-//     //     } else {
-//     //         false
-//     //     }
-//     // });
-// }
+        // if this task is done, handle the data it returned!
+        if let Some(chunk_data) = status {
+            println!("Task {} is done!", id);
+
+            if let Some(new_solution) = chunk_data {
+                if new_solution.orthogonality.unwrap() + new_solution.alignment.unwrap() * 2.
+                    >= solution.current_solution.orthogonality.unwrap() + solution.current_solution.alignment.unwrap() * 2.
+                {
+                    solution.current_solution = new_solution;
+                }
+            }
+
+            if configuration.should_continue {
+                ev_writer.send(ActionEvent::Mutate);
+            }
+        }
+
+        retain
+    });
+}
 
 pub fn handle_events(
     mut ev_reader: EventReader<ActionEvent>,
@@ -347,15 +366,7 @@ pub fn handle_events(
                     mesh_resmut.flow_graphs[direction as usize] = Graaf::from(nodes.clone(), edges);
                 }
 
-                solution.current_solution.compute_dual();
-
-                solution.current_solution.compute_polycube();
-
-                if configuration.compute_primal {
-                    solution.current_solution.compute_layout();
-                    solution.current_solution.compute_alignment();
-                    solution.current_solution.compute_orthogonality();
-                }
+                solution.current_solution.reconstruct_solution();
             }
             ActionEvent::ExportState => {
                 let path = format!(
@@ -379,10 +390,13 @@ pub fn handle_events(
 
                 let cloned_solution = solution.current_solution.clone();
                 let cloned_flow_graphs = mesh_resmut.flow_graphs.clone();
-                let cloned_configuration = configuration.clone();
-                let task = task_pool
-                    .spawn(async move { cloned_solution.mutate_add_loop(10, cloned_configuration.alpha, cloned_configuration.beta, &cloned_flow_graphs) });
-                tasks.solutions.push(task);
+                if rand::random() {
+                    let task = task_pool.spawn(async move { cloned_solution.mutate_add_loop(100, &cloned_flow_graphs) });
+                    tasks.generating_chunks.insert(0, task);
+                } else {
+                    let task = task_pool.spawn(async move { cloned_solution.mutate_del_loop(100) });
+                    tasks.generating_chunks.insert(1, task);
+                }
             }
         }
     }
@@ -402,7 +416,6 @@ fn raycast(
     mut solution: ResMut<SolutionResource>,
     mut cache: ResMut<CacheResource>,
     mut gizmos_cache: ResMut<GizmosCache>,
-    mut gizmos: Gizmos,
     mut configuration: ResMut<Configuration>,
 ) {
     configuration.raycasted = None;
@@ -496,14 +509,7 @@ fn raycast(
 
                 let mut new_sol = solution.current_solution.clone();
                 new_sol.del_loop(loop_id);
-
-                new_sol.compute_dual();
-
-                new_sol.compute_polycube();
-
-                if configuration.compute_primal {
-                    new_sol.compute_layout();
-                }
+                new_sol.reconstruct_solution();
 
                 solution.current_solution = new_sol;
                 solution.next[0].clear();
@@ -657,30 +663,7 @@ fn raycast(
         edges: best_option,
         direction: configuration.direction,
     });
-
-    real_solution.compute_dual();
-
-    timer.report("Computed dual phase");
-    timer.reset();
-
-    real_solution.compute_polycube();
-
-    timer.report("Computed polycube");
-    timer.reset();
-
-    if configuration.compute_primal {
-        real_solution.compute_layout();
-        timer.report("Computed layout");
-        timer.reset();
-
-        real_solution.compute_alignment();
-        timer.report("Computed alignment");
-        timer.reset();
-
-        real_solution.compute_orthogonality();
-        timer.report("Computed orthogonality");
-        timer.reset();
-    }
+    real_solution.reconstruct_solution();
 
     solution.next[configuration.direction as usize].insert(edgepair, Some(real_solution));
 }

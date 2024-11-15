@@ -1,17 +1,23 @@
 use crate::{
-    dual::{to_principal_direction, Dual, IntersectionID, PrincipalDirection, PropertyViolationError},
+    dual::{Dual, IntersectionID, PrincipalDirection, PropertyViolationError, RegionID, ZoneID},
     graph::Graaf,
     layout::Layout,
     polycube::{Polycube, PolycubeFaceID, PolycubeVertID},
     EdgeID, EmbeddedMesh, FaceID,
 };
-use hutspot::geom::Vector3D;
+use bimap::BiHashMap;
+use douconel::douconel_embedded::HasPosition;
+use hutspot::{geom::Vector3D, timer::Timer};
 use itertools::Itertools;
-use log::{info, warn};
 use ordered_float::OrderedFloat;
+use rand::seq::{IteratorRandom, SliceRandom};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
 use slotmap::{SecondaryMap, SlotMap};
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 slotmap::new_key_type! {
     pub struct LoopID;
@@ -71,7 +77,7 @@ pub struct Solution {
     pub loops: SlotMap<LoopID, Loop>,
     occupied: SecondaryMap<EdgeID, Vec<LoopID>>,
     pub dual: Result<Dual, PropertyViolationError<IntersectionID>>,
-    pub polycube: Option<Arc<Polycube>>,
+    pub polycube: Option<Polycube>,
     pub layout: Option<Result<Layout, PropertyViolationError<PolycubeVertID>>>,
 
     pub alignment_per_triangle: SecondaryMap<FaceID, f64>,
@@ -185,16 +191,23 @@ impl Solution {
             .collect()
     }
 
+    pub fn reconstruct_solution(&mut self) {
+        self.compute_dual();
+        self.compute_polycube();
+        self.compute_layout();
+        self.resize_polycube();
+        self.compute_alignment();
+        self.compute_orthogonality();
+    }
+
     pub fn compute_dual(&mut self) {
         if self.count_loops_in_direction(PrincipalDirection::X) > 0
             && self.count_loops_in_direction(PrincipalDirection::Y) > 0
             && self.count_loops_in_direction(PrincipalDirection::Z) > 0
         {
             let dual = Dual::from(self.mesh_ref.clone(), &self.loops);
-            info!("Dual computed. Validity: {:?}", dual.is_ok());
             self.dual = dual;
         } else {
-            warn!("Dual not computed. Not enough loops in each direction.");
             self.dual = Err(PropertyViolationError::MissingDirection);
         }
         self.polycube = None;
@@ -204,33 +217,128 @@ impl Solution {
     pub fn compute_polycube(&mut self) {
         if let Ok(dual) = &self.dual {
             let polycube = Polycube::from_dual(dual);
-            info!("Polycube computed.");
-            self.polycube = Some(Arc::new(polycube));
+            self.polycube = Some(polycube);
         } else {
-            warn!("Polycube not computed. Dual not found.");
             self.polycube = None;
         }
         self.layout = None;
     }
 
     pub fn compute_layout(&mut self) {
+        self.layout = None;
         if let (Ok(dual), Some(polycube)) = (&self.dual, &self.polycube) {
-            for _ in 0..10 {
+            for _ in 0..5 {
                 let layout = Layout::embed(dual, polycube);
                 if let Ok(ok_layout) = &layout {
                     let (score_a, score_b) = ok_layout.score();
                     let score = score_a + score_b;
-                    println!("Found: {score_a:?} + {score_b:?} = {score:?}");
                     if score_a < 0.1 {
                         self.layout = Some(layout);
                         return;
                     }
                 }
             }
-            self.layout = None;
-        } else {
-            warn!("Layout not computed. Dual and/or polycube not found.");
-            self.layout = None;
+        }
+    }
+
+    pub fn resize_polycube(&mut self) {
+        if let (Ok(dual), Some(Ok(layout)), Some(polycube)) = (&mut self.dual, &self.layout, &mut self.polycube) {
+            let (adjacency, adjacency_backwards) = &dual.adjacency;
+            let topological_sort = hutspot::graph::topological_sort::<ZoneID>(&dual.zones.clone().into_iter().map(|(id, _)| id).collect_vec(), |z| {
+                adjacency.get(&z).cloned().unwrap_or_default().into_iter().collect_vec()
+            });
+
+            if topological_sort.is_none() {
+                return;
+            }
+
+            for zone in dual.zones.values_mut() {
+                zone.coordinate = None;
+            }
+
+            for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
+                let mut topo = topological_sort
+                    .clone()
+                    .unwrap()
+                    .into_iter()
+                    .filter(|&z| dual.zones[z].direction == direction)
+                    .collect_vec();
+
+                let mut zero_is_set = false;
+
+                for &zone_id in &topo {
+                    let dependencies = adjacency_backwards
+                        .get(&zone_id)
+                        .cloned()
+                        .unwrap_or_default()
+                        .iter()
+                        .filter_map(|&z| dual.zones[z].coordinate)
+                        .collect_vec();
+
+                    let average_coord = hutspot::math::calculate_average_f64(
+                        dual.zones[zone_id]
+                            .regions
+                            .iter()
+                            .filter_map(|&r| polycube.region_to_vertex.get_by_left(&r))
+                            .filter_map(|&v| layout.vert_to_corner.get_by_left(&v))
+                            .map(|&c| layout.granulated_mesh.position(c)[direction as usize]),
+                    );
+
+                    if dependencies.is_empty() {
+                        if zero_is_set {
+                            continue;
+                        }
+                        zero_is_set = true;
+                        dual.zones[zone_id].coordinate = Some(average_coord);
+                    } else {
+                        let max_dependency = dependencies.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap().to_owned();
+                        let new_coord = (average_coord).max(max_dependency + 0.1);
+                        dual.zones[zone_id].coordinate = Some(new_coord);
+                    };
+                }
+
+                topo.reverse();
+
+                for &zone_id in &topo {
+                    if dual.zones[zone_id].coordinate.is_none() {
+                        let dependencies = adjacency
+                            .get(&zone_id)
+                            .cloned()
+                            .unwrap_or_default()
+                            .iter()
+                            .filter_map(|&z| dual.zones[z].coordinate)
+                            .collect_vec();
+
+                        let average_coord = hutspot::math::calculate_average_f64(
+                            dual.zones[zone_id]
+                                .regions
+                                .iter()
+                                .flat_map(|&r| polycube.region_to_vertex.get_by_left(&r))
+                                .flat_map(|&v| layout.vert_to_corner.get_by_left(&v))
+                                .map(|&c| layout.granulated_mesh.position(c)[direction as usize]),
+                        );
+
+                        assert!(!dependencies.is_empty());
+                        let min_dependency = dependencies.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap().to_owned();
+                        let new_coord = (average_coord).min(min_dependency - 0.1);
+                        dual.zones[zone_id].coordinate = Some(new_coord);
+                    }
+                }
+            }
+
+            for region_id in dual.loop_structure.face_ids() {
+                let coordinate = [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z].map(|d| {
+                    dual.zones
+                        .iter()
+                        .find(|(_, z)| z.regions.contains(&region_id) && z.direction == d)
+                        .unwrap()
+                        .1
+                        .coordinate
+                        .unwrap()
+                });
+                let vertex = polycube.region_to_vertex.get_by_left(&region_id).unwrap().to_owned();
+                polycube.structure.verts[vertex].set_position(Vector3D::new(coordinate[0], coordinate[1], coordinate[2]));
+            }
         }
     }
 
@@ -239,71 +347,62 @@ impl Solution {
         self.alignment = None;
 
         if let (Some(Ok(layout)), Some(polycube)) = (&self.layout, &self.polycube) {
-            let total_area = layout.granulated_mesh.faces.keys().map(|f| layout.granulated_mesh.area(f)).sum::<f64>();
+            let total_area: f64 = layout.granulated_mesh.faces.keys().map(|f| layout.granulated_mesh.area(f)).sum();
             let mut total_score = 0.0;
 
-            for &patch in layout.face_to_patch.keys() {
-                let mapped_normal = (polycube.structure.normal(patch) as Vector3D).normalize();
-                for &triangle_id in &layout.face_to_patch[&patch].faces {
-                    let normal = layout.granulated_mesh.normal(triangle_id);
-                    let angle = normal.angle(&mapped_normal);
-                    let score = 1. - (1. + f64::exp(std::f64::consts::PI.mul_add(2., -(4. * angle)))).powi(-1);
+            for (&patch, patch_faces) in &layout.face_to_patch {
+                let mapped_normal = polycube.structure.normal(patch).normalize();
+                for &triangle_id in &patch_faces.faces {
+                    let actual_normal = layout.granulated_mesh.normal(triangle_id);
+                    let score = 1. - (1. + std::f64::consts::PI.mul_add(2., -(4. * actual_normal.angle(&mapped_normal))).exp()).recip();
                     self.alignment_per_triangle.insert(triangle_id, score);
-                    let area = layout.granulated_mesh.area(triangle_id);
-                    let normalized_score = score * (area / total_area);
-                    total_score += normalized_score;
+                    total_score += score * layout.granulated_mesh.area(triangle_id) / total_area;
                 }
             }
-
-            println!("Total alignment score: {total_score:?}");
             self.alignment = Some(total_score);
         }
     }
 
     pub fn compute_orthogonality(&mut self) {
+        self.orthogonality_per_patch.clear();
+        self.orthogonality = None;
+
         if let (Some(Ok(layout)), Some(polycube)) = (&self.layout, &self.polycube) {
+            let total_area: f64 = layout.granulated_mesh.faces.keys().map(|f| layout.granulated_mesh.area(f)).sum();
             let mut total_score = 0.0;
-            let total_area = layout.granulated_mesh.faces.keys().map(|f| layout.granulated_mesh.area(f)).sum::<f64>();
 
-            for &patch in layout.face_to_patch.keys() {
-                let mut patch_orthogonality = 0.0;
-                for patch_edge in polycube.structure.edges(patch) {
-                    let path = &layout.edge_to_path[&patch_edge];
-                    let next_path = &layout.edge_to_path[&polycube.structure.next(patch_edge)];
-
-                    let a = path.first().unwrap().to_owned();
-                    let b = path.last().unwrap().to_owned();
-                    assert!(*next_path.first().unwrap() == b);
-                    let c = next_path.last().unwrap().to_owned();
-
-                    let a_pos = layout.granulated_mesh.position(a);
-                    let b_pos = layout.granulated_mesh.position(b);
-                    let c_pos = layout.granulated_mesh.position(c);
-
-                    let ba = a_pos - b_pos;
-                    let bc = c_pos - b_pos;
-                    let angle = ba.angle(&bc);
-                    let score = angle.sin().powi(2);
-                    patch_orthogonality += score;
-                }
-                let patch_score = patch_orthogonality / polycube.structure.edges(patch).len() as f64;
-
-                let patch_area = layout.face_to_patch[&patch].faces.iter().map(|&f| layout.granulated_mesh.area(f)).sum::<f64>();
-                let normalized_score = patch_score * (patch_area / total_area);
+            for (&patch, patch_faces) in &layout.face_to_patch {
+                let patch_score: f64 = polycube
+                    .structure
+                    .edges(patch)
+                    .iter()
+                    .map(|&patch_edge| {
+                        let path = &layout.edge_to_path[&patch_edge];
+                        let next_path = &layout.edge_to_path[&polycube.structure.next(patch_edge)];
+                        let a = layout.granulated_mesh.position(*path.first().unwrap());
+                        let b = layout.granulated_mesh.position(*path.last().unwrap());
+                        let c = layout.granulated_mesh.position(*next_path.last().unwrap());
+                        (a - b).angle(&(c - b)).sin().powi(2)
+                    })
+                    .sum::<f64>()
+                    / 4.;
                 self.orthogonality_per_patch.insert(patch, patch_score);
-                total_score += normalized_score;
+                let patch_area: f64 = patch_faces.faces.iter().map(|&f| layout.granulated_mesh.area(f)).sum();
+                total_score += patch_score * (patch_area / total_area);
             }
-
-            println!("Total orthogonality score: {total_score:?}");
             self.orthogonality = Some(total_score);
         }
     }
 
-    pub fn mutate_add_loop(&self, nr_loops: usize, alpha: i32, beta: i32, flow_graphs: &[Graaf<[EdgeID; 2], (f64, f64, f64)>; 3]) -> Self {
-        let mut solutions = vec![];
+    pub fn mutate_add_loop(&self, nr_loops: usize, flow_graphs: &[Graaf<[EdgeID; 2], (f64, f64, f64)>; 3]) -> Option<Self> {
+        (0..nr_loops)
+            .into_par_iter()
+            .flat_map(move |_| {
+                let direction = [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z]
+                    .choose(&mut rand::thread_rng())
+                    .unwrap()
+                    .to_owned();
 
-        for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
-            for _ in 0..nr_loops {
                 let occupied = self.occupied_edgepairs();
                 let filter = |(a, b): (&[EdgeID; 2], &[EdgeID; 2])| {
                     !occupied.contains(a)
@@ -319,6 +418,10 @@ impl Solution {
 
                 let g_original = &flow_graphs[direction as usize];
                 let g = g_original.filter(filter);
+
+                // between 5 and 15
+                let alpha = rand::random::<i32>() % 10 + 5;
+                let beta = rand::random::<i32>() % 10 + 5;
 
                 let measure = |(a, b, c): (f64, f64, f64)| a.powi(alpha) + b.powi(beta) + c.powi(beta);
 
@@ -366,8 +469,7 @@ impl Solution {
 
                 // If the best option is empty, we have no valid path.
                 if best_option.len() < 5 {
-                    println!("Path is empty and/or invalid.");
-                    continue;
+                    return None;
                 }
 
                 let mut real_solution = self.clone();
@@ -377,22 +479,48 @@ impl Solution {
                     direction: direction,
                 });
 
-                real_solution.compute_dual();
-                real_solution.compute_polycube();
-                real_solution.compute_layout();
-                real_solution.compute_alignment();
-                real_solution.compute_orthogonality();
+                let timer = Timer::new();
+                real_solution.reconstruct_solution();
+
                 if real_solution.dual.is_ok() && real_solution.polycube.is_some() && real_solution.layout.is_some() {
-                    solutions.push(real_solution);
+                    timer.report(&format!(
+                        "Found solution\t[alignment: {:.2}]\t[orthogonality: {:.2}]",
+                        real_solution.alignment.unwrap(),
+                        real_solution.orthogonality.unwrap()
+                    ));
+                    return Some(real_solution);
+                } else {
+                    timer.report("Invalid solution :/");
+                    return None;
                 }
-            }
-        }
-
-        let best_solution = solutions
-            .into_iter()
+            })
             .max_by_key(|solution| OrderedFloat(solution.alignment.unwrap_or_default()))
-            .unwrap();
+    }
 
-        return best_solution;
+    pub fn mutate_del_loop(&self, nr_loops: usize) -> Option<Self> {
+        self.loops
+            .keys()
+            .choose_multiple(&mut rand::thread_rng(), nr_loops)
+            .into_par_iter()
+            .flat_map(|loop_id| {
+                let mut real_solution = self.clone();
+                real_solution.del_loop(loop_id);
+
+                let timer = Timer::new();
+                real_solution.reconstruct_solution();
+
+                if real_solution.dual.is_ok() && real_solution.polycube.is_some() && real_solution.layout.is_some() {
+                    timer.report(&format!(
+                        "Found solution\t[alignment: {:.2}]\t[orthogonality: {:.2}]",
+                        real_solution.alignment.unwrap(),
+                        real_solution.orthogonality.unwrap()
+                    ));
+                    return Some(real_solution);
+                } else {
+                    timer.report("Invalid solution :/");
+                    return None;
+                }
+            })
+            .max_by_key(|solution| OrderedFloat(solution.alignment.unwrap_or_default()))
     }
 }

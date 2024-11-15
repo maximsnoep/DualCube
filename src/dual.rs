@@ -33,7 +33,7 @@ impl Display for PrincipalDirection {
 }
 
 impl PrincipalDirection {
-    pub fn to_primal_color(self) -> hutspot::color::Color {
+    pub const fn to_primal_color(self) -> hutspot::color::Color {
         match self {
             Self::X => hutspot::color::RED,
             Self::Y => hutspot::color::BLUE,
@@ -41,7 +41,7 @@ impl PrincipalDirection {
         }
     }
 
-    pub fn to_primal_color_sided(self, s: Side) -> hutspot::color::Color {
+    pub const fn to_primal_color_sided(self, s: Side) -> hutspot::color::Color {
         match (self, s) {
             (Self::X, Side::Upper) => hutspot::color::RED,
             (Self::X, Side::Lower) => hutspot::color::RED_LIGHT,
@@ -52,7 +52,7 @@ impl PrincipalDirection {
         }
     }
 
-    pub fn to_dual_color(self) -> hutspot::color::Color {
+    pub const fn to_dual_color(self) -> hutspot::color::Color {
         match self {
             Self::X => hutspot::color::GREEN,
             Self::Y => hutspot::color::ORANGE,
@@ -60,7 +60,7 @@ impl PrincipalDirection {
         }
     }
 
-    pub fn to_dual_color_sided(self, s: Side) -> hutspot::color::Color {
+    pub const fn to_dual_color_sided(self, s: Side) -> hutspot::color::Color {
         match (self, s) {
             (Self::X, Side::Upper) => hutspot::color::GREEN,
             (Self::X, Side::Lower) => hutspot::color::GREEN_LIGHT,
@@ -177,6 +177,9 @@ pub struct Dual {
     pub loop_structure: LoopStructure,
     pub zones: SlotMap<ZoneID, Zone>,
     pub side_ccs: [Vec<HashSet<SegmentID>>; 3],
+
+    // topological sort on the zones
+    pub adjacency: (HashMap<ZoneID, HashSet<ZoneID>>, HashMap<ZoneID, HashSet<ZoneID>>),
 }
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
@@ -222,45 +225,20 @@ impl Dual {
             loop_structure: Douconel::default(),
             zones: SlotMap::with_key(),
             side_ccs: [vec![], vec![], vec![]],
+            adjacency: (HashMap::new(), HashMap::new()),
         }
     }
 
     pub fn from(mesh_ref: Arc<EmbeddedMesh>, loops: &SlotMap<LoopID, Loop>) -> Result<Self, PropertyViolationError<IntersectionID>> {
-        let mut timer = hutspot::timer::Timer::new();
-
         let mut dual = Self::new(mesh_ref);
-
         let intersections = dual.loop_intersections(loops)?;
-        timer.report("Computed all loop intersections");
-        timer.reset();
-
         let faces = dual.loop_faces(&intersections)?;
-        timer.report("Computed all loop faces");
-        timer.reset();
-
         let loop_segments = dual.loop_segments(loops, &intersections);
-        timer.report("Computed all loop segments");
-        timer.reset();
-
         dual.assign_loop_structure(&faces, &intersections, &loop_segments)?;
-        timer.report("Computed loop structure");
-        timer.reset();
-
         dual.assign_subsurfaces()?;
-        timer.report("Computed subsurfaces");
-        timer.reset();
-
         dual.verify_properties_and_assign_sides(loops)?;
-        timer.report("Verified properties and assigned sides");
-        timer.reset();
-
         dual.assign_zones();
-        timer.report("Computed zones");
-        timer.reset();
-
         dual.zone_graph([0, 0, 0])?;
-        timer.report("Computed and verified zone graph");
-        timer.reset();
 
         // UNKNOWN HIGHER GENUS REQUIREMENTS HERE>>>
         // UNKNOWN HIGHER GENUS REQUIREMENTS HERE>>>
@@ -474,10 +452,12 @@ impl Dual {
                         .collect_vec();
 
                     assert!(!dependencies.is_empty());
-                    self.zones[zone_id].coordinate = Some(dependencies.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap() - 1.0);
+                    self.zones[zone_id].coordinate = Some(dependencies.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap() - 1.0);
                 }
             }
         }
+
+        self.adjacency = (adjacency, adjacency_backwards);
 
         Ok(())
     }

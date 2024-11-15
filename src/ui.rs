@@ -162,6 +162,8 @@ pub fn update(
                             ev_w.send(ActionEvent::Mutate);
                         }
 
+                        ui.checkbox(&mut conf.should_continue, text("CONTINUE"));
+
                         ui.add_space(15.);
 
                         for color_mode in [ColorMode::Default, ColorMode::Alignment, ColorMode::Orthogonality] {
