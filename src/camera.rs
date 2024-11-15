@@ -1,7 +1,6 @@
 use crate::{Configuration, OBJ_1_OFFSET, OBJ_2_OFFSET, OBJ_3_OFFSET};
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::prelude::*;
-use bevy::render::camera::ClearColorConfig;
 use bevy::render::camera::Viewport;
 use bevy::render::view::RenderLayers;
 use smooth_bevy_cameras::{

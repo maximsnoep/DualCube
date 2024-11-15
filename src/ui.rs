@@ -31,6 +31,7 @@ pub fn update(
     mut conf: ResMut<Configuration>,
     mut mesh_resmut: ResMut<InputResource>,
     solution: Res<SolutionResource>,
+    time: Res<Time>,
 ) {
     TopBottomPanel::top("panel").show_separator_line(false).show(egui_ctx.ctx_mut(), |ui| {
         ui.add_space(10.);
@@ -72,6 +73,7 @@ pub fn update(
                         let size = 13.0;
 
                         let mut job = LayoutJob::default();
+
                         job.append("FPS[", 0.0, text_format(size, Color32::WHITE));
                         let fps_color = if conf.fps >= 50.0 {
                             Color32::from_rgb(0, 255, 0)
@@ -85,7 +87,13 @@ pub fn update(
                             Color32::from_rgb(255, 0, 0)
                         };
                         job.append(&format!("{:.0}", conf.fps), 0.0, text_format(size, fps_color));
-                        job.append("]", 0.0, text_format(size, Color32::WHITE));
+                        job.append("] ", 0.0, text_format(size, Color32::WHITE));
+                        let color = Color32::from_rgb(
+                            100,
+                            ((time.elapsed_seconds() * 10.).sin() * 100.) as u8,
+                            ((time.elapsed_seconds() * 10.).sin() * 100.) as u8,
+                        );
+                        job.append(":]", 0.0, text_format(size, color));
                         ui.label(job);
 
                         ui.add_space(15.);

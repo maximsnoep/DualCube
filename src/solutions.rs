@@ -1,11 +1,10 @@
 use crate::{
-    dual::{Dual, IntersectionID, PrincipalDirection, PropertyViolationError, RegionID, ZoneID},
+    dual::{Dual, IntersectionID, PrincipalDirection, PropertyViolationError, ZoneID},
     graph::Graaf,
     layout::Layout,
     polycube::{Polycube, PolycubeFaceID, PolycubeVertID},
     EdgeID, EmbeddedMesh, FaceID,
 };
-use bimap::BiHashMap;
 use douconel::douconel_embedded::HasPosition;
 use hutspot::{geom::Vector3D, timer::Timer};
 use itertools::Itertools;
@@ -14,10 +13,7 @@ use rand::seq::{IteratorRandom, SliceRandom};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
 use slotmap::{SecondaryMap, SlotMap};
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::{collections::HashSet, sync::Arc};
 
 slotmap::new_key_type! {
     pub struct LoopID;
@@ -403,96 +399,25 @@ impl Solution {
                     .unwrap()
                     .to_owned();
 
-                let occupied = self.occupied_edgepairs();
-                let filter = |(a, b): (&[EdgeID; 2], &[EdgeID; 2])| {
-                    !occupied.contains(a)
-                        && !occupied.contains(b)
-                        && [a[0], a[1], b[0], b[1]].iter().all(|&edge| {
-                            self.loops_on_edge(edge)
-                                .iter()
-                                .filter(|&&loop_id| self.loop_to_direction(loop_id) == direction)
-                                .count()
-                                == 0
-                        })
-                };
-
-                let g_original = &flow_graphs[direction as usize];
-                let g = g_original.filter(filter);
-
-                // between 5 and 15
-                let alpha = rand::random::<i32>() % 10 + 5;
-                let beta = rand::random::<i32>() % 10 + 5;
-
-                let measure = |(a, b, c): (f64, f64, f64)| a.powi(alpha) + b.powi(beta) + c.powi(beta);
-
-                // Starting edges.
-                let e1 = self.mesh_ref.random_edges(1).first().unwrap().to_owned();
-                let e2 = self.mesh_ref.next(e1);
-                let a = g.node_to_index(&[e1, e2]).unwrap();
-                let b = g.node_to_index(&[e2, e1]).unwrap();
-                let option_a = g
-                    .shortest_cycle(a, &measure)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .flat_map(|node_index| g.index_to_node(node_index).unwrap().to_owned())
-                    .collect_vec();
-                let option_b = g
-                    .shortest_cycle(b, &measure)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .flat_map(|node_index| g.index_to_node(node_index).unwrap().to_owned())
-                    .collect_vec();
-
-                // The path may contain self intersections. We can remove these.
-                // If duplicated vertices are present, remove everything between them.
-                let mut cleaned_option_a = vec![];
-                for edge_id in option_a {
-                    if cleaned_option_a.contains(&edge_id) {
-                        cleaned_option_a = cleaned_option_a.into_iter().take_while(|&x| x != edge_id).collect_vec();
-                    }
-                    cleaned_option_a.push(edge_id);
-                }
-
-                let mut cleaned_option_b = vec![];
-                for edge_id in option_b {
-                    if cleaned_option_b.contains(&edge_id) {
-                        cleaned_option_b = cleaned_option_b.into_iter().take_while(|&x| x != edge_id).collect_vec();
-                    }
-                    cleaned_option_b.push(edge_id);
-                }
-
-                let best_option = if cleaned_option_a.len() > cleaned_option_b.len() {
-                    cleaned_option_a
-                } else {
-                    cleaned_option_b
-                };
-
-                // If the best option is empty, we have no valid path.
-                if best_option.len() < 5 {
-                    return None;
-                }
-
-                let mut real_solution = self.clone();
-
-                real_solution.add_loop(Loop {
-                    edges: best_option,
-                    direction: direction,
-                });
-
                 let timer = Timer::new();
-                real_solution.reconstruct_solution();
 
-                if real_solution.dual.is_ok() && real_solution.polycube.is_some() && real_solution.layout.is_some() {
-                    timer.report(&format!(
-                        "Found solution\t[alignment: {:.2}]\t[orthogonality: {:.2}]",
-                        real_solution.alignment.unwrap(),
-                        real_solution.orthogonality.unwrap()
-                    ));
-                    return Some(real_solution);
-                } else {
-                    timer.report("Invalid solution :/");
-                    return None;
+                if let Some(new_loop) = self.construct_loop(direction, flow_graphs) {
+                    let mut new_solution = self.clone();
+                    new_solution.add_loop(Loop { edges: new_loop, direction });
+                    new_solution.reconstruct_solution();
+
+                    if new_solution.dual.is_ok() && new_solution.polycube.is_some() && new_solution.layout.is_some() {
+                        timer.report(&format!(
+                            "Found solution\t[alignment: {:.2}]\t[orthogonality: {:.2}]",
+                            new_solution.alignment.unwrap(),
+                            new_solution.orthogonality.unwrap()
+                        ));
+                        return Some(new_solution);
+                    }
                 }
+
+                timer.report("Invalid solution :/");
+                None
             })
             .max_by_key(|solution| OrderedFloat(solution.alignment.unwrap_or_default()))
     }
@@ -522,5 +447,78 @@ impl Solution {
                 }
             })
             .max_by_key(|solution| OrderedFloat(solution.alignment.unwrap_or_default()))
+    }
+
+    pub fn construct_loop(&self, direction: PrincipalDirection, flow_graphs: &[Graaf<[EdgeID; 2], (f64, f64, f64)>; 3]) -> Option<Vec<EdgeID>> {
+        let occupied = self.occupied_edgepairs();
+        let filter = |(a, b): (&[EdgeID; 2], &[EdgeID; 2])| {
+            !occupied.contains(a)
+                && !occupied.contains(b)
+                && [a[0], a[1], b[0], b[1]].iter().all(|&edge| {
+                    self.loops_on_edge(edge)
+                        .iter()
+                        .filter(|&&loop_id| self.loop_to_direction(loop_id) == direction)
+                        .count()
+                        == 0
+                })
+        };
+
+        let g_original = &flow_graphs[direction as usize];
+        let g = g_original.filter(filter);
+
+        // between 5 and 15
+        let alpha = rand::random::<i32>() % 10 + 5;
+        let beta = rand::random::<i32>() % 10 + 5;
+
+        let measure = |(a, b, c): (f64, f64, f64)| a.powi(alpha) + b.powi(beta) + c.powi(beta);
+
+        // Starting edges.
+        let e1 = self.mesh_ref.random_edges(1).first().unwrap().to_owned();
+        let e2 = self.mesh_ref.next(e1);
+        let a = g.node_to_index(&[e1, e2]).unwrap();
+        let b = g.node_to_index(&[e2, e1]).unwrap();
+        let option_a = g
+            .shortest_cycle(a, &measure)
+            .unwrap_or_default()
+            .into_iter()
+            .flat_map(|node_index| g.index_to_node(node_index).unwrap().to_owned())
+            .collect_vec();
+        let option_b = g
+            .shortest_cycle(b, &measure)
+            .unwrap_or_default()
+            .into_iter()
+            .flat_map(|node_index| g.index_to_node(node_index).unwrap().to_owned())
+            .collect_vec();
+
+        // The path may contain self intersections. We can remove these.
+        // If duplicated vertices are present, remove everything between them.
+        let mut cleaned_option_a = vec![];
+        for edge_id in option_a {
+            if cleaned_option_a.contains(&edge_id) {
+                cleaned_option_a = cleaned_option_a.into_iter().take_while(|&x| x != edge_id).collect_vec();
+            }
+            cleaned_option_a.push(edge_id);
+        }
+
+        let mut cleaned_option_b = vec![];
+        for edge_id in option_b {
+            if cleaned_option_b.contains(&edge_id) {
+                cleaned_option_b = cleaned_option_b.into_iter().take_while(|&x| x != edge_id).collect_vec();
+            }
+            cleaned_option_b.push(edge_id);
+        }
+
+        let best_option = if cleaned_option_a.len() > cleaned_option_b.len() {
+            cleaned_option_a
+        } else {
+            cleaned_option_b
+        };
+
+        // If the best option is empty, we have no valid path.
+        if best_option.len() < 5 {
+            return None;
+        }
+
+        return Some(best_option);
     }
 }

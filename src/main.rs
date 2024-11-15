@@ -247,11 +247,7 @@ pub fn handle_tasks(
             println!("Task {} is done!", id);
 
             if let Some(new_solution) = chunk_data {
-                if new_solution.orthogonality.unwrap() + new_solution.alignment.unwrap() * 2.
-                    >= solution.current_solution.orthogonality.unwrap() + solution.current_solution.alignment.unwrap() * 2.
-                {
-                    solution.current_solution = new_solution;
-                }
+                solution.current_solution = new_solution;
             }
 
             if configuration.should_continue {
@@ -391,10 +387,10 @@ pub fn handle_events(
                 let cloned_solution = solution.current_solution.clone();
                 let cloned_flow_graphs = mesh_resmut.flow_graphs.clone();
                 if rand::random() {
-                    let task = task_pool.spawn(async move { cloned_solution.mutate_add_loop(100, &cloned_flow_graphs) });
+                    let task = task_pool.spawn(async move { cloned_solution.mutate_add_loop(200, &cloned_flow_graphs) });
                     tasks.generating_chunks.insert(0, task);
                 } else {
-                    let task = task_pool.spawn(async move { cloned_solution.mutate_del_loop(100) });
+                    let task = task_pool.spawn(async move { cloned_solution.mutate_del_loop(200) });
                     tasks.generating_chunks.insert(1, task);
                 }
             }
