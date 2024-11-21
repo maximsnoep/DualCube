@@ -1,6 +1,6 @@
 use crate::camera::Objects;
 use crate::dual::{to_principal_direction, PrincipalDirection, Side};
-use crate::{vec3_to_vector3d, ColorMode, Configuration, InputResource, RenderedMesh, SolutionResource, BACKGROUND_COLOR};
+use crate::{vec3_to_vector3d, ColorMode, Configuration, InputResource, MainMesh, RenderedMesh, SolutionResource, BACKGROUND_COLOR};
 use bevy::prelude::*;
 use hutspot::draw::DrawableLine;
 use hutspot::geom::Vector3D;
@@ -64,7 +64,7 @@ pub fn update(
                 let translation = vec3_to_vector3d((-scale * aabb.center).into()) + offset;
                 mesh_resmut.properties.scale = scale;
                 mesh_resmut.properties.translation = translation;
-                
+
                 commands.spawn((
                     MaterialMeshBundle {
                         mesh: meshes.add(mesh),
@@ -77,6 +77,7 @@ pub fn update(
                         ..default()
                     },
                     RenderedMesh,
+                    MainMesh,
                 ));
 
                 if let Ok(dual) = &solution.current_solution.dual {
@@ -106,7 +107,7 @@ pub fn update(
                                 &mut gizmos_cache.lines,
                                 u,
                                 v,
-                                offset + n * 0.05,
+                                offset + n * 0.01,
                                 color,
                                 &MeshProperties {
                                     source: "dual".to_string(),
@@ -127,7 +128,7 @@ pub fn update(
                                 &mut gizmos_cache.lines,
                                 u,
                                 v,
-                                n * 0.05,
+                                n * 0.005,
                                 color,
                                 &MeshProperties {
                                     source: "dual".to_string(),
@@ -226,8 +227,8 @@ pub fn update(
                         let endpoints = polycube.structure.endpoints(edge_id);
                         let u = polycube.structure.position(endpoints.0);
                         let v = polycube.structure.position(endpoints.1);
-                        let line = DrawableLine::from_line(u, v, polycube.structure.normal(polycube.structure.face(edge_id)) * 0.01, translation, scale);
-                        let c = hutspot::color::BLACK;
+                        let line = DrawableLine::from_line(u, v, polycube.structure.normal(polycube.structure.face(edge_id)) * 0.005, translation, scale);
+                        let c = hutspot::color::GRAY;
                         gizmos_cache.lines.push((line.u, line.v, c));
                     }
                 }
@@ -265,7 +266,7 @@ pub fn update(
                         let endpoints = polycube.structure.endpoints(edge_id);
                         let u = polycube.structure.position(endpoints.0);
                         let v = polycube.structure.position(endpoints.1);
-                        let line = DrawableLine::from_line(u, v, polycube.structure.normal(polycube.structure.face(edge_id)) * 0.01, translation, scale);
+                        let line = DrawableLine::from_line(u, v, polycube.structure.normal(polycube.structure.face(edge_id)) * 0.005, translation, scale);
                         let c = hutspot::color::BLACK;
                         gizmos_cache.lines.push((line.u, line.v, c));
                     }
@@ -315,7 +316,7 @@ pub fn update(
                                     &mut gizmos_cache.lines,
                                     u,
                                     v,
-                                    n * 0.01,
+                                    n * 0.005,
                                     hutspot::color::BLACK,
                                     &MeshProperties {
                                         source: "layout".to_string(),
@@ -329,15 +330,62 @@ pub fn update(
                 }
             }
             Objects::MeshInput => {
+                let mesh = mesh_resmut.mesh.bevy(&HashMap::new());
+                let aabb = mesh.compute_aabb().unwrap();
+                let scale = 10. * (1. / aabb.half_extents.max_element());
+                let translation = vec3_to_vector3d((-scale * aabb.center).into()) + offset;
+
+                commands.spawn((
+                    MaterialMeshBundle {
+                        mesh: meshes.add(mesh),
+                        transform: Transform {
+                            translation: Vec3::new(translation.x as f32, translation.y as f32, translation.z as f32),
+                            rotation: Quat::from_rotation_z(0f32),
+                            scale: Vec3::splat(scale),
+                        },
+                        material: materials.add(StandardMaterial { unlit: true, ..default() }),
+                        ..default()
+                    },
+                    RenderedMesh,
+                ));
+
+                for edge_id in mesh_resmut.mesh.edge_ids() {
+                    let (u_id, v_id) = mesh_resmut.mesh.endpoints(edge_id);
+                    let u = mesh_resmut.mesh.position(u_id);
+                    let v = mesh_resmut.mesh.position(v_id);
+                    let n = mesh_resmut.mesh.edge_normal(edge_id);
+                    add_line2(
+                        &mut gizmos_cache.lines,
+                        u,
+                        v,
+                        n * 0.005,
+                        hutspot::color::WHITE,
+                        &MeshProperties {
+                            source: "input".to_string(),
+                            scale,
+                            translation,
+                        },
+                    );
+                }
+            }
+            Objects::MeshAlignmentScore => {
                 if let Some(Ok(lay)) = &solution.current_solution.layout {
-                    let mesh = lay.granulated_mesh.bevy(&HashMap::new());
-                    let aabb = mesh.compute_aabb().unwrap();
+                    let mut layout_color_map = HashMap::new();
+
+                    for &triangle_id in &lay.granulated_mesh.face_ids() {
+                        let score = solution.current_solution.alignment_per_triangle[triangle_id];
+                        let color = hutspot::color::map(score as f32, &hutspot::color::SCALE_MAGMA);
+                        layout_color_map.insert(triangle_id, color);
+                    }
+
+                    let layout = lay.granulated_mesh.bevy(&layout_color_map);
+                    let aabb = layout.compute_aabb().unwrap();
                     let scale = 10. * (1. / aabb.half_extents.max_element());
                     let translation = vec3_to_vector3d((-scale * aabb.center).into()) + offset;
 
                     commands.spawn((
                         MaterialMeshBundle {
-                            mesh: meshes.add(mesh),
+                            mesh: meshes.add(layout),
                             transform: Transform {
                                 translation: Vec3::new(translation.x as f32, translation.y as f32, translation.z as f32),
                                 rotation: Quat::from_rotation_z(0f32),
@@ -349,76 +397,25 @@ pub fn update(
                         RenderedMesh,
                     ));
 
-                    for edge_id in mesh_resmut.mesh.edge_ids() {
-                        let (u_id, v_id) = mesh_resmut.mesh.endpoints(edge_id);
-                        let u = mesh_resmut.mesh.position(u_id);
-                        let v = mesh_resmut.mesh.position(v_id);
-                        let n = mesh_resmut.mesh.edge_normal(edge_id);
-                        add_line2(
-                            &mut gizmos_cache.lines,
-                            u,
-                            v,
-                            n * 0.02,
-                            hutspot::color::DARK_GRAY,
-                            &MeshProperties {
-                                source: "input".to_string(),
-                                scale,
-                                translation,
-                            },
-                        );
-                    }
-                }
-            }
-            Objects::MeshAlignmentScore => {
-                if let Some(polycube) = &solution.current_solution.polycube {
-                    if let Some(Ok(lay)) = &solution.current_solution.layout {
-                        let mut layout_color_map = HashMap::new();
-
-                        for &triangle_id in &lay.granulated_mesh.face_ids() {
-                            let score = solution.current_solution.alignment_per_triangle[triangle_id];
-                            let color = hutspot::color::map(score as f32, &hutspot::color::SCALE_MAGMA);
-                            layout_color_map.insert(triangle_id, color);
-                        }
-
-                        let layout = lay.granulated_mesh.bevy(&layout_color_map);
-                        let aabb = layout.compute_aabb().unwrap();
-                        let scale = 10. * (1. / aabb.half_extents.max_element());
-                        let translation = vec3_to_vector3d((-scale * aabb.center).into()) + offset;
-
-                        commands.spawn((
-                            MaterialMeshBundle {
-                                mesh: meshes.add(layout),
-                                transform: Transform {
-                                    translation: Vec3::new(translation.x as f32, translation.y as f32, translation.z as f32),
-                                    rotation: Quat::from_rotation_z(0f32),
-                                    scale: Vec3::splat(scale),
+                    for path in lay.edge_to_path.values() {
+                        for vertexpair in path.windows(2) {
+                            let edge_id = lay.granulated_mesh.edge_between_verts(vertexpair[0], vertexpair[1]).unwrap().0;
+                            let (u_id, v_id) = lay.granulated_mesh.endpoints(edge_id);
+                            let u = lay.granulated_mesh.position(u_id);
+                            let v = lay.granulated_mesh.position(v_id);
+                            let n = lay.granulated_mesh.edge_normal(edge_id);
+                            add_line2(
+                                &mut gizmos_cache.lines,
+                                u,
+                                v,
+                                n * 0.005,
+                                hutspot::color::BLACK,
+                                &MeshProperties {
+                                    source: "layout".to_string(),
+                                    scale,
+                                    translation,
                                 },
-                                material: materials.add(StandardMaterial { unlit: true, ..default() }),
-                                ..default()
-                            },
-                            RenderedMesh,
-                        ));
-
-                        for path in lay.edge_to_path.values() {
-                            for vertexpair in path.windows(2) {
-                                let edge_id = lay.granulated_mesh.edge_between_verts(vertexpair[0], vertexpair[1]).unwrap().0;
-                                let (u_id, v_id) = lay.granulated_mesh.endpoints(edge_id);
-                                let u = lay.granulated_mesh.position(u_id);
-                                let v = lay.granulated_mesh.position(v_id);
-                                let n = lay.granulated_mesh.edge_normal(edge_id);
-                                add_line2(
-                                    &mut gizmos_cache.lines,
-                                    u,
-                                    v,
-                                    n * 0.01,
-                                    hutspot::color::BLACK,
-                                    &MeshProperties {
-                                        source: "layout".to_string(),
-                                        scale,
-                                        translation,
-                                    },
-                                );
-                            }
+                            );
                         }
                     }
                 }
@@ -466,7 +463,7 @@ pub fn update(
                                     &mut gizmos_cache.lines,
                                     u,
                                     v,
-                                    n * 0.01,
+                                    n * 0.005,
                                     hutspot::color::BLACK,
                                     &MeshProperties {
                                         source: "layout".to_string(),
@@ -482,110 +479,35 @@ pub fn update(
         }
     }
 
-    // Draw object 3 (Polycube layout)
-    info!("Drawing layout.");
-
-    // Draw the layout
-
-    info!("Adding gizmos.");
-    // Add gizmos to cache.
-
-    // gizmos_cache.wireframe.clear();
-
-    // gizmos_cache.vertices.clear();
-    // for vert_id in mesh_resmut.mesh.vert_ids() {
-    //     let position = mesh_resmut.mesh.position(vert_id);
-    //     let normal = mesh_resmut.mesh.vert_normal(vert_id);
-    //     add_line2(
-    //         &mut gizmos_cache.vertices,
-    //         position,
-    //         position + normal * 0.05,
-    //         Vector3D::new(0., 0., 0.),
-    //         hutspot::color::GRAY,
-    //         &mesh_resmut.properties,
-    //     );
-    // }
-
-    // gizmos_cache.normals.clear();
-    // for face_id in mesh_resmut.mesh.face_ids() {
-    //     let position = mesh_resmut.mesh.centroid(face_id);
-    //     let normal = mesh_resmut.mesh.normal(face_id);
-    //     add_line2(
-    //         &mut gizmos_cache.normals,
-    //         position,
-    //         position + normal * 0.05,
-    //         Vector3D::new(0., 0., 0.),
-    //         hutspot::color::GRAY,
-    //         &mesh_resmut.properties,
-    //     );
-    // }
-
     // Spawning covers such that the objects are seperated from each other.
-    commands.spawn(PbrBundle {
-        mesh: meshes.add(Circle::new(100.0)),
-        transform: Transform {
-            translation: Vec3::new(0., 0., 0.),
-            rotation: Quat::from_rotation_x(std::f32::consts::FRAC_PI_2),
-            scale: Vec3::splat(3.),
-        },
-        material: materials.add(StandardMaterial {
-            base_color: BACKGROUND_COLOR,
-            unlit: true,
-            ..default()
-        }),
+    for object in [
+        Objects::MeshDualLoops,
+        Objects::PolycubeDual,
+        Objects::PolycubePrimal,
+        Objects::MeshPolycubeLayout,
+        Objects::MeshInput,
+        Objects::MeshAlignmentScore,
+        Objects::MeshOrthogonalityScore,
+    ] {
+        let offset = object.to_offset();
+        commands.spawn((
+            PbrBundle {
+                mesh: meshes.add(Sphere::new(400.)),
+                transform: Transform {
+                    translation: Vec3::new(offset.x as f32, offset.y as f32, offset.z as f32),
+                    ..default()
+                },
+                material: materials.add(StandardMaterial {
+                    base_color: BACKGROUND_COLOR,
+                    unlit: true,
+                    ..default()
+                }),
 
-        ..default()
-    });
-
-    commands.spawn(PbrBundle {
-        mesh: meshes.add(Circle::new(100.0)),
-        transform: Transform {
-            translation: Vec3::new(0., 0., 0.),
-            rotation: Quat::from_rotation_x(std::f32::consts::FRAC_PI_2 + std::f32::consts::PI),
-            scale: Vec3::splat(3.),
-        },
-        material: materials.add(StandardMaterial {
-            base_color: BACKGROUND_COLOR,
-            unlit: true,
-            ..default()
-        }),
-
-        ..default()
-    });
-
-    commands.spawn(PbrBundle {
-        mesh: meshes.add(Circle::new(100.0)),
-        transform: Transform {
-            translation: Vec3::new(0., -2_000., 0.),
-            rotation: Quat::from_rotation_x(std::f32::consts::FRAC_PI_2),
-            scale: Vec3::splat(3.),
-        },
-        material: materials.add(StandardMaterial {
-            base_color: BACKGROUND_COLOR,
-            unlit: true,
-            ..default()
-        }),
-
-        ..default()
-    });
-
-    commands.spawn(PbrBundle {
-        mesh: meshes.add(Circle::new(100.0)),
-        transform: Transform {
-            translation: Vec3::new(0., -2_000.0, 0.),
-            rotation: Quat::from_rotation_x(std::f32::consts::FRAC_PI_2 + std::f32::consts::PI),
-            scale: Vec3::splat(3.),
-        },
-        material: materials.add(StandardMaterial {
-            base_color: BACKGROUND_COLOR,
-            unlit: true,
-            ..default()
-        }),
-
-        ..default()
-    });
-
-    info!("Finished drawing meshes.");
+                ..default()
+            },
+            RenderedMesh,
+        ));
+    }
 }
 
 #[derive(Default, Resource)]

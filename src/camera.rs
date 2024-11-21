@@ -18,7 +18,7 @@ pub enum Objects {
     MeshOrthogonalityScore,
 }
 
-impl From<Objects> for &str {
+impl From<Objects> for String {
     fn from(val: Objects) -> Self {
         match val {
             Objects::MeshDualLoops => "dual loops",
@@ -29,19 +29,20 @@ impl From<Objects> for &str {
             Objects::MeshAlignmentScore => "alignment score",
             Objects::MeshOrthogonalityScore => "orthogonality score",
         }
+        .to_owned()
     }
 }
 
 impl Objects {
     pub const fn to_offset(self) -> Vector3D {
         match self {
-            Self::MeshDualLoops => Vector3D::new(0., 1_000., 0.),
-            Self::PolycubeDual => Vector3D::new(0., -1_000., 0.),
-            Self::PolycubePrimal => Vector3D::new(0., -1_100., 0.),
-            Self::MeshPolycubeLayout => Vector3D::new(0., -1_200., 0.),
-            Self::MeshInput => Vector3D::new(0., -1_300., 0.),
-            Self::MeshAlignmentScore => Vector3D::new(0., -1_400., 0.),
-            Self::MeshOrthogonalityScore => Vector3D::new(0., -1_500., 0.),
+            Self::MeshDualLoops => Vector3D::new(0., 0., 0.),
+            Self::PolycubeDual => Vector3D::new(1_000., 0., 0.),
+            Self::PolycubePrimal => Vector3D::new(1_000., 1_000., 0.),
+            Self::MeshPolycubeLayout => Vector3D::new(1_000., 1_000., 1_000.),
+            Self::MeshInput => Vector3D::new(1_000., 0., 1_000.),
+            Self::MeshAlignmentScore => Vector3D::new(0., 1_000., 0.),
+            Self::MeshOrthogonalityScore => Vector3D::new(0., 1_000., 1_000.),
         }
     }
 }
@@ -77,8 +78,8 @@ pub fn reset(commands: &mut Commands, cameras: &Query<Entity, With<CameraFor>>, 
         texture_descriptor: TextureDescriptor {
             label: None,
             size: Extent3d {
-                width: 512,
-                height: 512,
+                width: 640,
+                height: 640,
                 ..default()
             },
             dimension: TextureDimension::D2,
@@ -115,7 +116,16 @@ pub fn reset(commands: &mut Commands, cameras: &Query<Entity, With<CameraFor>>, 
     }
 }
 
-pub fn setup(mut commands: Commands, cameras: Query<Entity, With<CameraFor>>, mut images: ResMut<Assets<Image>>, mut handles: ResMut<CameraHandles>) {
+pub fn setup(
+    mut commands: Commands,
+    cameras: Query<Entity, With<CameraFor>>,
+    mut images: ResMut<Assets<Image>>,
+    mut handles: ResMut<CameraHandles>,
+    mut config_store: ResMut<GizmoConfigStore>,
+) {
+    let (config, _) = config_store.config_mut::<DefaultGizmoConfigGroup>();
+    config.line_width = 3.;
+
     self::reset(&mut commands, &cameras, &mut images, &mut handles);
 }
 

@@ -1,11 +1,12 @@
 use crate::{
     camera::{CameraFor, Objects},
     dual::PrincipalDirection,
-    ActionEvent, CameraHandles, ColorMode, Configuration, InputResource, SolutionResource,
+    ActionEvent, CameraHandles, Configuration, InputResource, SolutionResource,
 };
 use bevy::prelude::*;
-use bevy_egui::egui::CursorIcon;
-use bevy_egui::egui::{emath::Numeric, text::LayoutJob, Align, Color32, FontId, Frame, Layout, Slider, TextFormat, TopBottomPanel, Ui, Window};
+use bevy_egui::egui::{emath::Numeric, text::LayoutJob, Align, Align2, Color32, FontId, Frame, Layout, Slider, TextFormat, TopBottomPanel, Ui, Window};
+use bevy_egui::egui::{CursorIcon, Rounding};
+use tico::tico;
 
 pub fn setup(mut ui: bevy_egui::EguiContexts) {
     // Font
@@ -28,6 +29,15 @@ pub fn setup(mut ui: bevy_egui::EguiContexts) {
 
     // Theme
     ui.ctx_mut().set_visuals(bevy_egui::egui::Visuals::dark());
+
+    ui.ctx_mut().style_mut(|style| {
+        style.visuals.widgets.open.rounding = Rounding::same(0.);
+        style.visuals.menu_rounding = Rounding::same(0.);
+        style.visuals.window_rounding = Rounding::same(0.);
+        style.visuals.widgets.noninteractive.rounding = Rounding::same(0.);
+        style.visuals.widgets.hovered.rounding = Rounding::same(0.);
+        style.visuals.widgets.active.rounding = Rounding::same(0.);
+    });
 }
 
 pub fn update(
@@ -46,44 +56,78 @@ pub fn update(
             ui.with_layout(Layout::top_down(Align::TOP), |ui| {
                 // FIRST ROW
                 ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
-                    bevy_egui::egui::menu::bar(ui, |ui| {
-                        bevy_egui::egui::menu::menu_button(ui, "File", |ui| {
-                            if ui.button("Export").clicked() {
-                                ev_w.send(ActionEvent::ExportState);
-                            }
-                            ui.add_space(5.);
-                            if ui.button("Load").clicked() {
-                                if let Some(path) = rfd::FileDialog::new().add_filter("triangulated geometry", &["obj", "stl", "save"]).pick_file() {
-                                    ev_w.send(ActionEvent::LoadFile(path));
+                    Frame {
+                        outer_margin: bevy_egui::egui::epaint::Margin::symmetric(15., 0.),
+                        shadow: bevy_egui::egui::epaint::Shadow::NONE,
+                        ..default()
+                    }
+                    .show(ui, |ui| {
+                        bevy_egui::egui::menu::bar(ui, |ui| {
+                            bevy_egui::egui::menu::menu_button(ui, "File", |ui| {
+                                if ui.button("Export").clicked() {
+                                    ev_w.send(ActionEvent::ExportState);
                                 }
-                            }
-                            ui.add_space(5.);
+                                ui.add_space(5.);
+                                if ui.button("Load").clicked() {
+                                    if let Some(path) = rfd::FileDialog::new().add_filter("triangulated geometry", &["obj", "stl", "save"]).pick_file() {
+                                        ev_w.send(ActionEvent::LoadFile(path));
+                                    }
+                                }
+                                ui.add_space(5.);
+                                ui.separator();
+                                ui.add_space(5.);
+                                if ui.button("Quit").clicked() {
+                                    std::process::exit(0);
+                                }
+                            });
+
                             ui.separator();
-                            ui.add_space(5.);
-                            if ui.button("Quit").clicked() {
-                                std::process::exit(0);
-                            }
-                        });
 
-                        ui.separator();
+                            bevy_egui::egui::menu::menu_button(ui, "Controls", |ui| {
+                                ui.label("Left click: rotate");
+                                ui.add_space(2.);
+                                ui.label("Right click: pan");
+                                ui.add_space(2.);
+                                ui.label("Scroll: zoom");
+                                ui.add_space(2.);
+                                ui.label("Middle click: reset");
+                            });
 
-                        bevy_egui::egui::menu::menu_button(ui, "Controls", |ui| {
-                            ui.label("Left click: rotate");
-                            ui.add_space(5.);
-                            ui.label("Right click: pan");
-                            ui.add_space(5.);
-                            ui.label("Scroll: zoom");
-                            ui.add_space(5.);
-                            ui.label("Middle click: reset");
-                        });
+                            ui.separator();
 
-                        ui.separator();
+                            bevy_egui::egui::menu::menu_button(ui, "Info", |ui| {
+                                if mesh_resmut.properties.source.is_empty() {
+                                    ui.label("No file loaded.");
+                                } else {
+                                    ui.label(tico(
+                                        &mesh_resmut
+                                            .properties
+                                            .source
+                                            .to_string()
+                                            .chars()
+                                            .map(|ch| if ch == '\\' { '/' } else { ch })
+                                            .collect::<String>(),
+                                        None,
+                                    ));
+                                    ui.add_space(5.);
+                                    ui.label(format!(
+                                        "|Vm|: {}\n|Em|: {}\n|Fm|: {}",
+                                        mesh_resmut.mesh.nr_verts(),
+                                        mesh_resmut.mesh.nr_edges() / 2,
+                                        mesh_resmut.mesh.nr_faces()
+                                    ));
+                                }
 
-                        bevy_egui::egui::menu::menu_button(ui, "Info", |ui| {
-                            ui.label("Loaded file: ...");
-                            ui.label("Number of vertices: ////");
-                            ui.label("Scroll: zoom");
-                            ui.label("Middle click: reset");
+                                if let Some(polycube) = &solution.current_solution.polycube {
+                                    ui.add_space(5.);
+                                    ui.label(format!(
+                                        "|Vp|: {}\n|Ep|: {}\n|Fp|: {}",
+                                        polycube.structure.nr_verts(),
+                                        polycube.structure.nr_edges() / 2,
+                                        polycube.structure.nr_faces()
+                                    ));
+                                }
+                            });
                         });
                     });
                 });
@@ -96,258 +140,73 @@ pub fn update(
 
                 // SECOND ROW
                 ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
-                    // LEFT SIDE
-                    ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
-                        ui.spacing_mut().slider_width = 30.0;
-
-                        // slider(ui, "α", &mut conf.alpha, 1..=20);
-
-                        // ui.add_space(15.);
-
-                        // slider(ui, "β", &mut conf.beta, 1..=20);
-
-                        // ui.add_space(15.);
-
-                        let size = 13.;
-
-                        ui.add_space(15.);
-
-                        if mesh_resmut.properties.source.is_empty() {
-                            ui.label(colored_text("No file loaded.", Color32::RED));
-                        } else {
-                            ui.add_space(15.);
-                            ui.label(text(&mesh_resmut.properties.source.to_string()));
-                        }
-
-                        let sol = &solution.current_solution;
-                        let mut job = LayoutJob::default();
-                        job.append("DUAL[", 0.0, text_format(size, Color32::WHITE));
-                        if sol.dual.is_ok() {
-                            job.append("OK", 0.0, text_format(size, Color32::GREEN));
-                        } else {
-                            job.append(&format!("{:?}", sol.dual.as_ref().err()), 0.0, text_format(size, Color32::RED));
-                        }
-                        job.append("]    LAYOUT[", 0.0, text_format(size, Color32::WHITE));
-                        if let Some(layout) = &sol.layout {
-                            if layout.is_ok() {
-                                job.append("OK", 0.0, text_format(size, Color32::GREEN));
-                            } else {
-                                job.append(&format!("{:?}", layout.as_ref().err()), 0.0, text_format(size, Color32::RED));
-                            }
-                        } else {
-                            job.append("None", 0.0, text_format(size, Color32::RED));
-                        }
-                        job.append("]    ALIGNMENT [", 0.0, text_format(size, Color32::WHITE));
-                        if let Some(alignment) = sol.alignment {
-                            let alignment_color = if alignment >= 0.95 {
-                                Color32::GREEN
-                            } else if alignment >= 0.75 {
-                                Color32::YELLOW
-                            } else {
-                                Color32::RED
-                            };
-                            job.append(&format!("{alignment:.3}"), 0.0, text_format(size, alignment_color));
-                        } else {
-                            job.append("None", 0.0, text_format(size, Color32::RED));
-                        }
-                        job.append("]    ORTHOGONALITY [", 0.0, text_format(size, Color32::WHITE));
-                        if let Some(orthogonality) = sol.orthogonality {
-                            let orthogonality_color = if orthogonality >= 0.95 {
-                                Color32::GREEN
-                            } else if orthogonality >= 0.75 {
-                                Color32::YELLOW
-                            } else {
-                                Color32::RED
-                            };
-                            job.append(&format!("{orthogonality:.3}"), 0.0, text_format(size, orthogonality_color));
-                        } else {
-                            job.append("None", 0.0, text_format(size, Color32::RED));
-                        }
-                        job.append("]", 0.0, text_format(size, Color32::WHITE));
-
-                        ui.label(job);
-
-                        if ui.checkbox(&mut conf.should_continue, text("AUTOMATIC")).clicked() && conf.should_continue {
-                            ev_w.send(ActionEvent::Mutate);
-                        }
-                    });
-
-                    // RIGHT SIDE
-                    ui.with_layout(Layout::right_to_left(Align::BOTTOM), |ui| {
-                        ui.add_space(15.);
-
-                        let mut job = LayoutJob::default();
-                        job.append("Fm[", 0.0, text_format(13.0, Color32::WHITE));
-                        if mesh_resmut.mesh.nr_faces() > 0 {
-                            job.append(&format!("{:}", mesh_resmut.mesh.nr_faces()), 0.0, text_format(13.0, Color32::WHITE));
-                        } else {
-                            job.append("-", 0.0, text_format(13.0, Color32::GRAY));
-                        }
-                        job.append("]", 0.0, text_format(13.0, Color32::WHITE));
-                        ui.label(job);
-
-                        ui.add_space(5.);
-
-                        let mut job = LayoutJob::default();
-                        job.append("Em[", 0.0, text_format(13.0, Color32::WHITE));
-                        if mesh_resmut.mesh.nr_edges() > 0 {
-                            job.append(&format!("{:}", mesh_resmut.mesh.nr_edges() / 2), 0.0, text_format(13.0, Color32::WHITE));
-                        } else {
-                            job.append("-", 0.0, text_format(13.0, Color32::GRAY));
-                        }
-                        job.append("]", 0.0, text_format(13.0, Color32::WHITE));
-                        ui.label(job);
-
-                        ui.add_space(5.);
-
-                        let mut job = LayoutJob::default();
-                        job.append("Vm[", 0.0, text_format(13.0, Color32::WHITE));
-                        if mesh_resmut.mesh.nr_verts() > 0 {
-                            job.append(&format!("{:}", mesh_resmut.mesh.nr_verts()), 0.0, text_format(13.0, Color32::WHITE));
-                        } else {
-                            job.append("-", 0.0, text_format(13.0, Color32::GRAY));
-                        }
-                        job.append("]", 0.0, text_format(13.0, Color32::WHITE));
-                        ui.label(job);
-
-                        ui.add_space(5.);
-
-                        if let Some(polycube) = &solution.current_solution.polycube {
-                            let mut job = LayoutJob::default();
-                            job.append("Fp[", 0.0, text_format(13.0, Color32::WHITE));
-                            if polycube.structure.nr_faces() > 0 {
-                                job.append(&format!("{:}", polycube.structure.nr_faces()), 0.0, text_format(13.0, Color32::WHITE));
-                            } else {
-                                job.append("-", 0.0, text_format(13.0, Color32::GRAY));
-                            }
-                            job.append("]", 0.0, text_format(13.0, Color32::WHITE));
-                            ui.label(job);
-
-                            ui.add_space(5.);
-
-                            let mut job = LayoutJob::default();
-                            job.append("Ep[", 0.0, text_format(13.0, Color32::WHITE));
-                            if polycube.structure.nr_edges() > 0 {
-                                job.append(&format!("{:}", polycube.structure.nr_edges() / 2), 0.0, text_format(13.0, Color32::WHITE));
-                            } else {
-                                job.append("-", 0.0, text_format(13.0, Color32::GRAY));
-                            }
-                            job.append("]", 0.0, text_format(13.0, Color32::WHITE));
-                            ui.label(job);
-
-                            ui.add_space(5.);
-
-                            let mut job = LayoutJob::default();
-                            job.append("Vp[", 0.0, text_format(13.0, Color32::WHITE));
-                            if polycube.structure.nr_verts() > 0 {
-                                job.append(&format!("{:}", polycube.structure.nr_verts()), 0.0, text_format(13.0, Color32::WHITE));
-                            } else {
-                                job.append("-", 0.0, text_format(13.0, Color32::GRAY));
-                            }
-                            job.append("]", 0.0, text_format(13.0, Color32::WHITE));
-                            ui.label(job);
-                        }
-                    });
+                    ui.add_space(15.);
+                    if ui.checkbox(&mut conf.should_continue, "AUTO").clicked() && conf.should_continue {
+                        ev_w.send(ActionEvent::Mutate);
+                        conf.interactive = false;
+                    }
                 });
 
-                ui.add_space(15.);
+                ui.add_space(5.);
 
                 // THIRD ROW
                 ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
-                    // LEFT SIDE
-                    ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
-                        ui.checkbox(&mut conf.interactive, text("MANUAL"));
-                        if conf.interactive {
-                            for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
-                                radio(
-                                    ui,
-                                    &mut conf.direction,
-                                    direction,
-                                    Color32::from_rgb(
-                                        (direction.to_dual_color()[0] * 255.) as u8,
-                                        (direction.to_dual_color()[1] * 255.) as u8,
-                                        (direction.to_dual_color()[2] * 255.) as u8,
-                                    ),
-                                );
-                            }
-                        } else {
-                            for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
-                                disabled_radio(ui, &direction, Color32::GRAY);
+                    ui.add_space(15.);
+                    if ui.checkbox(&mut conf.interactive, "MANUAL").clicked() {
+                        conf.should_continue = false;
+                    };
+                    ui.add_space(15.);
+                    if conf.interactive {
+                        for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
+                            radio(
+                                ui,
+                                &mut conf.direction,
+                                direction,
+                                Color32::from_rgb(
+                                    (direction.to_dual_color()[0] * 255.) as u8,
+                                    (direction.to_dual_color()[1] * 255.) as u8,
+                                    (direction.to_dual_color()[2] * 255.) as u8,
+                                ),
+                            );
+                        }
+
+                        if let Some(edgepair) = conf.selected {
+                            if let Some(Some(sol)) = solution.next[conf.direction as usize].get(&edgepair) {
+                                ui.label("DUAL[");
+                                if sol.dual.is_ok() {
+                                    ui.label(colored_text("Ok", Color32::GREEN));
+                                } else {
+                                    ui.label(colored_text(&format!("{:?}", sol.dual.as_ref().err()), Color32::RED));
+                                }
+                                ui.label("]");
+
+                                ui.label("EMBD[");
+                                if let Some(layout) = &sol.layout {
+                                    if layout.is_ok() {
+                                        ui.label(colored_text("Ok", Color32::GREEN));
+                                    } else {
+                                        ui.label(colored_text(&format!("{:?}", layout.as_ref().err()), Color32::RED));
+                                    }
+                                } else {
+                                    ui.label(colored_text("None", Color32::RED));
+                                }
+                                ui.label("]");
+
+                                if let Some(alignment) = sol.alignment {
+                                    ui.label("ALIGN[");
+                                    ui.label(format!("{alignment:.3}"));
+                                    ui.label("]");
+                                }
+
+                                if let Some(orthogonality) = sol.orthogonality {
+                                    ui.label("ORTH[");
+                                    ui.label(format!("{orthogonality:.3}"));
+                                    ui.label("]");
+                                }
                             }
                         }
-                    });
+                    }
                 });
-
-                ui.add_space(15.);
-
-                // FOURTH ROW
-                ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
-                    ui.with_layout(Layout::right_to_left(Align::TOP), |ui| {
-                        ui.add_space(15.);
-                        ui.with_layout(Layout::top_down(Align::BOTTOM), |ui| {
-                            ui.label(text("SELECTED"));
-                            if let Some(edgepair) = conf.selected {
-                                if let Some(Some(sol)) = solution.next[conf.direction as usize].get(&edgepair) {
-                                    let size = 13.0;
-                                    let mut job = LayoutJob::default();
-                                    job.append("DUAL[", 0.0, text_format(size, Color32::WHITE));
-                                    if sol.dual.is_ok() {
-                                        job.append("OK", 0.0, text_format(size, Color32::GREEN));
-                                    } else {
-                                        job.append(&format!("{:?}", sol.dual.as_ref().err()), 0.0, text_format(size, Color32::RED));
-                                    }
-                                    job.append("]    LAYOUT[", 0.0, text_format(size, Color32::WHITE));
-                                    if let Some(layout) = &sol.layout {
-                                        if layout.is_ok() {
-                                            job.append("OK", 0.0, text_format(size, Color32::GREEN));
-                                        } else {
-                                            job.append(&format!("{:?}", layout.as_ref().err()), 0.0, text_format(size, Color32::RED));
-                                        }
-                                    } else {
-                                        job.append("None", 0.0, text_format(size, Color32::RED));
-                                    }
-                                    job.append("]    ALIGNMENT [", 0.0, text_format(size, Color32::WHITE));
-                                    if let Some(alignment) = sol.alignment {
-                                        let alignment_color = if alignment >= 0.95 {
-                                            Color32::GREEN
-                                        } else if alignment >= 0.75 {
-                                            Color32::YELLOW
-                                        } else {
-                                            Color32::RED
-                                        };
-                                        job.append(&format!("{alignment:.3}"), 0.0, text_format(size, alignment_color));
-                                    } else {
-                                        job.append("None", 0.0, text_format(size, Color32::RED));
-                                    }
-                                    job.append("]    ORTHOGONALITY [", 0.0, text_format(size, Color32::WHITE));
-                                    if let Some(orthogonality) = sol.orthogonality {
-                                        let orthogonality_color = if orthogonality >= 0.95 {
-                                            Color32::GREEN
-                                        } else if orthogonality >= 0.75 {
-                                            Color32::YELLOW
-                                        } else {
-                                            Color32::RED
-                                        };
-                                        job.append(&format!("{orthogonality:.3}"), 0.0, text_format(size, orthogonality_color));
-                                    } else {
-                                        job.append("None", 0.0, text_format(size, Color32::RED));
-                                    }
-                                    job.append("]", 0.0, text_format(size, Color32::WHITE));
-
-                                    ui.label(job);
-                                } else {
-                                    ui.label(colored_text("-", Color32::GRAY));
-                                }
-                            } else {
-                                ui.label(colored_text("-", Color32::GRAY));
-                            }
-                        });
-
-                        ui.add_space(15.);
-                    });
-                });
-
-                ui.add_space(15.);
             });
         });
 
@@ -382,6 +241,35 @@ pub fn update(
                     ui.label(job);
                 });
 
+                // CENTER
+                ui.vertical_centered(|ui| {
+                    let mut job = LayoutJob::default();
+                    job.append("dual", 0.0, text_format(9.0, Color32::WHITE));
+                    job.append("[", 0.0, text_format(9.0, Color32::WHITE));
+                    match &solution.current_solution.dual {
+                        Ok(_) => job.append("Ok", 0.0, text_format(9.0, Color32::GREEN)),
+                        Err(err) => job.append(&format!("{:?}", err), 0.0, text_format(9.0, Color32::RED)),
+                    }
+                    job.append("]", 0.0, text_format(9.0, Color32::WHITE));
+                    job.append("embd", 5.0, text_format(9.0, Color32::WHITE));
+                    job.append("[", 0.0, text_format(9.0, Color32::WHITE));
+                    match &solution.current_solution.layout {
+                        Some(Ok(_)) => job.append("Ok", 0.0, text_format(9.0, Color32::GREEN)),
+                        Some(Err(err)) => job.append(&format!("{:?}", err), 0.0, text_format(9.0, Color32::RED)),
+                        None => job.append("None", 0.0, text_format(9.0, Color32::RED)),
+                    }
+                    job.append("]", 0.0, text_format(9.0, Color32::WHITE));
+                    if let Some(alignment) = solution.current_solution.alignment {
+                        job.append("align", 5.0, text_format(9.0, Color32::WHITE));
+                        job.append(&format!("[{alignment:.3}]"), 0.0, text_format(9.0, Color32::WHITE));
+                    }
+                    if let Some(orthogonality) = solution.current_solution.orthogonality {
+                        job.append("orth", 5.0, text_format(9.0, Color32::WHITE));
+                        job.append(&format!("[{orthogonality:.3}]"), 0.0, text_format(9.0, Color32::WHITE));
+                    }
+                    ui.label(job);
+                });
+
                 // RIGHT SIDE
                 ui.with_layout(Layout::right_to_left(Align::TOP), |ui| {
                     ui.add_space(15.);
@@ -411,7 +299,7 @@ pub fn update(
                 outer_margin: bevy_egui::egui::epaint::Margin::same(1.),
                 stroke: bevy_egui::egui::epaint::Stroke {
                     width: 1.0,
-                    color: Color32::DARK_GRAY,
+                    color: Color32::from_rgb(50, 50, 50),
                 },
                 shadow: bevy_egui::egui::epaint::Shadow::NONE,
                 ..default()
@@ -421,47 +309,71 @@ pub fn update(
             });
         });
 
-    for i in 0..3 {
+    for i in 0..conf.window_shows_object.len() {
         let egui_handle = egui_ctx.add_image(image_handle.map.get(&CameraFor(conf.window_shows_object[i])).unwrap().clone());
         Window::new(format!("window {i}"))
             .frame(Frame {
                 outer_margin: bevy_egui::egui::epaint::Margin::same(2.),
                 stroke: bevy_egui::egui::epaint::Stroke {
                     width: 1.0,
-                    color: Color32::DARK_GRAY,
+                    color: Color32::from_rgb(50, 50, 50),
                 },
                 shadow: bevy_egui::egui::epaint::Shadow::NONE,
                 fill: Color32::from_rgb(27, 27, 27),
                 ..default()
             })
+            .max_size([conf.window_has_size[i], conf.window_has_size[i]])
             .title_bar(false)
-            //.anchor(Align2::RIGHT_TOP, [-5.0, 100.0])
-            .resizable([true, true])
+            .id(format!("window {i}").into())
+            .resizable([false, false])
             .show(egui_ctx.ctx_mut(), |ui| {
-                bevy_egui::egui::ComboBox::from_label("")
-                    .selected_text(text((conf.window_shows_object[i]).into()))
-                    .show_ui(ui, |ui| {
-                        for object in [
-                            Objects::PolycubeDual,
-                            Objects::PolycubePrimal,
-                            Objects::MeshPolycubeLayout,
-                            Objects::MeshInput,
-                            Objects::MeshAlignmentScore,
-                            Objects::MeshOrthogonalityScore,
-                        ] {
-                            ui.selectable_value(&mut conf.window_shows_object[i], object, text(object.into()));
+                Frame {
+                    outer_margin: bevy_egui::egui::epaint::Margin::symmetric(15., 0.),
+                    shadow: bevy_egui::egui::epaint::Shadow::NONE,
+                    ..default()
+                }
+                .show(ui, |ui| {
+                    bevy_egui::egui::menu::bar(ui, |ui| {
+                        bevy_egui::egui::menu::menu_button(ui, String::from(conf.window_shows_object[i]), |ui| {
+                            for object in [
+                                Objects::PolycubeDual,
+                                Objects::PolycubePrimal,
+                                Objects::MeshPolycubeLayout,
+                                Objects::MeshInput,
+                                Objects::MeshAlignmentScore,
+                                Objects::MeshOrthogonalityScore,
+                            ] {
+                                if ui.button(String::from(object)).clicked() {
+                                    conf.window_shows_object[i] = object;
+                                }
+                            }
+                        });
+
+                        if ui.button("+").clicked() {
+                            if conf.window_has_size[i] > 0. {
+                                conf.window_has_size[i] += 64.;
+                                if conf.window_has_size[i] > 640. {
+                                    conf.window_has_size[i] = 640.;
+                                }
+                            } else {
+                                conf.window_has_size[i] = 256.;
+                            }
+                        }
+                        if ui.button("-").clicked() {
+                            conf.window_has_size[i] -= 64.;
+                            if conf.window_has_size[i] < 256. {
+                                conf.window_has_size[i] = 0.;
+                            }
                         }
                     });
+                });
+
                 ui.add(bevy_egui::egui::widgets::Image::new(bevy_egui::egui::load::SizedTexture::new(
                     egui_handle,
-                    [444.0, 444.0],
+                    [conf.window_has_size[i], conf.window_has_size[i]],
                 )));
-                let contains_pointer = ui.ui_contains_pointer();
-                conf.ui_is_hovered[31 - i] = contains_pointer;
-                if contains_pointer {
-                    // change cursor to grabber icon:
-                    ui.ctx().set_cursor_icon(CursorIcon::Grab);
-                }
+
+                conf.ui_is_hovered[31 - i] = ui.ui_contains_pointer() || ui.ctx().is_being_dragged(format!("window {i}").into());
             });
     }
 }
@@ -496,11 +408,6 @@ fn stepper(ui: &mut Ui, label: &str, value: &mut u32, min: u32, max: u32) -> boo
     .inner
 }
 
-fn disabled_radio<T: PartialEq<T> + std::fmt::Display>(ui: &mut Ui, value: &T, color: Color32) {
-    ui.radio(false, colored_text(&format!("{value}"), color))
-        .on_hover_cursor(CursorIcon::NotAllowed);
-}
-
 fn radio<T: PartialEq<T> + std::fmt::Display>(ui: &mut Ui, item: &mut T, value: T, color: Color32) -> bool {
     if ui.radio(*item == value, colored_text(&format!("{value}"), color)).clicked() {
         *item = value;
@@ -529,22 +436,4 @@ pub fn text_format(size: f32, color: Color32) -> TextFormat {
         color,
         ..Default::default()
     }
-}
-
-pub fn sleek_button(ui: &mut Ui, string: &str, on_click: impl FnOnce()) {
-    Frame {
-        outer_margin: bevy_egui::egui::epaint::Margin::same(1.),
-        inner_margin: bevy_egui::egui::epaint::Margin::same(5.),
-        stroke: bevy_egui::egui::epaint::Stroke {
-            width: 1.0,
-            color: Color32::GRAY,
-        },
-        shadow: bevy_egui::egui::epaint::Shadow::NONE,
-        ..default()
-    }
-    .show(ui, |ui| {
-        if ui.label(text(string)).on_hover_cursor(CursorIcon::PointingHand).clicked() {
-            on_click();
-        }
-    });
 }

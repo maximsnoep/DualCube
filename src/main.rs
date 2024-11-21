@@ -72,7 +72,8 @@ pub struct Configuration {
     pub delete_mode: bool,
 
     pub ui_is_hovered: [bool; 32],
-    pub window_shows_object: [Objects; 3],
+    pub window_shows_object: [Objects; 4],
+    pub window_has_size: [f32; 4],
 
     pub camera_speed: f32,
 }
@@ -125,6 +126,9 @@ pub struct SaveStateObject {
 #[derive(Component)]
 pub struct RenderedMesh;
 
+#[derive(Component)]
+pub struct MainMesh;
+
 #[derive(Event, Debug)]
 pub enum ActionEvent {
     LoadFile(PathBuf),
@@ -171,7 +175,6 @@ pub struct InputResource {
 pub struct SolutionResource {
     current_solution: Solution,
     next: [HashMap<[EdgeID; 2], Option<Solution>>; 3],
-    properties: MeshProperties,
 }
 
 impl Default for SolutionResource {
@@ -179,7 +182,6 @@ impl Default for SolutionResource {
         Self {
             current_solution: Solution::new(Arc::new(Douconel::default())),
             next: [HashMap::new(), HashMap::new(), HashMap::new()],
-            properties: MeshProperties::default(),
         }
     }
 }
@@ -255,7 +257,13 @@ pub fn handle_tasks(
                     && new_solution.orthogonality.unwrap() + new_solution.alignment.unwrap() * 10.
                         >= solution.current_solution.orthogonality.unwrap() + solution.current_solution.alignment.unwrap() * 10.
                 {
+                    println!("New solution is better than current solution. Updating...");
                     solution.current_solution = new_solution;
+                } else if *id == 0 {
+                    println!("Solution overwritten.");
+                    solution.current_solution = new_solution;
+                } else {
+                    println!("New solution is worse than current solution. Discarding...");
                 }
             }
 
@@ -319,9 +327,15 @@ pub fn handle_events(
                 configuration.beta = 15;
                 configuration.compute_primal = true;
 
-                configuration.window_shows_object[0] = Objects::PolycubeDual;
+                configuration.window_shows_object[0] = Objects::MeshInput;
                 configuration.window_shows_object[1] = Objects::PolycubePrimal;
                 configuration.window_shows_object[2] = Objects::MeshPolycubeLayout;
+                configuration.window_shows_object[3] = Objects::MeshAlignmentScore;
+
+                configuration.window_has_size[0] = 0.;
+                configuration.window_has_size[1] = 0.;
+                configuration.window_has_size[2] = 0.;
+                configuration.window_has_size[3] = 0.;
 
                 let mut patterns = TreeD::default();
                 for v_id in mesh_resmut.mesh.vert_ids() {
@@ -402,10 +416,10 @@ pub fn handle_events(
                 let cloned_solution = solution.current_solution.clone();
                 let cloned_flow_graphs = mesh_resmut.flow_graphs.clone();
                 if rand::random() {
-                    let task = task_pool.spawn(async move { cloned_solution.mutate_add_loop(100, &cloned_flow_graphs) });
+                    let task = task_pool.spawn(async move { cloned_solution.mutate_add_loop(20, &cloned_flow_graphs) });
                     tasks.generating_chunks.insert(0, task);
                 } else {
-                    let task = task_pool.spawn(async move { cloned_solution.mutate_del_loop(100) });
+                    let task = task_pool.spawn(async move { cloned_solution.mutate_del_loop(20) });
                     tasks.generating_chunks.insert(1, task);
                 }
             }
@@ -430,6 +444,7 @@ fn raycast(
     mut cache: ResMut<CacheResource>,
     mut gizmos_cache: ResMut<GizmosCache>,
     mut configuration: ResMut<Configuration>,
+    query: Query<Entity, With<MainMesh>>,
 ) {
     configuration.raycasted = None;
     configuration.selected = None;
@@ -467,7 +482,13 @@ fn raycast(
     }
 
     // Safe index because we know there is at least one intersection because `intersections` is not empty
+    let intersected_entity = intersections[0].0;
     let intersection = &intersections[0].1;
+
+    let main_mesh_entity = query.single();
+    if intersected_entity != main_mesh_entity {
+        return;
+    }
 
     // For drawing purposes.
     let normal = vec3_to_vector3d(intersection.normal().normalize());
