@@ -8,13 +8,14 @@ mod solutions;
 mod ui;
 
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
+use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{block_on, AsyncComputeTaskPool, Task};
 use bevy::window::WindowMode;
 use bevy_egui::EguiPlugin;
 use bevy_mod_raycast::prelude::*;
-use camera::ObjCamera;
+use camera::{CameraFor, Objects};
 use douconel::douconel::Douconel;
 use douconel::{douconel::Empty, douconel_embedded::EmbeddedVertex};
 use dual::PrincipalDirection;
@@ -41,9 +42,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 // pub const BACKGROUND_COLOR: bevy::prelude::Color = bevy::prelude::Color::rgb(255. / 255., 255. / 255., 255. / 255.);
 pub const BACKGROUND_COLOR: bevy::prelude::Color = bevy::prelude::Color::srgb(27. / 255., 27. / 255., 27. / 255.);
-pub const OBJ_1_OFFSET: Vector3D = Vector3D::new(0., 1_000., 0.);
-pub const OBJ_2_OFFSET: Vector3D = Vector3D::new(0., -1_000., 0.);
-pub const OBJ_3_OFFSET: Vector3D = Vector3D::new(0., -3_000., 0.);
 
 slotmap::new_key_type! {
     pub struct VertID;
@@ -73,8 +71,8 @@ pub struct Configuration {
     pub interactive: bool,
     pub delete_mode: bool,
 
-    pub swap_cameras: bool,
-    pub black: bool,
+    pub ui_is_hovered: [bool; 32],
+    pub window_shows_object: [Objects; 3],
 
     pub camera_speed: f32,
 }
@@ -111,6 +109,11 @@ pub fn fps(diagnostics: Res<DiagnosticsStore>, mut configuration: ResMut<Configu
 #[derive(Resource, Default)]
 struct Tasks {
     generating_chunks: HashMap<usize, Task<Option<Solution>>>,
+}
+
+#[derive(Resource, Default)]
+pub struct CameraHandles {
+    pub map: HashMap<CameraFor, Handle<Image>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -189,6 +192,7 @@ fn main() {
         .init_resource::<SolutionResource>()
         .init_resource::<Configuration>()
         .init_resource::<Tasks>()
+        .init_resource::<CameraHandles>()
         .insert_resource(ClearColor(BACKGROUND_COLOR))
         .insert_resource(AmbientLight {
             color: Color::WHITE,
@@ -247,7 +251,12 @@ pub fn handle_tasks(
             println!("Task {} is done!", id);
 
             if let Some(new_solution) = chunk_data {
-                solution.current_solution = new_solution;
+                if *id == 1
+                    && new_solution.orthogonality.unwrap() + new_solution.alignment.unwrap() * 10.
+                        >= solution.current_solution.orthogonality.unwrap() + solution.current_solution.alignment.unwrap() * 10.
+                {
+                    solution.current_solution = new_solution;
+                }
             }
 
             if configuration.should_continue {
@@ -268,7 +277,10 @@ pub fn handle_events(
     mut tasks: ResMut<Tasks>,
 
     mut commands: Commands,
-    cameras: Query<Entity, With<ObjCamera>>,
+    cameras: Query<Entity, With<CameraFor>>,
+
+    mut images: ResMut<Assets<Image>>,
+    mut camera_handles: ResMut<CameraHandles>,
 ) {
     for ev in ev_reader.read() {
         info!("Received event {ev:?}. Handling...");
@@ -305,8 +317,11 @@ pub fn handle_events(
                 configuration.interactive = true;
                 configuration.alpha = 15;
                 configuration.beta = 15;
-                configuration.black = true;
                 configuration.compute_primal = true;
+
+                configuration.window_shows_object[0] = Objects::PolycubeDual;
+                configuration.window_shows_object[1] = Objects::PolycubePrimal;
+                configuration.window_shows_object[2] = Objects::MeshPolycubeLayout;
 
                 let mut patterns = TreeD::default();
                 for v_id in mesh_resmut.mesh.vert_ids() {
@@ -379,7 +394,7 @@ pub fn handle_events(
                 fs::write(&PathBuf::from(path), serde_json::to_string(&state).unwrap());
             }
             ActionEvent::ResetCamera => {
-                camera::reset(&mut commands, &cameras);
+                camera::reset(&mut commands, &cameras, &mut images, &mut camera_handles);
             }
             ActionEvent::Mutate => {
                 let task_pool = AsyncComputeTaskPool::get();
@@ -387,10 +402,10 @@ pub fn handle_events(
                 let cloned_solution = solution.current_solution.clone();
                 let cloned_flow_graphs = mesh_resmut.flow_graphs.clone();
                 if rand::random() {
-                    let task = task_pool.spawn(async move { cloned_solution.mutate_add_loop(200, &cloned_flow_graphs) });
+                    let task = task_pool.spawn(async move { cloned_solution.mutate_add_loop(100, &cloned_flow_graphs) });
                     tasks.generating_chunks.insert(0, task);
                 } else {
-                    let task = task_pool.spawn(async move { cloned_solution.mutate_del_loop(200) });
+                    let task = task_pool.spawn(async move { cloned_solution.mutate_del_loop(100) });
                     tasks.generating_chunks.insert(1, task);
                 }
             }
@@ -407,6 +422,8 @@ fn raycast(
     cursor_ray: Res<CursorRay>,
     mut raycast: Raycast,
     mut mouse: ResMut<ButtonInput<MouseButton>>,
+    mut evr_motion: EventReader<MouseMotion>,
+    mut evr_scroll: EventReader<MouseWheel>,
     mut keyboard: ResMut<ButtonInput<KeyCode>>,
     mesh_resmut: Res<InputResource>,
     mut solution: ResMut<SolutionResource>,
@@ -417,6 +434,26 @@ fn raycast(
     configuration.raycasted = None;
     configuration.selected = None;
     gizmos_cache.raycaster.clear();
+
+    if configuration.ui_is_hovered.iter().any(|&x| x) {
+        return;
+    }
+
+    if keyboard.pressed(KeyCode::ControlLeft) {
+        return;
+    }
+
+    for ev in evr_motion.read() {
+        if (ev.delta.x.abs() + ev.delta.y.abs()) > 2. {
+            return;
+        }
+    }
+
+    for ev in evr_scroll.read() {
+        if (ev.x.abs() + ev.y.abs()) > 0. {
+            return;
+        }
+    }
 
     if !configuration.interactive || cursor_ray.is_none() {
         return;
@@ -489,7 +526,7 @@ fn raycast(
     let edgepair = mesh_resmut.mesh.edges_in_face_with_vert(face_id, verts[0]).unwrap();
     configuration.raycasted = Some(edgepair);
 
-    if configuration.delete_mode {
+    if keyboard.pressed(KeyCode::Space) {
         // Find closest loop.
 
         let option_a = [edgepair[0], edgepair[1]];
@@ -517,6 +554,7 @@ fn raycast(
                 return;
             }
         }
+        return;
     }
 
     // If shift button is pressed, we want to show the closest solution to the current face vertex combination.

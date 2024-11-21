@@ -1,6 +1,11 @@
-use crate::{dual::PrincipalDirection, ActionEvent, ColorMode, Configuration, InputResource, SolutionResource};
+use crate::{
+    camera::{CameraFor, Objects},
+    dual::PrincipalDirection,
+    ActionEvent, CameraHandles, ColorMode, Configuration, InputResource, SolutionResource,
+};
 use bevy::prelude::*;
-use bevy_egui::egui::{emath::Numeric, text::LayoutJob, Align, Color32, FontId, Layout, Slider, TextFormat, TopBottomPanel, Ui};
+use bevy_egui::egui::CursorIcon;
+use bevy_egui::egui::{emath::Numeric, text::LayoutJob, Align, Color32, FontId, Frame, Layout, Slider, TextFormat, TopBottomPanel, Ui, Window};
 
 pub fn setup(mut ui: bevy_egui::EguiContexts) {
     // Font
@@ -32,6 +37,7 @@ pub fn update(
     mut mesh_resmut: ResMut<InputResource>,
     solution: Res<SolutionResource>,
     time: Res<Time>,
+    image_handle: Res<CameraHandles>,
 ) {
     TopBottomPanel::top("panel").show_separator_line(false).show(egui_ctx.ctx_mut(), |ui| {
         ui.add_space(10.);
@@ -40,21 +46,69 @@ pub fn update(
             ui.with_layout(Layout::top_down(Align::TOP), |ui| {
                 // FIRST ROW
                 ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
+                    bevy_egui::egui::menu::bar(ui, |ui| {
+                        bevy_egui::egui::menu::menu_button(ui, "File", |ui| {
+                            if ui.button("Export").clicked() {
+                                ev_w.send(ActionEvent::ExportState);
+                            }
+                            ui.add_space(5.);
+                            if ui.button("Load").clicked() {
+                                if let Some(path) = rfd::FileDialog::new().add_filter("triangulated geometry", &["obj", "stl", "save"]).pick_file() {
+                                    ev_w.send(ActionEvent::LoadFile(path));
+                                }
+                            }
+                            ui.add_space(5.);
+                            ui.separator();
+                            ui.add_space(5.);
+                            if ui.button("Quit").clicked() {
+                                std::process::exit(0);
+                            }
+                        });
+
+                        ui.separator();
+
+                        bevy_egui::egui::menu::menu_button(ui, "Controls", |ui| {
+                            ui.label("Left click: rotate");
+                            ui.add_space(5.);
+                            ui.label("Right click: pan");
+                            ui.add_space(5.);
+                            ui.label("Scroll: zoom");
+                            ui.add_space(5.);
+                            ui.label("Middle click: reset");
+                        });
+
+                        ui.separator();
+
+                        bevy_egui::egui::menu::menu_button(ui, "Info", |ui| {
+                            ui.label("Loaded file: ...");
+                            ui.label("Number of vertices: ////");
+                            ui.label("Scroll: zoom");
+                            ui.label("Middle click: reset");
+                        });
+                    });
+                });
+
+                ui.add_space(15.);
+
+                ui.separator();
+
+                ui.add_space(15.);
+
+                // SECOND ROW
+                ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
                     // LEFT SIDE
                     ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
-                        ui.add_space(15.);
+                        ui.spacing_mut().slider_width = 30.0;
 
-                        if ui.button(text("Export")).clicked() {
-                            ev_w.send(ActionEvent::ExportState);
-                        };
+                        // slider(ui, "α", &mut conf.alpha, 1..=20);
 
-                        ui.add_space(15.);
+                        // ui.add_space(15.);
 
-                        if ui.button(text("Load")).clicked() {
-                            if let Some(path) = rfd::FileDialog::new().add_filter("triangulated geometry", &["obj", "stl", "save"]).pick_file() {
-                                ev_w.send(ActionEvent::LoadFile(path));
-                            }
-                        }
+                        // slider(ui, "β", &mut conf.beta, 1..=20);
+
+                        // ui.add_space(15.);
+
+                        let size = 13.;
 
                         ui.add_space(15.);
 
@@ -64,39 +118,6 @@ pub fn update(
                             ui.add_space(15.);
                             ui.label(text(&mesh_resmut.properties.source.to_string()));
                         }
-                    });
-
-                    // RIGHT SIDE
-                    ui.with_layout(Layout::right_to_left(Align::TOP), |ui| {
-                        ui.add_space(15.);
-
-                        let size = 13.0;
-
-                        let mut job = LayoutJob::default();
-
-                        job.append("FPS[", 0.0, text_format(size, Color32::WHITE));
-                        let fps_color = if conf.fps >= 50.0 {
-                            Color32::from_rgb(0, 255, 0)
-                        } else if conf.fps >= 30.0 {
-                            let r = ((1.0 - (conf.fps - 60.0) / (120.0 - 60.0)) * 255.) as u8;
-                            Color32::from_rgb(r, 255, 0)
-                        } else if conf.fps >= 15.0 {
-                            let g = (((conf.fps - 30.0) / (60.0 - 30.0)) * 255.) as u8;
-                            Color32::from_rgb(255, g, 0)
-                        } else {
-                            Color32::from_rgb(255, 0, 0)
-                        };
-                        job.append(&format!("{:.0}", conf.fps), 0.0, text_format(size, fps_color));
-                        job.append("] ", 0.0, text_format(size, Color32::WHITE));
-                        let color = Color32::from_rgb(
-                            100,
-                            ((time.elapsed_seconds() * 10.).sin() * 100.) as u8,
-                            ((time.elapsed_seconds() * 10.).sin() * 100.) as u8,
-                        );
-                        job.append(":]", 0.0, text_format(size, color));
-                        ui.label(job);
-
-                        ui.add_space(15.);
 
                         let sol = &solution.current_solution;
                         let mut job = LayoutJob::default();
@@ -145,42 +166,10 @@ pub fn update(
                         job.append("]", 0.0, text_format(size, Color32::WHITE));
 
                         ui.label(job);
-                    });
-                });
 
-                ui.add_space(15.);
-
-                // SECOND ROW
-                ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
-                    // LEFT SIDE
-                    ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
-                        ui.add_space(15.);
-
-                        ui.spacing_mut().slider_width = 30.0;
-
-                        // slider(ui, "α", &mut conf.alpha, 1..=20);
-
-                        // ui.add_space(15.);
-
-                        // slider(ui, "β", &mut conf.beta, 1..=20);
-
-                        // ui.add_space(15.);
-
-                        if ui.button(text("SOLVE")).on_hover_text("Solve the current mesh.").clicked() {
+                        if ui.checkbox(&mut conf.should_continue, text("AUTOMATIC")).clicked() && conf.should_continue {
                             ev_w.send(ActionEvent::Mutate);
                         }
-
-                        ui.checkbox(&mut conf.should_continue, text("CONTINUE"));
-
-                        ui.add_space(15.);
-
-                        for color_mode in [ColorMode::Default, ColorMode::Alignment, ColorMode::Orthogonality] {
-                            if radio(ui, &mut conf.color_mode, color_mode) {
-                                mesh_resmut.as_mut();
-                            }
-                        }
-
-                        ui.add_space(15.);
                     });
 
                     // RIGHT SIDE
@@ -267,51 +256,26 @@ pub fn update(
                 ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
                     // LEFT SIDE
                     ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
-                        ui.add_space(15.);
-
-                        if ui.button(text("SWAP CAMS")).clicked() {
-                            conf.swap_cameras = !conf.swap_cameras;
+                        ui.checkbox(&mut conf.interactive, text("MANUAL"));
+                        if conf.interactive {
+                            for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
+                                radio(
+                                    ui,
+                                    &mut conf.direction,
+                                    direction,
+                                    Color32::from_rgb(
+                                        (direction.to_dual_color()[0] * 255.) as u8,
+                                        (direction.to_dual_color()[1] * 255.) as u8,
+                                        (direction.to_dual_color()[2] * 255.) as u8,
+                                    ),
+                                );
+                            }
+                        } else {
+                            for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
+                                disabled_radio(ui, &direction, Color32::GRAY);
+                            }
                         }
-
-                        ui.add_space(15.);
-
-                        // slider(ui, "CAM SPEED", &mut conf.camera_speed, 0.0..=5.);
-
-                        // ui.add_space(15.);
-
-                        // if ui.button(text("RESET CAMS")).clicked() {
-                        //     ev_w.send(ActionEvent::ResetCamera);
-                        // }
-
-                        // ui.add_space(15.);
-
-                        if ui.checkbox(&mut conf.black, text("DUAL MODE")).changed() {
-                            mesh_resmut.as_mut();
-                        }
-
-                        ui.add_space(15.);
-
-                        // ui.checkbox(&mut conf.compute_primal, text("AUTOMATIC LAYOUT"));
-
-                        // ui.add_space(15.);
-
-                        ui.checkbox(&mut conf.interactive, text("INTERACTIVE MODE"));
-
-                        ui.add_space(15.);
-
-                        for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
-                            radio(ui, &mut conf.direction, direction);
-                        }
-
-                        ui.add_space(15.);
-
-                        ui.checkbox(&mut conf.delete_mode, text("DELETE MODE"));
-
-                        ui.add_space(15.);
                     });
-
-                    // RIGHT SIDE
-                    ui.with_layout(Layout::right_to_left(Align::BOTTOM), |ui| {});
                 });
 
                 ui.add_space(15.);
@@ -386,7 +350,120 @@ pub fn update(
                 ui.add_space(15.);
             });
         });
+
+        conf.ui_is_hovered[0] = ui.ui_contains_pointer();
     });
+
+    TopBottomPanel::bottom("footer").show_separator_line(false).show(egui_ctx.ctx_mut(), |ui| {
+        ui.horizontal(|ui| {
+            ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
+                // LEFT SIDE
+                ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
+                    ui.add_space(15.);
+
+                    let mut job = LayoutJob::default();
+                    job.append(&format!("{:.0}", conf.fps), 0.0, text_format(9.0, Color32::WHITE));
+                    ui.label(job);
+
+                    ui.add_space(5.);
+
+                    let mut job = LayoutJob::default();
+                    let elapsed = (time.elapsed_seconds() / 4.) % 1.;
+                    let label = if elapsed < 0.25 {
+                        " . "
+                    } else if elapsed < 0.5 {
+                        ".. "
+                    } else if elapsed < 0.75 {
+                        "..."
+                    } else {
+                        " .."
+                    };
+                    job.append(label, 0.0, text_format(9.0, Color32::WHITE));
+                    ui.label(job);
+                });
+
+                // RIGHT SIDE
+                ui.with_layout(Layout::right_to_left(Align::TOP), |ui| {
+                    ui.add_space(15.);
+
+                    let mut job = LayoutJob::default();
+                    job.append("maxim snoep", 0.0, text_format(9.0, Color32::WHITE));
+                    ui.label(job);
+                });
+            });
+        });
+
+        conf.ui_is_hovered[1] = ui.ui_contains_pointer();
+    });
+
+    bevy_egui::egui::CentralPanel::default()
+        .frame(Frame {
+            outer_margin: bevy_egui::egui::epaint::Margin::same(10.),
+            stroke: bevy_egui::egui::epaint::Stroke {
+                width: 10.0,
+                color: Color32::from_rgb(27, 27, 27),
+            },
+            shadow: bevy_egui::egui::epaint::Shadow::NONE,
+            ..default()
+        })
+        .show(egui_ctx.ctx_mut(), |ui| {
+            Frame {
+                outer_margin: bevy_egui::egui::epaint::Margin::same(1.),
+                stroke: bevy_egui::egui::epaint::Stroke {
+                    width: 1.0,
+                    color: Color32::DARK_GRAY,
+                },
+                shadow: bevy_egui::egui::epaint::Shadow::NONE,
+                ..default()
+            }
+            .show(ui, |ui| {
+                ui.allocate_space(ui.available_size());
+            });
+        });
+
+    for i in 0..3 {
+        let egui_handle = egui_ctx.add_image(image_handle.map.get(&CameraFor(conf.window_shows_object[i])).unwrap().clone());
+        Window::new(format!("window {i}"))
+            .frame(Frame {
+                outer_margin: bevy_egui::egui::epaint::Margin::same(2.),
+                stroke: bevy_egui::egui::epaint::Stroke {
+                    width: 1.0,
+                    color: Color32::DARK_GRAY,
+                },
+                shadow: bevy_egui::egui::epaint::Shadow::NONE,
+                fill: Color32::from_rgb(27, 27, 27),
+                ..default()
+            })
+            .title_bar(false)
+            //.anchor(Align2::RIGHT_TOP, [-5.0, 100.0])
+            .resizable([true, true])
+            .show(egui_ctx.ctx_mut(), |ui| {
+                bevy_egui::egui::ComboBox::from_label("")
+                    .selected_text(text((conf.window_shows_object[i]).into()))
+                    .show_ui(ui, |ui| {
+                        for object in [
+                            Objects::PolycubeDual,
+                            Objects::PolycubePrimal,
+                            Objects::MeshPolycubeLayout,
+                            Objects::MeshInput,
+                            Objects::MeshAlignmentScore,
+                            Objects::MeshOrthogonalityScore,
+                        ] {
+                            ui.selectable_value(&mut conf.window_shows_object[i], object, text(object.into()));
+                        }
+                    });
+                ui.add(bevy_egui::egui::widgets::Image::new(bevy_egui::egui::load::SizedTexture::new(
+                    egui_handle,
+                    [444.0, 444.0],
+                )));
+                let contains_pointer = ui.ui_contains_pointer();
+                conf.ui_is_hovered[31 - i] = contains_pointer;
+                if contains_pointer {
+                    // change cursor to grabber icon:
+                    ui.ctx().set_cursor_icon(CursorIcon::Grab);
+                }
+            });
+    }
 }
 
 fn slider<T: Numeric>(ui: &mut Ui, label: &str, value: &mut T, range: std::ops::RangeInclusive<T>) {
@@ -419,8 +496,13 @@ fn stepper(ui: &mut Ui, label: &str, value: &mut u32, min: u32, max: u32) -> boo
     .inner
 }
 
-fn radio<T: PartialEq<T> + std::fmt::Display>(ui: &mut Ui, item: &mut T, value: T) -> bool {
-    if ui.radio(*item == value, text(&format!("{value}"))).clicked() {
+fn disabled_radio<T: PartialEq<T> + std::fmt::Display>(ui: &mut Ui, value: &T, color: Color32) {
+    ui.radio(false, colored_text(&format!("{value}"), color))
+        .on_hover_cursor(CursorIcon::NotAllowed);
+}
+
+fn radio<T: PartialEq<T> + std::fmt::Display>(ui: &mut Ui, item: &mut T, value: T, color: Color32) -> bool {
+    if ui.radio(*item == value, colored_text(&format!("{value}"), color)).clicked() {
         *item = value;
         true
     } else {
@@ -429,9 +511,7 @@ fn radio<T: PartialEq<T> + std::fmt::Display>(ui: &mut Ui, item: &mut T, value: 
 }
 
 pub fn text(string: &str) -> LayoutJob {
-    let mut job = LayoutJob::default();
-    job.append(string, 0.0, text_format(13.0, Color32::WHITE));
-    job
+    colored_text(string, Color32::WHITE)
 }
 
 pub fn colored_text(string: &str, color: Color32) -> LayoutJob {
@@ -449,4 +529,22 @@ pub fn text_format(size: f32, color: Color32) -> TextFormat {
         color,
         ..Default::default()
     }
+}
+
+pub fn sleek_button(ui: &mut Ui, string: &str, on_click: impl FnOnce()) {
+    Frame {
+        outer_margin: bevy_egui::egui::epaint::Margin::same(1.),
+        inner_margin: bevy_egui::egui::epaint::Margin::same(5.),
+        stroke: bevy_egui::egui::epaint::Stroke {
+            width: 1.0,
+            color: Color32::GRAY,
+        },
+        shadow: bevy_egui::egui::epaint::Shadow::NONE,
+        ..default()
+    }
+    .show(ui, |ui| {
+        if ui.label(text(string)).on_hover_cursor(CursorIcon::PointingHand).clicked() {
+            on_click();
+        }
+    });
 }

@@ -1,151 +1,133 @@
-use crate::{Configuration, OBJ_1_OFFSET, OBJ_2_OFFSET, OBJ_3_OFFSET};
+use crate::CameraHandles;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::prelude::*;
-use bevy::render::camera::Viewport;
-use bevy::render::view::RenderLayers;
-use smooth_bevy_cameras::{
-    controllers::orbit::{OrbitCameraBundle, OrbitCameraController},
-    LookTransform, Smoother,
-};
+use bevy::render::render_resource::{Extent3d, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages};
+use hutspot::geom::Vector3D;
+use serde::{Deserialize, Serialize};
+use smooth_bevy_cameras::controllers::orbit::{OrbitCameraBundle, OrbitCameraController};
 
-#[derive(Component)]
-pub struct Obj1Camera;
+#[derive(PartialEq, Eq, Hash, Debug, Copy, Clone, Default, Serialize, Deserialize)]
+pub enum Objects {
+    MeshDualLoops,
+    #[default]
+    PolycubeDual,
+    PolycubePrimal,
+    MeshPolycubeLayout,
+    MeshInput,
+    MeshAlignmentScore,
+    MeshOrthogonalityScore,
+}
 
-#[derive(Component)]
-pub struct Obj2Camera;
+impl From<Objects> for &str {
+    fn from(val: Objects) -> Self {
+        match val {
+            Objects::MeshDualLoops => "dual loops",
+            Objects::PolycubeDual => "polycube dual",
+            Objects::PolycubePrimal => "polycube primal",
+            Objects::MeshPolycubeLayout => "embedded layout",
+            Objects::MeshInput => "input",
+            Objects::MeshAlignmentScore => "alignment score",
+            Objects::MeshOrthogonalityScore => "orthogonality score",
+        }
+    }
+}
 
-#[derive(Component)]
-pub struct Obj3Camera;
+impl Objects {
+    pub const fn to_offset(self) -> Vector3D {
+        match self {
+            Self::MeshDualLoops => Vector3D::new(0., 1_000., 0.),
+            Self::PolycubeDual => Vector3D::new(0., -1_000., 0.),
+            Self::PolycubePrimal => Vector3D::new(0., -1_100., 0.),
+            Self::MeshPolycubeLayout => Vector3D::new(0., -1_200., 0.),
+            Self::MeshInput => Vector3D::new(0., -1_300., 0.),
+            Self::MeshAlignmentScore => Vector3D::new(0., -1_400., 0.),
+            Self::MeshOrthogonalityScore => Vector3D::new(0., -1_500., 0.),
+        }
+    }
+}
 
-#[derive(Component)]
-pub struct ObjCamera;
+#[derive(Component, PartialEq, Eq, Hash, Debug, Copy, Clone, Default, Serialize, Deserialize)]
+pub struct CameraFor(pub Objects);
 
-pub fn reset(commands: &mut Commands, cameras: &Query<Entity, With<ObjCamera>>) {
+pub fn reset(commands: &mut Commands, cameras: &Query<Entity, With<CameraFor>>, images: &mut ResMut<Assets<Image>>, handles: &mut ResMut<CameraHandles>) {
     for camera in cameras.iter() {
         commands.entity(camera).despawn();
     }
 
-    // Obj 1 camera
+    // Define all the cameras. There is one main camera. All other cameras are sub cameras (they render to a texture).
+
+    // Main camera (for the mesh with dual loops).
+    let offset = Objects::MeshDualLoops.to_offset();
     commands
         .spawn(Camera3dBundle {
             tonemapping: Tonemapping::None,
-            // camera_3d: Camera3d {
-            //     clear_color: ClearColorConfig::None,
-            //     ..default()
-            // },
             ..default()
         })
         .insert((OrbitCameraBundle::new(
             OrbitCameraController::default(),
-            Vec3::new(25.0, 25.0, 35.0) + Vec3::new(OBJ_1_OFFSET.x as f32, OBJ_1_OFFSET.y as f32, OBJ_1_OFFSET.z as f32),
-            Vec3::new(0., 0., 0.) + Vec3::new(OBJ_1_OFFSET.x as f32, OBJ_1_OFFSET.y as f32, OBJ_1_OFFSET.z as f32),
+            Vec3::new(25.0, 25.0, 35.0) + Vec3::new(offset.x as f32, offset.y as f32, offset.z as f32),
+            Vec3::new(0., 0., 0.) + Vec3::new(offset.x as f32, offset.y as f32, offset.z as f32),
             Vec3::Y,
         ),))
-        .insert(Obj1Camera)
-        .insert(ObjCamera)
-        .insert(RenderLayers::from_layers(&[0, 1]));
+        .insert(CameraFor(Objects::MeshDualLoops));
 
-    // Obj 2 camera
-    commands
-        .spawn(Camera3dBundle {
-            tonemapping: Tonemapping::None,
-            // camera_3d: Camera3d {
-            //     clear_color: ClearColorConfig::None,
-            //     ..default()
-            // },
-            ..default()
-        })
-        .insert(Obj2Camera)
-        .insert(ObjCamera)
-        .insert(RenderLayers::from_layers(&[0, 2]));
-
-    // Obj 3 camera
-    commands
-        .spawn(Camera3dBundle {
-            tonemapping: Tonemapping::None,
-            // camera_3d: Camera3d {
-            //     clear_color: ClearColorConfig::None,
-            //     ..default()
-            // },
-            ..default()
-        })
-        .insert(Obj3Camera)
-        .insert(ObjCamera)
-        .insert(RenderLayers::from_layers(&[0, 3]));
-
-    // pseudocam for clearcolor
-    commands
-        .spawn(Camera3dBundle { ..default() })
-        .insert(ObjCamera)
-        .insert(RenderLayers::from_layers(&[9]));
-}
-
-pub fn setup(mut commands: Commands, cameras: Query<Entity, With<ObjCamera>>) {
-    self::reset(&mut commands, &cameras);
-}
-
-pub fn update(
-    mut obj1camera: Query<(&mut Camera, &mut Transform), (With<Obj1Camera>, Without<Obj2Camera>, Without<Obj3Camera>)>,
-    mut obj2camera: Query<(&mut Camera, &mut Transform), (With<Obj2Camera>, Without<Obj1Camera>, Without<Obj3Camera>)>,
-    mut obj3camera: Query<(&mut Camera, &mut Transform), (With<Obj3Camera>, Without<Obj1Camera>, Without<Obj2Camera>)>,
-    mut cameras: Query<(&mut LookTransform, &mut Smoother), With<ObjCamera>>,
-    configuration: Res<Configuration>,
-    windows: Query<&Window>,
-    time: Res<Time>,
-) {
-    let obj1camera_mut = &mut obj1camera.single_mut();
-    let obj2camera_mut = &mut obj2camera.single_mut();
-    let obj3camera_mut = &mut obj3camera.single_mut();
-
-    // Synchronizes the transformations of the main and sub cameras. Such that the sub camera moves with the main camera.
-    let normalized_translation = obj1camera_mut.1.translation - Vec3::new(OBJ_1_OFFSET.x as f32, OBJ_1_OFFSET.y as f32, OBJ_1_OFFSET.z as f32);
-    obj2camera_mut.1.translation = normalized_translation + Vec3::new(OBJ_2_OFFSET.x as f32, OBJ_2_OFFSET.y as f32, OBJ_2_OFFSET.z as f32);
-    obj2camera_mut.1.rotation = obj1camera_mut.1.rotation;
-    obj3camera_mut.1.translation = normalized_translation + Vec3::new(OBJ_3_OFFSET.x as f32, OBJ_3_OFFSET.y as f32, OBJ_3_OFFSET.z as f32);
-    obj3camera_mut.1.rotation = obj1camera_mut.1.rotation;
-
-    // Updates the camera viewports. Default, the main camera spans the whole screen, and the sub camera is a quarter-sized camera in the bottom left corner.
-    // If `configuration.swap_cameras` is set to `true`, the sub camera spans the whole screen, and the main camera is a quarter-sized camera in the bottom left corner.
-    let (cam1, cam2, cam3) = match (configuration.swap_cameras, !configuration.black) {
-        (false, false) => (obj1camera_mut, obj2camera_mut, obj3camera_mut),
-        (false, true) => (obj3camera_mut, obj2camera_mut, obj1camera_mut),
-        (true, false) => (obj2camera_mut, obj1camera_mut, obj3camera_mut),
-        (true, true) => (obj2camera_mut, obj3camera_mut, obj1camera_mut),
+    // Sub cameras (render to a texture)
+    // This is the texture that will be rendered to.
+    let mut image = Image {
+        texture_descriptor: TextureDescriptor {
+            label: None,
+            size: Extent3d {
+                width: 512,
+                height: 512,
+                ..default()
+            },
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Bgra8UnormSrgb,
+            mip_level_count: 1,
+            sample_count: 1,
+            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST | TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        },
+        ..default()
     };
+    image.resize(image.texture_descriptor.size);
+    handles.map.clear();
 
-    // Set viewports
-    let window = windows.single();
-    cam1.0.viewport = Some(Viewport {
-        physical_position: UVec2::new(0, 2 * window.resolution.physical_height() / 10),
-        physical_size: UVec2::new(window.resolution.physical_width(), 8 * window.resolution.physical_height() / 10),
-        ..default()
-    });
-    cam1.0.order = 99;
+    for object in [
+        Objects::PolycubeDual,
+        Objects::PolycubePrimal,
+        Objects::MeshPolycubeLayout,
+        Objects::MeshInput,
+        Objects::MeshAlignmentScore,
+        Objects::MeshOrthogonalityScore,
+    ] {
+        handles.map.insert(CameraFor(object), images.add(image.clone()));
+        commands
+            .spawn(Camera3dBundle {
+                camera: Camera {
+                    target: handles.map.get(&CameraFor(object)).unwrap().clone().into(),
+                    ..Default::default()
+                },
+                tonemapping: Tonemapping::None,
+                ..default()
+            })
+            .insert(CameraFor(object));
+    }
+}
 
-    cam2.0.viewport = Some(Viewport {
-        physical_position: UVec2::new(11 * window.resolution.physical_width() / 16, 11 * window.resolution.physical_height() / 16),
-        physical_size: UVec2::new(window.resolution.physical_width() / 4, window.resolution.physical_height() / 4),
-        ..default()
-    });
-    cam2.0.order = 2;
+pub fn setup(mut commands: Commands, cameras: Query<Entity, With<CameraFor>>, mut images: ResMut<Assets<Image>>, mut handles: ResMut<CameraHandles>) {
+    self::reset(&mut commands, &cameras, &mut images, &mut handles);
+}
 
-    cam3.0.viewport = Some(Viewport {
-        physical_position: UVec2::new(11 * window.resolution.physical_width() / 16, 6 * window.resolution.physical_height() / 16),
-        physical_size: UVec2::new(window.resolution.physical_width() / 4, window.resolution.physical_height() / 4),
-        ..default()
-    });
-    cam3.0.order = 1;
+pub fn update(mut cameras: Query<(&mut Camera, &mut Transform, &CameraFor)>) {
+    let offset = Objects::MeshDualLoops.to_offset();
+    let main_camera = cameras.iter().find(|(_, _, camera_for)| camera_for.0 == Objects::MeshDualLoops).unwrap();
+    let normalized_translation = main_camera.1.translation - Vec3::new(offset.x as f32, offset.y as f32, offset.z as f32);
+    let normalized_rotation = main_camera.1.rotation;
 
-    let progress = (time.elapsed().as_secs_f32() * configuration.camera_speed * 10.).to_radians();
-
-    for (mut camera, mut smoother) in &mut cameras {
-        if configuration.camera_speed > 0.0 {
-            let camera_height = 25.;
-            let camera_radius = Vec2::new(camera.target.x, camera.target.z).distance(Vec2::new(camera.eye.x, camera.eye.z));
-            smoother.set_lag_weight(0.1);
-            camera.eye = camera.target + Vec3::new(-camera_radius * progress.cos(), camera_height, camera_radius * progress.sin());
-        } else {
-            smoother.set_lag_weight(0.8);
-        }
+    for mut camera in &mut cameras {
+        let offset = camera.2 .0.to_offset();
+        camera.1.translation = normalized_translation + Vec3::new(offset.x as f32, offset.y as f32, offset.z as f32);
+        camera.1.rotation = normalized_rotation;
     }
 }
