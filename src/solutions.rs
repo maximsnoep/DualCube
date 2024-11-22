@@ -194,10 +194,10 @@ impl Solution {
         println!("Smoothening done...");
         println!("Resizing polycube...");
 
-        // if let Some(Ok(layout)) = &mut self.layout {
-        //     layout.smoothening();
-        // }
-        // println!("Done with smoothening (real)");
+        if let Some(Ok(layout)) = &mut self.layout {
+            layout.smoothening();
+        }
+        println!("Done with smoothening (real)");
 
         // self.resize_polycube();
         // println!("Resizing done...");

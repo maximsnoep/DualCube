@@ -45,7 +45,7 @@ impl Layout {
         };
         layout.place_vertices(dual_ref)?;
         layout.place_paths()?;
-        layout.smoothening();
+        // layout.smoothening();
         layout.assign_patches()?;
         Ok(layout)
     }
@@ -628,6 +628,8 @@ impl Layout {
     }
 
     pub fn smoothening(&mut self) {
+        let old_nr_paths = self.edge_to_path.len();
+
         for i in 0..5 {
             println!("Smoothening {i}");
             // For each path, we smoothen the path
@@ -758,5 +760,7 @@ impl Layout {
                 }
             }
         }
+
+        println!("Nr paths: {} -> {}", old_nr_paths, self.edge_to_path.len());
     }
 }
