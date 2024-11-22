@@ -191,9 +191,22 @@ impl Solution {
         self.compute_dual();
         self.compute_polycube();
         self.compute_layout();
-        self.resize_polycube();
-        self.compute_alignment();
-        self.compute_orthogonality();
+        println!("Smoothening done...");
+        println!("Resizing polycube...");
+
+        // if let Some(Ok(layout)) = &mut self.layout {
+        //     layout.smoothening();
+        // }
+        // println!("Done with smoothening (real)");
+
+        // self.resize_polycube();
+        // println!("Resizing done...");
+        // println!("Computing alignment...");
+        // self.compute_alignment();
+        // println!("Alignment done...");
+        // println!("Computing orthogonality...");
+        // self.compute_orthogonality();
+        // println!("Orthogonality done...");
     }
 
     pub fn compute_dual(&mut self) {
@@ -225,12 +238,17 @@ impl Solution {
         if let (Ok(dual), Some(polycube)) = (&self.dual, &self.polycube) {
             for _ in 0..5 {
                 let layout = Layout::embed(dual, polycube);
-                if let Ok(ok_layout) = &layout {
-                    let (score_a, score_b) = ok_layout.score();
-                    let score = score_a + score_b;
-                    if score_a < 0.1 {
+                match &layout {
+                    Ok(ok_layout) => {
+                        let (score_a, score_b) = ok_layout.score();
+                        // let score = score_a + score_b;
+                        // if score_a < 0.1 {
                         self.layout = Some(layout);
                         return;
+                        // }
+                    }
+                    Err(e) => {
+                        println!("Failed to embed layout: {:?}", e);
                     }
                 }
             }

@@ -4,8 +4,8 @@ use crate::{
     ActionEvent, CameraHandles, Configuration, InputResource, SolutionResource,
 };
 use bevy::prelude::*;
-use bevy_egui::egui::{emath::Numeric, text::LayoutJob, Align, Align2, Color32, FontId, Frame, Layout, Slider, TextFormat, TopBottomPanel, Ui, Window};
-use bevy_egui::egui::{CursorIcon, Rounding};
+use bevy_egui::egui::Rounding;
+use bevy_egui::egui::{emath::Numeric, text::LayoutJob, Align, Color32, FontId, Frame, Layout, Slider, TextFormat, TopBottomPanel, Ui, Window};
 use tico::tico;
 
 pub fn setup(mut ui: bevy_egui::EguiContexts) {
@@ -83,18 +83,6 @@ pub fn update(
 
                             ui.separator();
 
-                            bevy_egui::egui::menu::menu_button(ui, "Controls", |ui| {
-                                ui.label("Left click: rotate");
-                                ui.add_space(2.);
-                                ui.label("Right click: pan");
-                                ui.add_space(2.);
-                                ui.label("Scroll: zoom");
-                                ui.add_space(2.);
-                                ui.label("Middle click: reset");
-                            });
-
-                            ui.separator();
-
                             bevy_egui::egui::menu::menu_button(ui, "Info", |ui| {
                                 if mesh_resmut.properties.source.is_empty() {
                                     ui.label("No file loaded.");
@@ -128,15 +116,35 @@ pub fn update(
                                     ));
                                 }
                             });
+
+                            ui.separator();
+
+                            bevy_egui::egui::menu::menu_button(ui, "Controls", |ui| {
+                                ui.label("CAMERA");
+                                ui.add_space(2.);
+                                ui.label("  Rotate: ctrl + right-mouse-drag");
+                                ui.add_space(1.);
+                                ui.label("  Pan: left-mouse-drag");
+                                ui.add_space(1.);
+                                ui.label("  Zoom: mouse-scroll");
+                                ui.add_space(2.);
+                                ui.separator();
+                                ui.add_space(2.);
+                                ui.label("MANUAL");
+                                ui.add_space(2.);
+                                ui.label("  Add loop: right-mouse-click");
+                                ui.add_space(1.);
+                                ui.label("  Delete loop: space + right-mouse-click");
+                            });
                         });
                     });
                 });
 
-                ui.add_space(15.);
+                ui.add_space(5.);
 
                 ui.separator();
 
-                ui.add_space(15.);
+                ui.add_space(5.);
 
                 // SECOND ROW
                 ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {

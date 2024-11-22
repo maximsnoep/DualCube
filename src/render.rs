@@ -307,6 +307,10 @@ pub fn update(
 
                         for path in lay.edge_to_path.values() {
                             for vertexpair in path.windows(2) {
+                                if lay.granulated_mesh.edge_between_verts(vertexpair[0], vertexpair[1]).is_none() {
+                                    println!("Edge between {:?} and {:?} does not exist", vertexpair[0], vertexpair[1]);
+                                    continue;
+                                }
                                 let edge_id = lay.granulated_mesh.edge_between_verts(vertexpair[0], vertexpair[1]).unwrap().0;
                                 let (u_id, v_id) = lay.granulated_mesh.endpoints(edge_id);
                                 let u = lay.granulated_mesh.position(u_id);
@@ -316,7 +320,7 @@ pub fn update(
                                     &mut gizmos_cache.lines,
                                     u,
                                     v,
-                                    n * 0.005,
+                                    n * 0.01,
                                     hutspot::color::BLACK,
                                     &MeshProperties {
                                         source: "layout".to_string(),
@@ -325,6 +329,25 @@ pub fn update(
                                     },
                                 );
                             }
+                        }
+
+                        for edge_id in lay.granulated_mesh.edge_ids() {
+                            let (u_id, v_id) = lay.granulated_mesh.endpoints(edge_id);
+                            let u = lay.granulated_mesh.position(u_id);
+                            let v = lay.granulated_mesh.position(v_id);
+                            let n = lay.granulated_mesh.edge_normal(edge_id);
+                            add_line2(
+                                &mut gizmos_cache.lines,
+                                u,
+                                v,
+                                n * 0.005,
+                                hutspot::color::LIGHT_GRAY,
+                                &MeshProperties {
+                                    source: "input".to_string(),
+                                    scale,
+                                    translation,
+                                },
+                            );
                         }
                     }
                 }
@@ -369,6 +392,7 @@ pub fn update(
                 }
             }
             Objects::MeshAlignmentScore => {
+                return;
                 if let Some(Ok(lay)) = &solution.current_solution.layout {
                     let mut layout_color_map = HashMap::new();
 
@@ -421,6 +445,7 @@ pub fn update(
                 }
             }
             Objects::MeshOrthogonalityScore => {
+                return;
                 if let Some(polycube) = &solution.current_solution.polycube {
                     if let Some(Ok(lay)) = &solution.current_solution.layout {
                         let mut layout_color_map = HashMap::new();

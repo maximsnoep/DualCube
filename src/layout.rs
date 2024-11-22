@@ -1,4 +1,4 @@
-use crate::dual::{to_principal_direction, Dual, LoopStructure, PrincipalDirection, PropertyViolationError};
+use crate::dual::{to_principal_direction, Dual, PrincipalDirection, PropertyViolationError};
 use crate::polycube::{Polycube, PolycubeEdgeID, PolycubeFaceID, PolycubeVertID};
 use crate::{EmbeddedMesh, FaceID, VertID};
 use bimap::BiHashMap;
@@ -9,7 +9,6 @@ use ordered_float::OrderedFloat;
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::Arc;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Copy)]
 pub enum NodeType {
@@ -46,6 +45,7 @@ impl Layout {
         };
         layout.place_vertices(dual_ref)?;
         layout.place_paths()?;
+        layout.smoothening();
         layout.assign_patches()?;
         Ok(layout)
     }
@@ -446,9 +446,9 @@ impl Layout {
                 .sum::<f64>();
 
             let ratio = (actual_score / lowerbound_score) - 1.0;
-            if ratio > 0.5 {
-                return Err(PropertyViolationError::PathTooLong);
-            }
+            // if ratio > 0.5 {
+            //     return Err(PropertyViolationError::PathTooLong);
+            // }
 
             for &v_id in &granulated_path {
                 occupied_vertices.insert(v_id);
@@ -469,7 +469,7 @@ impl Layout {
         Ok(())
     }
 
-    fn assign_patches(&mut self) -> Result<(), PropertyViolationError<PolycubeVertID>> {
+    pub fn assign_patches(&mut self) -> Result<(), PropertyViolationError<PolycubeVertID>> {
         let polycube = &self.polycube_ref;
         // Get all blocked edges (ALL PATHS)
 
@@ -477,7 +477,11 @@ impl Layout {
             .edge_to_path
             .values()
             .flat_map(|path| path.windows(2))
-            .map(|edgepair| self.granulated_mesh.edge_between_verts(edgepair[0], edgepair[1]).unwrap())
+            .map(|edgepair| {
+                self.granulated_mesh
+                    .edge_between_verts(edgepair[0], edgepair[1])
+                    .expect(format!("Edge not found: {:?} {:?}", edgepair[0], edgepair[1]).as_str())
+            })
             .flat_map(|(a, b)| {
                 vec![
                     (self.granulated_mesh.face(a), self.granulated_mesh.face(b)),
@@ -508,6 +512,8 @@ impl Layout {
         // Find all connected components (should be equal to the number of faces)
         let ccs = hutspot::graph::find_ccs(&self.granulated_mesh.faces.keys().collect_vec(), nfunction);
         if ccs.len() != polycube.structure.face_ids().len() {
+            println!("CCS: {:?}", ccs.len());
+            println!("Faces: {:?}", polycube.structure.face_ids().len());
             return Err(PropertyViolationError::PatchesMissing);
         }
 
@@ -619,5 +625,138 @@ impl Layout {
             .sum::<f64>();
 
         (paths_lowerbound, weighted_angle)
+    }
+
+    pub fn smoothening(&mut self) {
+        for i in 0..5 {
+            println!("Smoothening {i}");
+            // For each path, we smoothen the path
+            let keys = self.edge_to_path.keys().cloned().collect_vec();
+            for path_id in keys {
+                // Given a path, we apply the "Triangle flip to geodesics" algorithm
+
+                // First we compute the wedge with the smallest angle
+                let mut min_angle = f64::INFINITY;
+                let mut min_wedge = None;
+                let path = self.edge_to_path.get(&path_id).unwrap();
+                for pair in path.windows(3) {
+                    let (v0, v1, v2) = (pair[0], pair[1], pair[2]);
+                    let (p0, p1, p2) = (
+                        self.granulated_mesh.position(v0),
+                        self.granulated_mesh.position(v1),
+                        self.granulated_mesh.position(v2),
+                    );
+
+                    // First we find the correct side (shortest angle) of the wedge
+
+                    // There are two wedges between v0, v1, v2
+                    let neighbors_of_v1 = self.granulated_mesh.vneighbors(v1);
+
+                    // First wedge is v0 ... v2
+                    let wedge1 = neighbors_of_v1
+                        .clone()
+                        .into_iter()
+                        .cycle()
+                        .skip_while(|&v| v != v0)
+                        .skip(1)
+                        .take_while(|&v| v != v2)
+                        .collect_vec();
+                    let wedge1_full = [v0].into_iter().chain(wedge1.into_iter()).chain([v2].into_iter()).collect_vec();
+                    let wedge1_sum_of_angles = wedge1_full
+                        .windows(2)
+                        .map(|double| {
+                            let (start, end) = (double[0], double[1]);
+                            let (p0, p1, p2) = (
+                                self.granulated_mesh.position(start),
+                                self.granulated_mesh.position(v1),
+                                self.granulated_mesh.position(end),
+                            );
+                            hutspot::geom::calculate_clockwise_angle(p1, p0, p2, (p2 - p1).cross(&(p0 - p1)).normalize())
+                        })
+                        .sum::<f64>();
+
+                    // Second wedge is v2 ... v0
+                    let wedge2 = neighbors_of_v1
+                        .clone()
+                        .into_iter()
+                        .cycle()
+                        .skip_while(|&v| v != v2)
+                        .skip(1)
+                        .take_while(|&v| v != v0)
+                        .collect_vec();
+                    let wedge2_full = [v2].into_iter().chain(wedge2.into_iter()).chain([v0].into_iter()).rev().collect_vec();
+                    let wedge2_sum_of_angles = wedge2_full
+                        .windows(2)
+                        .map(|double| {
+                            let (start, end) = (double[0], double[1]);
+                            let (p0, p1, p2) = (
+                                self.granulated_mesh.position(start),
+                                self.granulated_mesh.position(v1),
+                                self.granulated_mesh.position(end),
+                            );
+                            hutspot::geom::calculate_clockwise_angle(p1, p0, p2, (p2 - p1).cross(&(p0 - p1)).normalize())
+                        })
+                        .sum::<f64>();
+
+                    let (wedge, sum_of_angles) = if wedge1_sum_of_angles < wedge2_sum_of_angles {
+                        (wedge1_full, wedge1_sum_of_angles)
+                    } else {
+                        (wedge2_full, wedge2_sum_of_angles)
+                    };
+
+                    // If any vertices of the wedge are part of any path, we skip this wedge
+                    let occupied_vertices = self.edge_to_path.values().flat_map(|path| path.iter().cloned()).collect::<HashSet<_>>();
+
+                    if wedge[1..wedge.len() - 1].iter().any(|&v| occupied_vertices.contains(&v)) {
+                        continue;
+                    }
+
+                    if sum_of_angles < min_angle {
+                        min_angle = sum_of_angles;
+                        min_wedge = Some(((v0, v1, v2), wedge));
+                    }
+                }
+
+                // println!("min angle: {} ({})", min_angle, min_wedge.is_none());
+
+                if let Some(((v0, v1, v2), mut wedge)) = min_wedge {
+                    if min_angle < std::f64::consts::PI * 0.9 {
+                        // Now we apply flips on the wedge
+                        for i in 1..wedge.len() - 1 {
+                            let (ni_prev, ni, ni_next) = (wedge[i - 1], wedge[i], wedge[i + 1]);
+                            let (p0, p1, p2) = (
+                                self.granulated_mesh.position(ni_prev),
+                                self.granulated_mesh.position(ni),
+                                self.granulated_mesh.position(ni_next),
+                            );
+                            let angle = hutspot::geom::calculate_clockwise_angle(p1, p2, p0, (p0 - p1).cross(&(p2 - p1)).normalize());
+                            if angle < std::f64::consts::PI * 0.9 {
+                                // We flip the triangle
+                                let new_v = self.granulated_mesh.splip_edge(ni, v1);
+                                // make sure edges exist between ni_prev, new_v and new_v, ni_next
+                                wedge[i] = new_v;
+                            }
+                        }
+
+                        // Now we replace the path with the new wedge
+                        let path_before_wedge = path.iter().take_while(|&&v| v != v0).cloned().collect_vec();
+                        let path_after_wedge = path.iter().skip_while(|&&v| v != v2).skip(1).cloned().collect_vec();
+
+                        let new_path = path_before_wedge
+                            .into_iter()
+                            .chain(wedge.clone().into_iter())
+                            .chain(path_after_wedge.into_iter())
+                            .collect_vec();
+
+                        println!("old path: {:?}", path);
+                        println!("new path: {:?}", new_path);
+                        println!("v0 v1 v2: {:?} {:?} {:?}", v0, v1, v2);
+                        println!("wedge: {:?}", wedge);
+
+                        self.edge_to_path.insert(path_id, new_path);
+                    }
+                }
+            }
+        }
     }
 }

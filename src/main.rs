@@ -12,7 +12,9 @@ use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{block_on, AsyncComputeTaskPool, Task};
+use bevy::time::common_conditions::on_timer;
 use bevy::window::WindowMode;
+use bevy::winit::WinitWindows;
 use bevy_egui::EguiPlugin;
 use bevy_mod_raycast::prelude::*;
 use camera::{CameraFor, Objects};
@@ -38,7 +40,8 @@ use std::fs::{self, File};
 use std::io::BufReader;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use winit::window::Icon;
 
 // pub const BACKGROUND_COLOR: bevy::prelude::Color = bevy::prelude::Color::rgb(255. / 255., 255. / 255., 255. / 255.);
 pub const BACKGROUND_COLOR: bevy::prelude::Color = bevy::prelude::Color::srgb(27. / 255., 27. / 255., 27. / 255.);
@@ -203,7 +206,7 @@ fn main() {
         // Load default plugins
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "bevy-test-env".to_string(),
+                title: "polycubes via dual loops".to_string(),
                 mode: WindowMode::BorderlessFullscreen,
                 ..Default::default()
             }),
@@ -221,6 +224,7 @@ fn main() {
         // Setups
         .add_systems(Startup, ui::setup)
         .add_systems(Startup, camera::setup)
+        .add_systems(Startup, set_window_icon)
         // Updates
         .add_systems(Update, ui::update)
         .add_systems(Update, camera::update)
@@ -233,6 +237,25 @@ fn main() {
         // .add_systems(Update, handle_tasks)
         .add_event::<ActionEvent>()
         .run();
+}
+
+fn set_window_icon(
+    // we have to use `NonSend` here
+    windows: NonSend<WinitWindows>,
+) {
+    let image = image::open("assets/logo2.png").expect("Failed to open icon path").into_rgba8();
+
+    let (icon_rgba, icon_width, icon_height) = {
+        let (width, height) = image.dimensions();
+        let rgba = image.into_raw();
+        (rgba, width, height)
+    };
+    let icon = Icon::from_rgba(icon_rgba, icon_width, icon_height).unwrap();
+
+    // do it for all windows
+    for window in windows.windows.values() {
+        window.set_window_icon(Some(icon.clone()));
+    }
 }
 
 pub fn handle_tasks(
