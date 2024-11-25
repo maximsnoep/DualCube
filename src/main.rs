@@ -138,6 +138,7 @@ pub enum ActionEvent {
     ExportState,
     ResetCamera,
     Mutate,
+    Smoothen,
 }
 
 // implement default for KdTree using the New Type Idiom
@@ -206,7 +207,7 @@ fn main() {
         // Load default plugins
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "polycubes via dual loops".to_string(),
+                title: "Bloopy".to_string(),
                 mode: WindowMode::BorderlessFullscreen,
                 ..Default::default()
             }),
@@ -414,7 +415,7 @@ pub fn handle_events(
                     mesh_resmut.flow_graphs[direction as usize] = Graaf::from(nodes.clone(), edges);
                 }
 
-                solution.current_solution.reconstruct_solution();
+                solution.current_solution.reconstruct_solution(false);
             }
             ActionEvent::ExportState => {
                 let path = format!(
@@ -445,6 +446,17 @@ pub fn handle_events(
                     let task = task_pool.spawn(async move { cloned_solution.mutate_del_loop(20) });
                     tasks.generating_chunks.insert(1, task);
                 }
+            }
+            ActionEvent::Smoothen => {
+                let task_pool = AsyncComputeTaskPool::get();
+
+                let mut cloned_solution = solution.current_solution.clone();
+                let task = task_pool.spawn(async move {
+                    cloned_solution.reconstruct_solution(true);
+                    Some(cloned_solution)
+                });
+
+                tasks.generating_chunks.insert(0, task);
             }
         }
     }
@@ -586,7 +598,7 @@ fn raycast(
 
                 let mut new_sol = solution.current_solution.clone();
                 new_sol.del_loop(loop_id);
-                new_sol.reconstruct_solution();
+                new_sol.reconstruct_solution(false);
 
                 solution.current_solution = new_sol;
                 solution.next[0].clear();
@@ -741,7 +753,7 @@ fn raycast(
         edges: best_option,
         direction: configuration.direction,
     });
-    real_solution.reconstruct_solution();
+    real_solution.reconstruct_solution(false);
 
     solution.next[configuration.direction as usize].insert(edgepair, Some(real_solution));
 }

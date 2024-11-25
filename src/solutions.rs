@@ -187,26 +187,13 @@ impl Solution {
             .collect()
     }
 
-    pub fn reconstruct_solution(&mut self) {
+    pub fn reconstruct_solution(&mut self, smoothen: bool) {
         self.compute_dual();
         self.compute_polycube();
-        self.compute_layout();
-        println!("Smoothening done...");
-        println!("Resizing polycube...");
-
-        if let Some(Ok(layout)) = &mut self.layout {
-            layout.smoothening();
-        }
-        println!("Done with smoothening (real)");
-
-        // self.resize_polycube();
-        // println!("Resizing done...");
-        // println!("Computing alignment...");
-        // self.compute_alignment();
-        // println!("Alignment done...");
-        // println!("Computing orthogonality...");
-        // self.compute_orthogonality();
-        // println!("Orthogonality done...");
+        self.compute_layout(smoothen);
+        self.resize_polycube();
+        self.compute_alignment();
+        self.compute_orthogonality();
     }
 
     pub fn compute_dual(&mut self) {
@@ -233,19 +220,19 @@ impl Solution {
         self.layout = None;
     }
 
-    pub fn compute_layout(&mut self) {
+    pub fn compute_layout(&mut self, smoothen: bool) {
         self.layout = None;
         if let (Ok(dual), Some(polycube)) = (&self.dual, &self.polycube) {
             for _ in 0..5 {
-                let layout = Layout::embed(dual, polycube);
+                let layout = Layout::embed(dual, polycube, smoothen);
                 match &layout {
                     Ok(ok_layout) => {
                         let (score_a, score_b) = ok_layout.score();
-                        // let score = score_a + score_b;
-                        // if score_a < 0.1 {
-                        self.layout = Some(layout);
-                        return;
-                        // }
+                        let score = score_a + score_b;
+                        if score_a < 0.1 {
+                            self.layout = Some(layout);
+                            return;
+                        }
                     }
                     Err(e) => {
                         println!("Failed to embed layout: {:?}", e);
@@ -422,7 +409,7 @@ impl Solution {
                 if let Some(new_loop) = self.construct_loop(direction, flow_graphs) {
                     let mut new_solution = self.clone();
                     new_solution.add_loop(Loop { edges: new_loop, direction });
-                    new_solution.reconstruct_solution();
+                    new_solution.reconstruct_solution(false);
 
                     if new_solution.dual.is_ok() && new_solution.polycube.is_some() && new_solution.layout.is_some() {
                         timer.report(&format!(
@@ -450,7 +437,7 @@ impl Solution {
                 real_solution.del_loop(loop_id);
 
                 let timer = Timer::new();
-                real_solution.reconstruct_solution();
+                real_solution.reconstruct_solution(false);
 
                 if real_solution.dual.is_ok() && real_solution.polycube.is_some() && real_solution.layout.is_some() {
                     timer.report(&format!(

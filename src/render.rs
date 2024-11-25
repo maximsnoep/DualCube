@@ -392,7 +392,6 @@ pub fn update(
                 }
             }
             Objects::MeshAlignmentScore => {
-                return;
                 if let Some(Ok(lay)) = &solution.current_solution.layout {
                     let mut layout_color_map = HashMap::new();
 
@@ -445,7 +444,6 @@ pub fn update(
                 }
             }
             Objects::MeshOrthogonalityScore => {
-                return;
                 if let Some(polycube) = &solution.current_solution.polycube {
                     if let Some(Ok(lay)) = &solution.current_solution.layout {
                         let mut layout_color_map = HashMap::new();

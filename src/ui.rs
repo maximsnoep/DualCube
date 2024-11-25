@@ -149,6 +149,16 @@ pub fn update(
                 // SECOND ROW
                 ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
                     ui.add_space(15.);
+                    if ui.button("SMOOTHEN").clicked() {
+                        ev_w.send(ActionEvent::Smoothen);
+                    }
+                });
+
+                ui.add_space(5.);
+
+                // SECOND ROW
+                ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
+                    ui.add_space(15.);
                     if ui.checkbox(&mut conf.should_continue, "AUTO").clicked() && conf.should_continue {
                         ev_w.send(ActionEvent::Mutate);
                         conf.interactive = false;
