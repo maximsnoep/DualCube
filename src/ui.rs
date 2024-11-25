@@ -1,11 +1,9 @@
-use crate::{
-    camera::{CameraFor, Objects},
-    dual::PrincipalDirection,
-    ActionEvent, CameraHandles, Configuration, InputResource, SolutionResource,
-};
+use crate::render::{CameraFor, Objects};
+use crate::{dual::PrincipalDirection, ActionEvent, CameraHandles, Configuration, InputResource, SolutionResource};
 use bevy::prelude::*;
 use bevy_egui::egui::Rounding;
 use bevy_egui::egui::{emath::Numeric, text::LayoutJob, Align, Color32, FontId, Frame, Layout, Slider, TextFormat, TopBottomPanel, Ui, Window};
+use enum_iterator::all;
 use tico::tico;
 
 pub fn setup(mut ui: bevy_egui::EguiContexts) {
@@ -353,14 +351,7 @@ pub fn update(
                 .show(ui, |ui| {
                     bevy_egui::egui::menu::bar(ui, |ui| {
                         bevy_egui::egui::menu::menu_button(ui, String::from(conf.window_shows_object[i]), |ui| {
-                            for object in [
-                                Objects::PolycubeDual,
-                                Objects::PolycubePrimal,
-                                Objects::MeshPolycubeLayout,
-                                Objects::MeshInput,
-                                Objects::MeshAlignmentScore,
-                                Objects::MeshOrthogonalityScore,
-                            ] {
+                            for object in all::<Objects>() {
                                 if ui.button(String::from(object)).clicked() {
                                     conf.window_shows_object[i] = object;
                                 }

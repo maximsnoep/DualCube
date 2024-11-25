@@ -1,11 +1,142 @@
-use crate::camera::Objects;
 use crate::dual::{to_principal_direction, PrincipalDirection, Side};
-use crate::{vec3_to_vector3d, ColorMode, Configuration, InputResource, MainMesh, RenderedMesh, SolutionResource, BACKGROUND_COLOR};
+use crate::{vec3_to_vector3d, Configuration, InputResource, MainMesh, RenderedMesh, SolutionResource, VertID, BACKGROUND_COLOR};
+use crate::{CameraHandles, EmbeddedMesh};
+use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::prelude::*;
+use bevy::render::render_resource::{Extent3d, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages};
+use douconel::douconel::Douconel;
+use douconel::douconel_embedded::HasPosition;
+use enum_iterator::{all, Sequence};
+use hutspot::consts::PI;
 use hutspot::draw::DrawableLine;
 use hutspot::geom::Vector3D;
+use itertools::Itertools;
+use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
+use slotmap::Key;
+use smooth_bevy_cameras::controllers::orbit::{OrbitCameraBundle, OrbitCameraController};
+use std::cmp::Reverse;
 use std::collections::HashMap;
+
+const DEFAULT_CAMERA_EYE: Vec3 = Vec3::new(25.0, 25.0, 35.0);
+const DEFAULT_CAMERA_TARGET: Vec3 = Vec3::new(0., 0., 0.);
+const DEFAULT_CAMERA_TEXTURE_SIZE: u32 = 640;
+
+#[derive(PartialEq, Eq, Hash, Debug, Copy, Clone, Default, Serialize, Deserialize, Sequence)]
+pub enum Objects {
+    MeshDualLoops,
+    #[default]
+    PolycubeDual,
+    PolycubePrimal,
+    MeshPolycubeLayout,
+    MeshInput,
+    MeshAlignmentScore,
+    MeshOrthogonalityScore,
+    Debug,
+}
+
+impl From<Objects> for String {
+    fn from(val: Objects) -> Self {
+        match val {
+            Objects::MeshDualLoops => "dual loops",
+            Objects::PolycubeDual => "polycube (dual)",
+            Objects::PolycubePrimal => "polycube (primal)",
+            Objects::MeshPolycubeLayout => "embedded layout",
+            Objects::MeshInput => "input mesh",
+            Objects::MeshAlignmentScore => "alignment (score)",
+            Objects::MeshOrthogonalityScore => "orthogonality (score)",
+            Objects::Debug => "DEBUG!!!",
+        }
+        .to_owned()
+    }
+}
+
+impl From<Objects> for Vec3 {
+    fn from(val: Objects) -> Self {
+        match val {
+            Objects::MeshDualLoops => Self::new(0., 0., 0.),
+            Objects::PolycubeDual => Self::new(1_000., 0., 0.),
+            Objects::PolycubePrimal => Self::new(1_000., 1_000., 0.),
+            Objects::MeshPolycubeLayout => Self::new(1_000., 1_000., 1_000.),
+            Objects::MeshInput => Self::new(1_000., 0., 1_000.),
+            Objects::MeshAlignmentScore => Self::new(0., 1_000., 0.),
+            Objects::MeshOrthogonalityScore => Self::new(0., 1_000., 1_000.),
+            Objects::Debug => Self::new(0_000., 0_000., 1_000.),
+        }
+    }
+}
+
+#[derive(Component, PartialEq, Eq, Hash, Debug, Copy, Clone, Default, Serialize, Deserialize)]
+pub struct CameraFor(pub Objects);
+
+pub fn reset(commands: &mut Commands, cameras: &Query<Entity, With<Camera>>, images: &mut ResMut<Assets<Image>>, handles: &mut ResMut<CameraHandles>) {
+    for camera in cameras.iter() {
+        commands.entity(camera).despawn();
+    }
+
+    // Main camera. This is the camera that the user can control.
+    commands
+        .spawn(Camera3dBundle {
+            tonemapping: Tonemapping::None,
+            ..default()
+        })
+        .insert((OrbitCameraBundle::new(
+            OrbitCameraController::default(),
+            DEFAULT_CAMERA_EYE + Vec3::from(Objects::MeshDualLoops),
+            DEFAULT_CAMERA_TARGET + Vec3::from(Objects::MeshDualLoops),
+            Vec3::Y,
+        ),))
+        .insert(CameraFor(Objects::MeshDualLoops));
+
+    // Sub cameras. These cameras render to a texture.
+    let mut image = Image {
+        texture_descriptor: TextureDescriptor {
+            label: None,
+            size: Extent3d {
+                width: DEFAULT_CAMERA_TEXTURE_SIZE,
+                height: DEFAULT_CAMERA_TEXTURE_SIZE,
+                ..default()
+            },
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Bgra8UnormSrgb,
+            mip_level_count: 1,
+            sample_count: 1,
+            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST | TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        },
+        ..default()
+    };
+    image.resize(image.texture_descriptor.size);
+
+    for object in all::<Objects>() {
+        let handle = images.add(image.clone());
+        handles.map.insert(CameraFor(object), handle.clone());
+        commands.spawn((
+            Camera3dBundle {
+                camera: Camera {
+                    target: handle.into(),
+                    ..Default::default()
+                },
+                tonemapping: Tonemapping::None,
+                ..default()
+            },
+            CameraFor(object),
+        ));
+    }
+}
+
+pub fn setup(
+    mut commands: Commands,
+    mut images: ResMut<Assets<Image>>,
+    mut handles: ResMut<CameraHandles>,
+    mut config_store: ResMut<GizmoConfigStore>,
+    cameras: Query<Entity, With<Camera>>,
+) {
+    let (config, _) = config_store.config_mut::<DefaultGizmoConfigGroup>();
+    config.line_width = 3.;
+
+    self::reset(&mut commands, &cameras, &mut images, &mut handles);
+}
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct MeshProperties {
@@ -14,7 +145,30 @@ pub struct MeshProperties {
     pub translation: Vector3D,
 }
 
-// This function should be called when the mesh (RenderedMesh or Solution) is changed, to make sure that all odifications are visualized.
+fn get_pbrbundle(mesh: Handle<Mesh>, translation: Vec3, scale: f32, material: &Handle<StandardMaterial>) -> PbrBundle {
+    PbrBundle {
+        mesh,
+        transform: Transform {
+            translation,
+            rotation: Quat::IDENTITY,
+            scale: Vec3::splat(scale),
+        },
+        material: material.clone(),
+        ..default()
+    }
+}
+
+fn get_mesh<VertID: Key, V: Default + HasPosition, EdgeID: Key, E: Default, FaceID: Key, F: Default>(
+    dcel: &Douconel<VertID, V, EdgeID, E, FaceID, F>,
+    color_map: &HashMap<FaceID, [f32; 3]>,
+) -> (Mesh, Vec3, f32) {
+    let mesh = dcel.bevy(color_map);
+    let aabb = mesh.compute_aabb().unwrap();
+    let scale = 10. * (1. / aabb.half_extents.max_element());
+    let translation = (-scale * aabb.center).into();
+    (mesh, translation, scale)
+}
+
 pub fn update(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -26,56 +180,52 @@ pub fn update(
     mut mesh_resmut: ResMut<InputResource>,
     mut solution: ResMut<SolutionResource>,
     mut gizmos_cache: ResMut<GizmosCache>,
+    mut cameras: Query<(&mut Transform, &CameraFor)>,
 ) {
+    let main_transform = cameras.iter().find(|(_, camera_for)| camera_for.0 == Objects::MeshDualLoops).unwrap().0;
+    let normalized_translation = main_transform.translation - Vec3::from(Objects::MeshDualLoops);
+    let normalized_rotation = main_transform.rotation;
+
+    for (mut sub_transform, sub_object) in &mut cameras {
+        sub_transform.translation = normalized_translation + Vec3::from(sub_object.0);
+        sub_transform.rotation = normalized_rotation;
+    }
+
+    // The rest of this function function should only be called when the mesh (RenderedMesh or Solution) is changed.
     if !mesh_resmut.is_changed() && !solution.is_changed() {
         return;
     }
     info!("InputResource or SolutionResource change has been detected. Updating all objects and gizmos.");
 
-    info!("Despawning all current objects and gizmos.");
     for entity in rendered_mesh_query.iter() {
         commands.entity(entity).despawn();
     }
+    info!("Objects despawned.");
+
     gizmos_cache.lines.clear();
+    info!("Gizmos cache cleared.");
 
     if mesh_resmut.mesh.faces.is_empty() {
         warn!("Current mesh is empty.");
         return;
     }
 
-    info!("Drawing all objects and gizmos.");
+    let standard_material = materials.add(StandardMaterial { unlit: true, ..default() });
+    let background_material = materials.add(StandardMaterial {
+        base_color: BACKGROUND_COLOR,
+        unlit: true,
+        ..default()
+    });
 
-    for object in [
-        Objects::MeshDualLoops,
-        Objects::PolycubeDual,
-        Objects::PolycubePrimal,
-        Objects::MeshPolycubeLayout,
-        Objects::MeshInput,
-        Objects::MeshAlignmentScore,
-        Objects::MeshOrthogonalityScore,
-    ] {
-        let offset = object.to_offset();
-
+    for object in all::<Objects>() {
         match object {
             Objects::MeshDualLoops => {
-                let mesh = mesh_resmut.mesh.bevy(&HashMap::new());
-                let aabb = mesh.compute_aabb().unwrap();
-                let scale = 10. * (1. / aabb.half_extents.max_element());
-                let translation = vec3_to_vector3d((-scale * aabb.center).into()) + offset;
+                let (mesh, translation, scale) = get_mesh(&(*mesh_resmut.mesh).clone(), &HashMap::new());
                 mesh_resmut.properties.scale = scale;
-                mesh_resmut.properties.translation = translation;
+                mesh_resmut.properties.translation = vec3_to_vector3d(translation);
 
                 commands.spawn((
-                    MaterialMeshBundle {
-                        mesh: meshes.add(mesh),
-                        transform: Transform {
-                            translation: Vec3::new(translation.x as f32, translation.y as f32, translation.z as f32),
-                            rotation: Quat::from_rotation_z(0f32),
-                            scale: Vec3::splat(scale),
-                        },
-                        material: materials.add(StandardMaterial { unlit: true, ..default() }),
-                        ..default()
-                    },
+                    get_pbrbundle(meshes.add(mesh), translation + Vec3::from(Objects::MeshDualLoops), scale, &standard_material),
                     RenderedMesh,
                     MainMesh,
                 ));
@@ -109,11 +259,8 @@ pub fn update(
                                 v,
                                 offset + n * 0.01,
                                 color,
-                                &MeshProperties {
-                                    source: "dual".to_string(),
-                                    scale,
-                                    translation,
-                                },
+                                translation + Vec3::from(Objects::MeshDualLoops),
+                                scale,
                             );
                         }
                     }
@@ -130,11 +277,8 @@ pub fn update(
                                 v,
                                 n * 0.005,
                                 color,
-                                &MeshProperties {
-                                    source: "dual".to_string(),
-                                    scale,
-                                    translation,
-                                },
+                                translation + Vec3::from(Objects::MeshDualLoops),
+                                scale,
                             );
                         }
                     }
@@ -142,21 +286,10 @@ pub fn update(
             }
             Objects::PolycubeDual => {
                 if let Some(polycube) = &solution.current_solution.polycube.clone() {
-                    let mesh = polycube.structure.bevy(&HashMap::new());
-                    let aabb = mesh.compute_aabb().unwrap();
-                    let scale = 10. * (1. / aabb.half_extents.max_element());
-                    let translation = vec3_to_vector3d((-scale * aabb.center).into()) + offset;
+                    let (mesh, translation, scale) = get_mesh(&polycube.structure.clone(), &HashMap::new());
+
                     commands.spawn((
-                        MaterialMeshBundle {
-                            mesh: meshes.add(mesh),
-                            transform: Transform {
-                                translation: Vec3::new(translation.x as f32, translation.y as f32, translation.z as f32),
-                                rotation: Quat::from_rotation_z(0f32),
-                                scale: Vec3::splat(scale),
-                            },
-                            material: materials.add(StandardMaterial { unlit: true, ..default() }),
-                            ..default()
-                        },
+                        get_pbrbundle(meshes.add(mesh), translation + Vec3::from(object), scale, &standard_material),
                         RenderedMesh,
                     ));
 
@@ -215,7 +348,13 @@ pub fn update(
                                     },
                                 };
 
-                                let line = DrawableLine::from_line(this_centroid, direction_vector, offset + normal * 0.01, translation, scale);
+                                let line = DrawableLine::from_line(
+                                    this_centroid,
+                                    direction_vector,
+                                    offset + normal * 0.01,
+                                    vec3_to_vector3d(translation + Vec3::from(object)),
+                                    scale,
+                                );
                                 let c = direction.to_dual_color_sided(side);
                                 gizmos_cache.lines.push((line.u, line.v, c));
                             }
@@ -227,7 +366,13 @@ pub fn update(
                         let endpoints = polycube.structure.endpoints(edge_id);
                         let u = polycube.structure.position(endpoints.0);
                         let v = polycube.structure.position(endpoints.1);
-                        let line = DrawableLine::from_line(u, v, polycube.structure.normal(polycube.structure.face(edge_id)) * 0.005, translation, scale);
+                        let line = DrawableLine::from_line(
+                            u,
+                            v,
+                            polycube.structure.normal(polycube.structure.face(edge_id)) * 0.005,
+                            vec3_to_vector3d(translation + Vec3::from(object)),
+                            scale,
+                        );
                         let c = hutspot::color::GRAY;
                         gizmos_cache.lines.push((line.u, line.v, c));
                     }
@@ -243,21 +388,10 @@ pub fn update(
                         colormap.insert(face_id, color);
                     }
 
-                    let mesh = polycube.structure.bevy(&colormap);
-                    let aabb = mesh.compute_aabb().unwrap();
-                    let scale = 10. * (1. / aabb.half_extents.max_element());
-                    let translation = vec3_to_vector3d((-scale * aabb.center).into()) + offset;
+                    let (mesh, translation, scale) = get_mesh(&polycube.structure, &colormap);
+
                     commands.spawn((
-                        MaterialMeshBundle {
-                            mesh: meshes.add(mesh),
-                            transform: Transform {
-                                translation: Vec3::new(translation.x as f32, translation.y as f32, translation.z as f32),
-                                rotation: Quat::from_rotation_z(0f32),
-                                scale: Vec3::splat(scale),
-                            },
-                            material: materials.add(StandardMaterial { unlit: true, ..default() }),
-                            ..default()
-                        },
+                        get_pbrbundle(meshes.add(mesh), translation + Vec3::from(object), scale, &standard_material),
                         RenderedMesh,
                     ));
 
@@ -266,7 +400,13 @@ pub fn update(
                         let endpoints = polycube.structure.endpoints(edge_id);
                         let u = polycube.structure.position(endpoints.0);
                         let v = polycube.structure.position(endpoints.1);
-                        let line = DrawableLine::from_line(u, v, polycube.structure.normal(polycube.structure.face(edge_id)) * 0.005, translation, scale);
+                        let line = DrawableLine::from_line(
+                            u,
+                            v,
+                            polycube.structure.normal(polycube.structure.face(edge_id)) * 0.005,
+                            vec3_to_vector3d(translation + Vec3::from(object)),
+                            scale,
+                        );
                         let c = hutspot::color::BLACK;
                         gizmos_cache.lines.push((line.u, line.v, c));
                     }
@@ -286,22 +426,10 @@ pub fn update(
                             }
                         }
 
-                        let layout = lay.granulated_mesh.bevy(&layout_color_map);
-                        let aabb = layout.compute_aabb().unwrap();
-                        let scale = 10. * (1. / aabb.half_extents.max_element());
-                        let translation = vec3_to_vector3d((-scale * aabb.center).into()) + offset;
+                        let (mesh, translation, scale) = get_mesh(&lay.granulated_mesh, &layout_color_map);
 
                         commands.spawn((
-                            MaterialMeshBundle {
-                                mesh: meshes.add(layout),
-                                transform: Transform {
-                                    translation: Vec3::new(translation.x as f32, translation.y as f32, translation.z as f32),
-                                    rotation: Quat::from_rotation_z(0f32),
-                                    scale: Vec3::splat(scale),
-                                },
-                                material: materials.add(StandardMaterial { unlit: true, ..default() }),
-                                ..default()
-                            },
+                            get_pbrbundle(meshes.add(mesh), translation + Vec3::from(object), scale, &standard_material),
                             RenderedMesh,
                         ));
 
@@ -322,53 +450,18 @@ pub fn update(
                                     v,
                                     n * 0.01,
                                     hutspot::color::BLACK,
-                                    &MeshProperties {
-                                        source: "layout".to_string(),
-                                        scale,
-                                        translation,
-                                    },
+                                    translation + Vec3::from(object),
+                                    scale,
                                 );
                             }
-                        }
-
-                        for edge_id in lay.granulated_mesh.edge_ids() {
-                            let (u_id, v_id) = lay.granulated_mesh.endpoints(edge_id);
-                            let u = lay.granulated_mesh.position(u_id);
-                            let v = lay.granulated_mesh.position(v_id);
-                            let n = lay.granulated_mesh.edge_normal(edge_id);
-                            add_line2(
-                                &mut gizmos_cache.lines,
-                                u,
-                                v,
-                                n * 0.005,
-                                hutspot::color::LIGHT_GRAY,
-                                &MeshProperties {
-                                    source: "input".to_string(),
-                                    scale,
-                                    translation,
-                                },
-                            );
                         }
                     }
                 }
             }
             Objects::MeshInput => {
-                let mesh = mesh_resmut.mesh.bevy(&HashMap::new());
-                let aabb = mesh.compute_aabb().unwrap();
-                let scale = 10. * (1. / aabb.half_extents.max_element());
-                let translation = vec3_to_vector3d((-scale * aabb.center).into()) + offset;
-
+                let (mesh, translation, scale) = get_mesh(&(*mesh_resmut.mesh).clone(), &HashMap::new());
                 commands.spawn((
-                    MaterialMeshBundle {
-                        mesh: meshes.add(mesh),
-                        transform: Transform {
-                            translation: Vec3::new(translation.x as f32, translation.y as f32, translation.z as f32),
-                            rotation: Quat::from_rotation_z(0f32),
-                            scale: Vec3::splat(scale),
-                        },
-                        material: materials.add(StandardMaterial { unlit: true, ..default() }),
-                        ..default()
-                    },
+                    get_pbrbundle(meshes.add(mesh), translation + Vec3::from(object), scale, &standard_material),
                     RenderedMesh,
                 ));
 
@@ -383,11 +476,8 @@ pub fn update(
                         v,
                         n * 0.005,
                         hutspot::color::WHITE,
-                        &MeshProperties {
-                            source: "input".to_string(),
-                            scale,
-                            translation,
-                        },
+                        translation + Vec3::from(object),
+                        scale,
                     );
                 }
             }
@@ -401,22 +491,9 @@ pub fn update(
                         layout_color_map.insert(triangle_id, color);
                     }
 
-                    let layout = lay.granulated_mesh.bevy(&layout_color_map);
-                    let aabb = layout.compute_aabb().unwrap();
-                    let scale = 10. * (1. / aabb.half_extents.max_element());
-                    let translation = vec3_to_vector3d((-scale * aabb.center).into()) + offset;
-
+                    let (mesh, translation, scale) = get_mesh(&lay.granulated_mesh, &layout_color_map);
                     commands.spawn((
-                        MaterialMeshBundle {
-                            mesh: meshes.add(layout),
-                            transform: Transform {
-                                translation: Vec3::new(translation.x as f32, translation.y as f32, translation.z as f32),
-                                rotation: Quat::from_rotation_z(0f32),
-                                scale: Vec3::splat(scale),
-                            },
-                            material: materials.add(StandardMaterial { unlit: true, ..default() }),
-                            ..default()
-                        },
+                        get_pbrbundle(meshes.add(mesh), translation + Vec3::from(object), scale, &standard_material),
                         RenderedMesh,
                     ));
 
@@ -433,11 +510,8 @@ pub fn update(
                                 v,
                                 n * 0.005,
                                 hutspot::color::BLACK,
-                                &MeshProperties {
-                                    source: "layout".to_string(),
-                                    scale,
-                                    translation,
-                                },
+                                translation + Vec3::from(object),
+                                scale,
                             );
                         }
                     }
@@ -456,22 +530,9 @@ pub fn update(
                             }
                         }
 
-                        let layout = lay.granulated_mesh.bevy(&layout_color_map);
-                        let aabb = layout.compute_aabb().unwrap();
-                        let scale = 10. * (1. / aabb.half_extents.max_element());
-                        let translation = vec3_to_vector3d((-scale * aabb.center).into()) + offset;
-
+                        let (mesh, translation, scale) = get_mesh(&lay.granulated_mesh, &layout_color_map);
                         commands.spawn((
-                            MaterialMeshBundle {
-                                mesh: meshes.add(layout),
-                                transform: Transform {
-                                    translation: Vec3::new(translation.x as f32, translation.y as f32, translation.z as f32),
-                                    rotation: Quat::from_rotation_z(0f32),
-                                    scale: Vec3::splat(scale),
-                                },
-                                material: materials.add(StandardMaterial { unlit: true, ..default() }),
-                                ..default()
-                            },
+                            get_pbrbundle(meshes.add(mesh), translation + Vec3::from(object), scale, &standard_material),
                             RenderedMesh,
                         ));
 
@@ -488,44 +549,170 @@ pub fn update(
                                     v,
                                     n * 0.005,
                                     hutspot::color::BLACK,
-                                    &MeshProperties {
-                                        source: "layout".to_string(),
-                                        scale,
-                                        translation,
-                                    },
+                                    translation + Vec3::from(object),
+                                    scale,
                                 );
                             }
                         }
                     }
                 }
             }
-        }
-    }
+            Objects::Debug => {
+                if let Some(polycube) = &solution.current_solution.polycube {
+                    if let Some(Ok(lay)) = &solution.current_solution.layout {
+                        let mut layout_color_map = HashMap::new();
 
-    // Spawning covers such that the objects are seperated from each other.
-    for object in [
-        Objects::MeshDualLoops,
-        Objects::PolycubeDual,
-        Objects::PolycubePrimal,
-        Objects::MeshPolycubeLayout,
-        Objects::MeshInput,
-        Objects::MeshAlignmentScore,
-        Objects::MeshOrthogonalityScore,
-    ] {
-        let offset = object.to_offset();
+                        for &face_id in &polycube.structure.face_ids() {
+                            let normal = (polycube.structure.normal(face_id) as Vector3D).normalize();
+                            let (dir, side) = to_principal_direction(normal);
+                            let color = dir.to_primal_color_sided(side);
+                            for &triangle_id in &lay.face_to_patch[&face_id].faces {
+                                layout_color_map.insert(triangle_id, color);
+                            }
+                        }
+
+                        let (mesh, translation, scale) = get_mesh(&lay.granulated_mesh, &layout_color_map);
+
+                        commands.spawn((
+                            get_pbrbundle(meshes.add(mesh), translation + Vec3::from(object), scale, &standard_material),
+                            RenderedMesh,
+                        ));
+
+                        for path_id in lay.edge_to_path.keys() {
+                            // Calculate alpha for each vertex in the path.
+                            // A path is geodesic if alpha is > 180 degrees (pi) for each vertex
+                            // Any vertex with alpha < 180 degrees is a candidate for smoothing
+                            let mut wedges = priority_queue::PriorityQueue::new();
+
+                            fn calculate_alpha(v1: VertID, v2: VertID, v3: VertID, mesh: &EmbeddedMesh) -> f64 {
+                                let (p1, p2, p3) = (mesh.position(v1), mesh.position(v2), mesh.position(v3));
+                                let normal = mesh.vert_normal(v2);
+                                hutspot::geom::calculate_clockwise_angle(p2, p1, p3, normal)
+                            }
+
+                            // Every vertex is defined by a wedge of 3 vertices
+                            let path = lay.edge_to_path.get(&path_id).unwrap();
+                            for pair in path.windows(3) {
+                                // First we find the correct side (shortest angle/alpha) of the wedge
+                                // There are two wedges between a, b, c
+                                let (a, b, c) = (pair[0], pair[1], pair[2]);
+                                let (wedge1, wedge2) = lay.granulated_mesh.wedges(a, b, c);
+                                let alpha_wedge1 = wedge1
+                                    .clone()
+                                    .into_iter()
+                                    .tuple_windows()
+                                    .map(|(v1, v2)| calculate_alpha(v1, b, v2, &lay.granulated_mesh))
+                                    .sum::<f64>();
+                                let alpha_wedge2 = wedge2
+                                    .clone()
+                                    .into_iter()
+                                    .tuple_windows()
+                                    .map(|(v1, v2)| calculate_alpha(v1, b, v2, &lay.granulated_mesh))
+                                    .sum::<f64>();
+
+                                if alpha_wedge1 < alpha_wedge2 {
+                                    wedges.push((wedge1, b, false), Reverse(OrderedFloat(alpha_wedge1)));
+                                } else {
+                                    wedges.push((wedge2, b, true), Reverse(OrderedFloat(alpha_wedge2)));
+                                }
+                            }
+
+                            let color = if let Some(worst_wedge) = wedges.peek() {
+                                if worst_wedge.1 .0.abs() < PI * 0.9 {
+                                    hutspot::color::ORANGE
+                                } else {
+                                    hutspot::color::BLACK
+                                }
+                            } else {
+                                hutspot::color::BLACK
+                            };
+
+                            for vertexpair in path.windows(2) {
+                                if lay.granulated_mesh.edge_between_verts(vertexpair[0], vertexpair[1]).is_none() {
+                                    println!("Edge between {:?} and {:?} does not exist", vertexpair[0], vertexpair[1]);
+                                    continue;
+                                }
+                                let edge_id = lay.granulated_mesh.edge_between_verts(vertexpair[0], vertexpair[1]).unwrap().0;
+                                let (u_id, v_id) = lay.granulated_mesh.endpoints(edge_id);
+                                let u = lay.granulated_mesh.position(u_id);
+                                let v = lay.granulated_mesh.position(v_id);
+                                let n = lay.granulated_mesh.edge_normal(edge_id);
+                                add_line2(&mut gizmos_cache.lines, u, v, n * 0.01, color, translation + Vec3::from(object), scale);
+                            }
+
+                            if color == hutspot::color::ORANGE {
+                                break;
+                            }
+                        }
+
+                        // for path in lay.edge_to_path.values() {
+                        //     for vertexpair in path.windows(2) {
+                        //         if lay.granulated_mesh.edge_between_verts(vertexpair[0], vertexpair[1]).is_none() {
+                        //             println!("Edge between {:?} and {:?} does not exist", vertexpair[0], vertexpair[1]);
+                        //             continue;
+                        //         }
+                        //         let edge_id = lay.granulated_mesh.edge_between_verts(vertexpair[0], vertexpair[1]).unwrap().0;
+                        //         let (u_id, v_id) = lay.granulated_mesh.endpoints(edge_id);
+                        //         let u = lay.granulated_mesh.position(u_id);
+                        //         let v = lay.granulated_mesh.position(v_id);
+                        //         let n = lay.granulated_mesh.edge_normal(edge_id);
+                        //         add_line2(
+                        //             &mut gizmos_cache.lines,
+                        //             u,
+                        //             v,
+                        //             n * 0.01,
+                        //             hutspot::color::BLACK,
+                        //             translation + Vec3::from(object),
+                        //             scale,
+                        //         );
+                        //     }
+                        // }
+
+                        for edge_id in lay.granulated_mesh.edge_ids() {
+                            let (u_id, v_id) = lay.granulated_mesh.endpoints(edge_id);
+                            let u = lay.granulated_mesh.position(u_id);
+                            let v = lay.granulated_mesh.position(v_id);
+                            let n = lay.granulated_mesh.edge_normal(edge_id);
+                            add_line2(
+                                &mut gizmos_cache.lines,
+                                u,
+                                v,
+                                n * 0.005,
+                                hutspot::color::LIGHT_GRAY,
+                                translation + Vec3::from(object),
+                                scale,
+                            );
+                        }
+
+                        // for edge_id in mesh_resmut.mesh.edge_ids() {
+                        //     let (u_id, v_id) = mesh_resmut.mesh.endpoints(edge_id);
+                        //     let u = mesh_resmut.mesh.position(u_id);
+                        //     let v = mesh_resmut.mesh.position(v_id);
+                        //     let n = mesh_resmut.mesh.edge_normal(edge_id);
+                        //     add_line2(
+                        //         &mut gizmos_cache.lines,
+                        //         u,
+                        //         v,
+                        //         n * 0.008,
+                        //         hutspot::color::LIGHT_GRAY,
+                        //         translation + Vec3::from(object),
+                        //         scale,
+                        //     );
+                        // }
+                    }
+                }
+            }
+        }
+
+        // Spawning covers such that the objects are view-blocked.
         commands.spawn((
             PbrBundle {
                 mesh: meshes.add(Sphere::new(400.)),
                 transform: Transform {
-                    translation: Vec3::new(offset.x as f32, offset.y as f32, offset.z as f32),
+                    translation: Vec3::from(object),
                     ..default()
                 },
-                material: materials.add(StandardMaterial {
-                    base_color: BACKGROUND_COLOR,
-                    unlit: true,
-                    ..default()
-                }),
-
+                material: background_material.clone(),
                 ..default()
             },
             RenderedMesh,
@@ -538,10 +725,11 @@ pub struct GizmosCache {
     pub lines: Vec<Line>,
     pub raycaster: Vec<Line>,
 }
+
 type Line = (Vec3, Vec3, hutspot::color::Color);
 
-// Draws the gizmos. This includes the wireframe, vertices, normals, and raycasts, etc.
-pub fn gizmos(mut gizmos: Gizmos, gizmos_cache: Res<GizmosCache>, solution: Res<SolutionResource>, configuration: Res<Configuration>) {
+// Draws the gizmos. This includes all wireframes, vertices, normals, raycasts, etc.
+pub fn gizmos(mut gizmos: Gizmos, gizmos_cache: Res<GizmosCache>, configuration: Res<Configuration>) {
     for &(u, v, c) in &gizmos_cache.lines {
         gizmos.line(u, v, Color::srgb(c[0], c[1], c[2]));
     }
@@ -553,12 +741,20 @@ pub fn gizmos(mut gizmos: Gizmos, gizmos_cache: Res<GizmosCache>, solution: Res<
     }
 }
 
-pub fn add_line(lines: &mut Vec<Line>, position: Vector3D, normal: Vector3D, length: f32, color: hutspot::color::Color, props: &MeshProperties) {
-    let line = DrawableLine::from_vertex(position, normal, length, props.translation, props.scale);
+pub fn add_line(lines: &mut Vec<Line>, position: Vector3D, normal: Vector3D, length: f32, color: hutspot::color::Color, translation: Vec3, scale: f32) {
+    let line = DrawableLine::from_vertex(position, normal, length, vec3_to_vector3d(translation), scale);
     lines.push((line.u, line.v, color));
 }
 
-pub fn add_line2(lines: &mut Vec<Line>, position_a: Vector3D, position_b: Vector3D, offset: Vector3D, color: hutspot::color::Color, props: &MeshProperties) {
-    let line = DrawableLine::from_line(position_a, position_b, offset, props.translation, props.scale);
+pub fn add_line2(
+    lines: &mut Vec<Line>,
+    position_a: Vector3D,
+    position_b: Vector3D,
+    offset: Vector3D,
+    color: hutspot::color::Color,
+    translation: Vec3,
+    scale: f32,
+) {
+    let line = DrawableLine::from_line(position_a, position_b, offset, vec3_to_vector3d(translation), scale);
     lines.push((line.u, line.v, color));
 }

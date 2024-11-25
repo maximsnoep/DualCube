@@ -196,6 +196,14 @@ impl Solution {
         self.compute_orthogonality();
     }
 
+    pub fn smoothen(&mut self) {
+        self.layout.as_mut().unwrap().as_mut().unwrap().smoothening();
+        self.layout.as_mut().unwrap().as_mut().unwrap().assign_patches().unwrap();
+        self.resize_polycube();
+        self.compute_alignment();
+        self.compute_orthogonality();
+    }
+
     pub fn compute_dual(&mut self) {
         if self.count_loops_in_direction(PrincipalDirection::X) > 0
             && self.count_loops_in_direction(PrincipalDirection::Y) > 0

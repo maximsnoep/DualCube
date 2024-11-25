@@ -1,4 +1,3 @@
-mod camera;
 mod dual;
 mod graph;
 mod layout;
@@ -12,12 +11,10 @@ use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{block_on, AsyncComputeTaskPool, Task};
-use bevy::time::common_conditions::on_timer;
 use bevy::window::WindowMode;
 use bevy::winit::WinitWindows;
 use bevy_egui::EguiPlugin;
 use bevy_mod_raycast::prelude::*;
-use camera::{CameraFor, Objects};
 use douconel::douconel::Douconel;
 use douconel::{douconel::Empty, douconel_embedded::EmbeddedVertex};
 use dual::PrincipalDirection;
@@ -28,19 +25,17 @@ use kdtree::distance::squared_euclidean;
 use kdtree::KdTree;
 use ordered_float::OrderedFloat;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use render::{add_line, add_line2, GizmosCache, MeshProperties};
+use render::{add_line, add_line2, CameraFor, GizmosCache, MeshProperties, Objects};
 use serde::{Deserialize, Serialize};
 use smooth_bevy_cameras::controllers::orbit::OrbitCameraPlugin;
 use smooth_bevy_cameras::LookTransformPlugin;
 use solutions::{Loop, Solution};
 use std::collections::HashMap;
-use std::fmt::Display;
-use std::fmt::Formatter;
 use std::fs::{self, File};
 use std::io::BufReader;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 use winit::window::Icon;
 
 // pub const BACKGROUND_COLOR: bevy::prelude::Color = bevy::prelude::Color::rgb(255. / 255., 255. / 255., 255. / 255.);
@@ -64,8 +59,6 @@ pub struct Configuration {
 
     pub sides_mask: [u32; 3],
 
-    pub color_mode: ColorMode,
-
     pub fps: f64,
     pub raycasted: Option<[EdgeID; 2]>,
     pub selected: Option<[EdgeID; 2]>,
@@ -79,24 +72,6 @@ pub struct Configuration {
     pub window_has_size: [f32; 4],
 
     pub camera_speed: f32,
-}
-
-#[derive(Copy, Clone, Default, PartialEq, Eq, Debug, Hash, Serialize, Deserialize)]
-pub enum ColorMode {
-    #[default]
-    Default,
-    Alignment,
-    Orthogonality,
-}
-
-impl Display for ColorMode {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Default => write!(f, "Default"),
-            Self::Alignment => write!(f, "Alignment"),
-            Self::Orthogonality => write!(f, "Orthogonality"),
-        }
-    }
 }
 
 // Updates the FPS counter in `configuration`.
@@ -224,11 +199,10 @@ fn main() {
         .add_plugins(OrbitCameraPlugin::default())
         // Setups
         .add_systems(Startup, ui::setup)
-        .add_systems(Startup, camera::setup)
+        .add_systems(Startup, render::setup)
         .add_systems(Startup, set_window_icon)
         // Updates
         .add_systems(Update, ui::update)
-        .add_systems(Update, camera::update)
         .add_systems(Update, render::update)
         .add_systems(Update, render::gizmos)
         .add_systems(Update, handle_events)
@@ -309,7 +283,7 @@ pub fn handle_events(
     mut tasks: ResMut<Tasks>,
 
     mut commands: Commands,
-    cameras: Query<Entity, With<CameraFor>>,
+    cameras: Query<Entity, With<Camera>>,
 
     mut images: ResMut<Assets<Image>>,
     mut camera_handles: ResMut<CameraHandles>,
@@ -432,7 +406,7 @@ pub fn handle_events(
                 fs::write(&PathBuf::from(path), serde_json::to_string(&state).unwrap());
             }
             ActionEvent::ResetCamera => {
-                camera::reset(&mut commands, &cameras, &mut images, &mut camera_handles);
+                render::reset(&mut commands, &cameras, &mut images, &mut camera_handles);
             }
             ActionEvent::Mutate => {
                 let task_pool = AsyncComputeTaskPool::get();
@@ -452,7 +426,7 @@ pub fn handle_events(
 
                 let mut cloned_solution = solution.current_solution.clone();
                 let task = task_pool.spawn(async move {
-                    cloned_solution.reconstruct_solution(true);
+                    cloned_solution.smoothen();
                     Some(cloned_solution)
                 });
 
@@ -538,7 +512,12 @@ fn raycast(
         normal,
         0.1,
         configuration.direction.to_dual_color(),
-        &mesh_resmut.properties,
+        Vec3::new(
+            mesh_resmut.properties.translation.x as f32,
+            mesh_resmut.properties.translation.y as f32,
+            mesh_resmut.properties.translation.z as f32,
+        ),
+        mesh_resmut.properties.scale,
     );
 
     for (&edgepair, sol) in &solution.next[configuration.direction as usize] {
@@ -549,7 +528,19 @@ fn raycast(
             Some(_) => configuration.direction.to_dual_color(),
             None => hutspot::color::BLACK.into(),
         };
-        add_line2(&mut gizmos_cache.raycaster, u, v, n * 0.01, color, &mesh_resmut.properties);
+        add_line2(
+            &mut gizmos_cache.raycaster,
+            u,
+            v,
+            n * 0.01,
+            color,
+            Vec3::new(
+                mesh_resmut.properties.translation.x as f32,
+                mesh_resmut.properties.translation.y as f32,
+                mesh_resmut.properties.translation.z as f32,
+            ),
+            mesh_resmut.properties.scale,
+        )
     }
 
     // Match the selected verts of the selected triangle (face of three vertices).
@@ -640,7 +631,19 @@ fn raycast(
                         let u = mesh_resmut.mesh.midpoint(edgepair[0]);
                         let v = mesh_resmut.mesh.midpoint(edgepair[1]);
                         let n = mesh_resmut.mesh.edge_normal(edgepair[0]);
-                        add_line2(&mut gizmos_cache.raycaster, u, v, n * 0.05, color, &mesh_resmut.properties);
+                        add_line2(
+                            &mut gizmos_cache.raycaster,
+                            u,
+                            v,
+                            n * 0.05,
+                            color,
+                            Vec3::new(
+                                mesh_resmut.properties.translation.x as f32,
+                                mesh_resmut.properties.translation.y as f32,
+                                mesh_resmut.properties.translation.z as f32,
+                            ),
+                            mesh_resmut.properties.scale,
+                        );
                     }
                 }
 
