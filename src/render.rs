@@ -584,10 +584,11 @@ pub fn update(
                             // Any vertex with alpha < 180 degrees is a candidate for smoothing
                             let mut wedges = priority_queue::PriorityQueue::new();
 
-                            fn calculate_alpha(v1: VertID, v2: VertID, v3: VertID, mesh: &EmbeddedMesh) -> f64 {
-                                let (p1, p2, p3) = (mesh.position(v1), mesh.position(v2), mesh.position(v3));
-                                let normal = mesh.vert_normal(v2);
-                                hutspot::geom::calculate_clockwise_angle(p2, p1, p3, normal)
+                            fn calculate_alpha(a: VertID, b: VertID, c: VertID, mesh: &EmbeddedMesh) -> f64 {
+                                let face = mesh.face_with_verts(&[a, b, c]).unwrap();
+                                let normal = mesh.normal(face);
+                                let (a_pos, b_pos, c_pos) = (mesh.position(a), mesh.position(b), mesh.position(c));
+                                hutspot::geom::calculate_clockwise_angle(b_pos, a_pos, c_pos, normal)
                             }
 
                             // Every vertex is defined by a wedge of 3 vertices
@@ -618,7 +619,9 @@ pub fn update(
                             }
 
                             let color = if let Some(worst_wedge) = wedges.peek() {
-                                if worst_wedge.1 .0.abs() < PI * 0.9 {
+                                println!("Worst wedge: {:?}", worst_wedge);
+
+                                if worst_wedge.1 .0.abs() < PI * 0.85 {
                                     hutspot::color::ORANGE
                                 } else {
                                     hutspot::color::BLACK

@@ -652,10 +652,12 @@ impl Layout {
             // Any vertex with alpha < 180 degrees is a candidate for smoothing
             let mut wedges = priority_queue::PriorityQueue::new();
 
-            fn calculate_alpha(v1: VertID, v2: VertID, v3: VertID, mesh: &EmbeddedMesh) -> f64 {
-                let (p1, p2, p3) = (mesh.position(v1), mesh.position(v2), mesh.position(v3));
-                let normal = mesh.vert_normal(v2);
-                hutspot::geom::calculate_clockwise_angle(p2, p1, p3, normal)
+            //
+            fn calculate_alpha(a: VertID, b: VertID, c: VertID, mesh: &EmbeddedMesh) -> f64 {
+                let face = mesh.face_with_verts(&[a, b, c]).unwrap();
+                let normal = mesh.normal(face);
+                let (a_pos, b_pos, c_pos) = (mesh.position(a), mesh.position(b), mesh.position(c));
+                hutspot::geom::calculate_clockwise_angle(b_pos, a_pos, c_pos, normal)
             }
 
             // Every vertex is defined by a wedge of 3 vertices
@@ -665,6 +667,11 @@ impl Layout {
                 // There are two wedges between a, b, c
                 let (a, b, c) = (pair[0], pair[1], pair[2]);
                 let (wedge1, wedge2) = self.granulated_mesh.wedges(a, b, c);
+
+                if self.granulated_mesh.distance(a, b) < 1e-3 || self.granulated_mesh.distance(b, c) < 1e-3 {
+                    continue;
+                }
+
                 let alpha_wedge1 = wedge1
                     .clone()
                     .into_iter()
@@ -686,75 +693,71 @@ impl Layout {
             }
 
             if let Some(worst_wedge) = wedges.peek() {
-                if worst_wedge.1 .0.abs() < PI * 0.9 {
+                if worst_wedge.1 .0.abs() < PI * 0.85 {
                     println!("Smoothing path {:?} (worst wedge: {:?})", path_id, worst_wedge.1);
 
-                    loop {
-                        if let Some(((mut wedge, b, reverse), cost)) = wedges.pop() {
-                            let path = self.edge_to_path.get(&path_id).unwrap();
-                            if !path.contains(&wedge[0]) || !path.contains(&wedge[wedge.len() - 1]) {
-                                continue;
-                            }
+                    while let Some(((mut wedge, b, reverse), cost)) = wedges.pop() {
+                        let path = self.edge_to_path.get(&path_id).unwrap();
+                        if !path.contains(&wedge[0]) || !path.contains(&wedge[wedge.len() - 1]) {
+                            continue;
+                        }
 
-                            // Now we apply flips on the wedge
-                            let mut changed = true;
-                            while changed {
-                                changed = false;
-                                for i in 1..wedge.len() - 1 {
-                                    let (ni_prev, ni_cur, ni_next) = (wedge[i - 1], wedge[i], wedge[i + 1]);
-                                    let (p_prev, p_cur, p_next) = (
-                                        self.granulated_mesh.position(ni_prev),
-                                        self.granulated_mesh.position(ni_cur),
-                                        self.granulated_mesh.position(ni_next),
-                                    );
-                                    let normal = -self.granulated_mesh.vert_normal(ni_cur);
-                                    let angle = hutspot::geom::calculate_clockwise_angle(p_cur, p_prev, p_next, normal);
-                                    println!("{i}: Angle: {angle:?}");
-                                    if angle < std::f64::consts::PI {
-                                        // We flip the triangle
-                                        if let Some(new_v) = self.granulated_mesh.splip_edge(ni_cur, b) {
-                                            wedge[i] = new_v;
-                                            changed = true;
-                                            break;
-                                        }
+                        // Now we apply flips on the wedge
+                        let mut changed = true;
+                        while changed {
+                            changed = false;
+                            for i in 1..wedge.len() - 1 {
+                                let (ni_prev, ni_cur, ni_next) = (wedge[i - 1], wedge[i], wedge[i + 1]);
+                                let angle =
+                                    calculate_alpha(ni_next, ni_cur, b, &self.granulated_mesh) + calculate_alpha(b, ni_cur, ni_prev, &self.granulated_mesh);
+                                println!("{i}: Angle: {angle:?}");
+                                if angle < 0.85 * std::f64::consts::PI
+                                    && self.granulated_mesh.distance(ni_prev, ni_cur) > 1e-3
+                                    && self.granulated_mesh.distance(ni_cur, ni_next) > 1e-3
+                                {
+                                    // We flip the triangle
+                                    if let Some(new_v) = self.granulated_mesh.splip_edge(ni_cur, b) {
+                                        wedge[i] = new_v;
+                                        changed = new_v != ni_cur && new_v != b;
                                     }
                                 }
                             }
-
-                            // Now we update the path
-                            if reverse {
-                                wedge.reverse();
-                            }
-
-                            println!(" adding wedge: {:?}", wedge);
-
-                            let path = self.edge_to_path.get(&path_id).unwrap().clone();
-
-                            println!(" path id: {:?}", path_id);
-                            println!(" path: {:?}", path);
-
-                            for pair in path.windows(2) {
-                                // does the edge exist?
-                                let edgepair = self.granulated_mesh.edge_between_verts(pair[0], pair[1]);
-                                assert!(edgepair.is_some(), "Edge not found: {:?} {:?} path id: {:?}", pair[0], pair[1], path_id);
-                            }
-
-                            let path_before_wedge = path.iter().take_while(|&&v| v != *wedge.first().unwrap()).copied().collect_vec();
-                            let path_after_wedge = path.iter().skip_while(|&&v| v != *wedge.last().unwrap()).skip(1).copied().collect_vec();
-
-                            let new_path = path_before_wedge.into_iter().chain(wedge).chain(path_after_wedge.into_iter()).collect_vec();
-
-                            let old_length = path.windows(2).map(|pair| self.granulated_mesh.distance(pair[0], pair[1])).sum::<f64>();
-                            let new_length = new_path.windows(2).map(|pair| self.granulated_mesh.distance(pair[0], pair[1])).sum::<f64>();
-
-                            println!("Old length: {:?}, new length: {:?}", old_length, new_length);
-
-                            self.edge_to_path.insert(path_id, new_path.clone());
-                            self.edge_to_path
-                                .insert(self.polycube_ref.structure.twin(path_id), new_path.iter().rev().copied().collect_vec());
                         }
-                        return;
+
+                        // Now we update the path
+                        if reverse {
+                            wedge.reverse();
+                        }
+
+                        println!(" adding wedge: {:?}", wedge);
+
+                        let path = self.edge_to_path.get(&path_id).unwrap().clone();
+
+                        println!(" path id: {:?}", path_id);
+                        println!(" path: {:?}", path);
+
+                        for pair in path.windows(2) {
+                            // does the edge exist?
+                            let edgepair = self.granulated_mesh.edge_between_verts(pair[0], pair[1]);
+                            assert!(edgepair.is_some(), "Edge not found: {:?} {:?} path id: {:?}", pair[0], pair[1], path_id);
+                        }
+
+                        let path_before_wedge = path.iter().take_while(|&&v| v != *wedge.first().unwrap()).copied().collect_vec();
+                        let path_after_wedge = path.iter().skip_while(|&&v| v != *wedge.last().unwrap()).skip(1).copied().collect_vec();
+
+                        let new_path = path_before_wedge.into_iter().chain(wedge).chain(path_after_wedge.into_iter()).collect_vec();
+
+                        let old_length = path.windows(2).map(|pair| self.granulated_mesh.distance(pair[0], pair[1])).sum::<f64>();
+                        let new_length = new_path.windows(2).map(|pair| self.granulated_mesh.distance(pair[0], pair[1])).sum::<f64>();
+
+                        println!("Old length: {:?}, new length: {:?}", old_length, new_length);
+
+                        self.edge_to_path.insert(path_id, new_path.clone());
+                        self.edge_to_path
+                            .insert(self.polycube_ref.structure.twin(path_id), new_path.iter().rev().copied().collect_vec());
                     }
+
+                    return;
                 }
             }
         }
