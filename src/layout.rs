@@ -652,14 +652,6 @@ impl Layout {
             // Any vertex with alpha < 180 degrees is a candidate for smoothing
             let mut wedges = priority_queue::PriorityQueue::new();
 
-            //
-            fn calculate_alpha(a: VertID, b: VertID, c: VertID, mesh: &EmbeddedMesh) -> f64 {
-                let face = mesh.face_with_verts(&[a, b, c]).unwrap();
-                let normal = mesh.normal(face);
-                let (a_pos, b_pos, c_pos) = (mesh.position(a), mesh.position(b), mesh.position(c));
-                hutspot::geom::calculate_clockwise_angle(b_pos, a_pos, c_pos, normal)
-            }
-
             // Every vertex is defined by a wedge of 3 vertices
             let path = self.edge_to_path.get(&path_id).unwrap();
             for pair in path.windows(3) {
@@ -676,13 +668,13 @@ impl Layout {
                     .clone()
                     .into_iter()
                     .tuple_windows()
-                    .map(|(v1, v2)| calculate_alpha(v1, b, v2, &self.granulated_mesh))
+                    .map(|(v1, v2)| self.granulated_mesh.vertex_angle(v1, b, v2))
                     .sum::<f64>();
                 let alpha_wedge2 = wedge2
                     .clone()
                     .into_iter()
                     .tuple_windows()
-                    .map(|(v1, v2)| calculate_alpha(v1, b, v2, &self.granulated_mesh))
+                    .map(|(v1, v2)| self.granulated_mesh.vertex_angle(v1, b, v2))
                     .sum::<f64>();
 
                 if alpha_wedge1 < alpha_wedge2 {
@@ -693,7 +685,7 @@ impl Layout {
             }
 
             if let Some(worst_wedge) = wedges.peek() {
-                if worst_wedge.1 .0.abs() < PI * 0.85 {
+                if worst_wedge.1 .0.abs() < PI * 0.9 {
                     println!("Smoothing path {:?} (worst wedge: {:?})", path_id, worst_wedge.1);
 
                     while let Some(((mut wedge, b, reverse), cost)) = wedges.pop() {
@@ -708,10 +700,9 @@ impl Layout {
                             changed = false;
                             for i in 1..wedge.len() - 1 {
                                 let (ni_prev, ni_cur, ni_next) = (wedge[i - 1], wedge[i], wedge[i + 1]);
-                                let angle =
-                                    calculate_alpha(ni_next, ni_cur, b, &self.granulated_mesh) + calculate_alpha(b, ni_cur, ni_prev, &self.granulated_mesh);
+                                let angle = self.granulated_mesh.vertex_angle(ni_next, ni_cur, b) + self.granulated_mesh.vertex_angle(ni_prev, ni_cur, b);
                                 println!("{i}: Angle: {angle:?}");
-                                if angle < 0.85 * std::f64::consts::PI
+                                if angle < std::f64::consts::PI * 0.9
                                     && self.granulated_mesh.distance(ni_prev, ni_cur) > 1e-3
                                     && self.granulated_mesh.distance(ni_cur, ni_next) > 1e-3
                                 {
@@ -747,6 +738,36 @@ impl Layout {
 
                         let new_path = path_before_wedge.into_iter().chain(wedge).chain(path_after_wedge.into_iter()).collect_vec();
 
+                        for pair in new_path.windows(3) {
+                            // First we find the correct side (shortest angle/alpha) of the wedge
+                            // There are two wedges between a, b, c
+                            let (a, b, c) = (pair[0], pair[1], pair[2]);
+                            let (wedge1, wedge2) = self.granulated_mesh.wedges(a, b, c);
+
+                            if self.granulated_mesh.distance(a, b) < 1e-3 || self.granulated_mesh.distance(b, c) < 1e-3 {
+                                continue;
+                            }
+
+                            let alpha_wedge1 = wedge1
+                                .clone()
+                                .into_iter()
+                                .tuple_windows()
+                                .map(|(v1, v2)| self.granulated_mesh.vertex_angle(v1, b, v2))
+                                .sum::<f64>();
+                            let alpha_wedge2 = wedge2
+                                .clone()
+                                .into_iter()
+                                .tuple_windows()
+                                .map(|(v1, v2)| self.granulated_mesh.vertex_angle(v1, b, v2))
+                                .sum::<f64>();
+
+                            if alpha_wedge1 < alpha_wedge2 {
+                                wedges.push((wedge1, b, false), Reverse(OrderedFloat(alpha_wedge1)));
+                            } else {
+                                wedges.push((wedge2, b, true), Reverse(OrderedFloat(alpha_wedge2)));
+                            }
+                        }
+
                         let old_length = path.windows(2).map(|pair| self.granulated_mesh.distance(pair[0], pair[1])).sum::<f64>();
                         let new_length = new_path.windows(2).map(|pair| self.granulated_mesh.distance(pair[0], pair[1])).sum::<f64>();
 
@@ -756,9 +777,9 @@ impl Layout {
                         self.edge_to_path
                             .insert(self.polycube_ref.structure.twin(path_id), new_path.iter().rev().copied().collect_vec());
                     }
-
-                    return;
                 }
+
+                return;
             }
         }
     }

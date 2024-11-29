@@ -584,13 +584,6 @@ pub fn update(
                             // Any vertex with alpha < 180 degrees is a candidate for smoothing
                             let mut wedges = priority_queue::PriorityQueue::new();
 
-                            fn calculate_alpha(a: VertID, b: VertID, c: VertID, mesh: &EmbeddedMesh) -> f64 {
-                                let face = mesh.face_with_verts(&[a, b, c]).unwrap();
-                                let normal = mesh.normal(face);
-                                let (a_pos, b_pos, c_pos) = (mesh.position(a), mesh.position(b), mesh.position(c));
-                                hutspot::geom::calculate_clockwise_angle(b_pos, a_pos, c_pos, normal)
-                            }
-
                             // Every vertex is defined by a wedge of 3 vertices
                             let path = lay.edge_to_path.get(&path_id).unwrap();
                             for pair in path.windows(3) {
@@ -598,17 +591,22 @@ pub fn update(
                                 // There are two wedges between a, b, c
                                 let (a, b, c) = (pair[0], pair[1], pair[2]);
                                 let (wedge1, wedge2) = lay.granulated_mesh.wedges(a, b, c);
+
+                                if lay.granulated_mesh.distance(a, b) < 1e-6 || lay.granulated_mesh.distance(b, c) < 1e-6 {
+                                    continue;
+                                }
+
                                 let alpha_wedge1 = wedge1
                                     .clone()
                                     .into_iter()
                                     .tuple_windows()
-                                    .map(|(v1, v2)| calculate_alpha(v1, b, v2, &lay.granulated_mesh))
+                                    .map(|(v1, v2)| lay.granulated_mesh.vertex_angle(v1, b, v2))
                                     .sum::<f64>();
                                 let alpha_wedge2 = wedge2
                                     .clone()
                                     .into_iter()
                                     .tuple_windows()
-                                    .map(|(v1, v2)| calculate_alpha(v1, b, v2, &lay.granulated_mesh))
+                                    .map(|(v1, v2)| lay.granulated_mesh.vertex_angle(v1, b, v2))
                                     .sum::<f64>();
 
                                 if alpha_wedge1 < alpha_wedge2 {
@@ -621,7 +619,17 @@ pub fn update(
                             let color = if let Some(worst_wedge) = wedges.peek() {
                                 println!("Worst wedge: {:?}", worst_wedge);
 
-                                if worst_wedge.1 .0.abs() < PI * 0.85 {
+                                if worst_wedge.1 .0.abs() < PI * 0.9 {
+                                    add_line(
+                                        &mut gizmos_cache.lines,
+                                        lay.granulated_mesh.position(worst_wedge.0 .1),
+                                        lay.granulated_mesh.vert_normal(worst_wedge.0 .1),
+                                        0.1,
+                                        hutspot::color::RED,
+                                        translation + Vec3::from(object),
+                                        scale,
+                                    );
+
                                     hutspot::color::ORANGE
                                 } else {
                                     hutspot::color::BLACK
