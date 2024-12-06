@@ -121,13 +121,39 @@ impl Solution {
             self.occupied.get_mut(e).unwrap().push(loop_id);
         }
 
-        for [e0, e1] in self.get_pairs_of_loop(loop_id) {
-            if let Some(l) = self.is_occupied([e0, e1]) {
-                assert!(l == loop_id, "Loop: {loop_id:?} already occupied by {l:?} on edge {:?}", [e0, e1]);
-            }
-        }
+        // for [e0, e1] in self.get_pairs_of_loop(loop_id) {
+        //     if let Some(l) = self.is_occupied([e0, e1]) {
+        //         assert!(l == loop_id, "Loop: {loop_id:?} already occupied by {l:?} on edge {:?}", [e0, e1]);
+        //     }
+        // }
 
         loop_id
+    }
+
+    pub fn get_coordinates_of_loop_in_edge(&self, l: LoopID, e: EdgeID) -> Vector3D {
+        let loops_in_edge = self.loops_on_edge(e);
+        // sort based on the global order of the loops
+        // ... todo
+        // get the index of the edge in the loop
+        let edge_index = self.loops[l].edges.iter().position(|&e2| e2 == e).unwrap();
+        let incoming_or_outgoing = edge_index % 2 == 0;
+        // find the index of the loop in the sorted list
+        let i = {
+            if incoming_or_outgoing {
+                loops_in_edge.iter().position(|&l2| l2 == l).unwrap() as f64
+            } else {
+                loops_in_edge.iter().rev().position(|&l2| l2 == l).unwrap() as f64
+            }
+        };
+        // compute the coordinates, based on the index
+        let n = loops_in_edge.len() as f64;
+        let offset = (i + 1.) / (n + 1.);
+        // define the loop segment, starting point is p, ending point is q
+        let (startpoint, endpoint) = self.mesh_ref.endpoints(e);
+        let p = self.mesh_ref.position(startpoint);
+        let q = self.mesh_ref.position(endpoint);
+        // compute the coordinates
+        p + offset * (q - p)
     }
 
     pub fn count_loops_in_direction(&self, direction: PrincipalDirection) -> usize {
@@ -188,6 +214,10 @@ impl Solution {
     }
 
     pub fn reconstruct_solution(&mut self, smoothen: bool) {
+        self.dual = Err(PropertyViolationError::default());
+        self.polycube = None;
+        self.layout = None;
+
         self.compute_dual();
         self.compute_polycube();
         self.compute_layout(smoothen);
@@ -205,17 +235,7 @@ impl Solution {
     }
 
     pub fn compute_dual(&mut self) {
-        if self.count_loops_in_direction(PrincipalDirection::X) > 0
-            && self.count_loops_in_direction(PrincipalDirection::Y) > 0
-            && self.count_loops_in_direction(PrincipalDirection::Z) > 0
-        {
-            let dual = Dual::from(self.mesh_ref.clone(), &self.loops);
-            self.dual = dual;
-        } else {
-            self.dual = Err(PropertyViolationError::MissingDirection);
-        }
-        self.polycube = None;
-        self.layout = None;
+        self.dual = Dual::from(self.mesh_ref.clone(), &self.loops);
     }
 
     pub fn compute_polycube(&mut self) {

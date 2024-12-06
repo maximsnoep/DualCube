@@ -463,22 +463,6 @@ fn raycast(
         return;
     }
 
-    if keyboard.pressed(KeyCode::ControlLeft) {
-        return;
-    }
-
-    for ev in evr_motion.read() {
-        if (ev.delta.x.abs() + ev.delta.y.abs()) > 2. {
-            return;
-        }
-    }
-
-    for ev in evr_scroll.read() {
-        if (ev.x.abs() + ev.y.abs()) > 0. {
-            return;
-        }
-    }
-
     if !configuration.interactive || cursor_ray.is_none() {
         return;
     }
@@ -543,6 +527,22 @@ fn raycast(
         )
     }
 
+    if keyboard.pressed(KeyCode::ControlLeft) {
+        return;
+    }
+
+    for ev in evr_motion.read() {
+        if (ev.delta.x.abs() + ev.delta.y.abs()) > 2. {
+            return;
+        }
+    }
+
+    for ev in evr_scroll.read() {
+        if (ev.x.abs() + ev.y.abs()) > 0. {
+            return;
+        }
+    }
+
     // Match the selected verts of the selected triangle (face of three vertices).
     if intersection.triangle().is_none() {
         return;
@@ -564,6 +564,34 @@ fn raycast(
             .unwrap()
     })
     .collect_vec();
+
+    if let Ok(dual) = &solution.current_solution.dual {
+        let targeted_zone = dual
+            .zones
+            .iter()
+            .filter(|(_, zone)| zone.direction == configuration.direction)
+            .find(|(_, zone)| {
+                zone.regions
+                    .iter()
+                    .any(|&region_id| dual.loop_structure.faces[region_id].verts.iter().any(|&face| face == verts[0]))
+                    && zone
+                        .regions
+                        .iter()
+                        .any(|&region_id| dual.loop_structure.faces[region_id].verts.iter().any(|&face| face == verts[1]))
+                    && zone
+                        .regions
+                        .iter()
+                        .any(|&region_id| dual.loop_structure.faces[region_id].verts.iter().any(|&face| face == verts[2]))
+            });
+
+        println!("{:?}", targeted_zone);
+
+        if let Some((zone_id, zone)) = targeted_zone {
+            let loops = dual.zone_to_loops(zone_id);
+
+            println!("{:?}", loops);
+        }
+    }
 
     // Match the selected face.
     if mesh_resmut.mesh.face_with_verts(&verts).is_none() {
@@ -682,17 +710,18 @@ fn raycast(
     timer.reset();
 
     let filter = |(a, b): (&[EdgeID; 2], &[EdgeID; 2])| {
-        !occupied.contains(a)
-            && !occupied.contains(b)
-            && [a[0], a[1], b[0], b[1]].iter().all(|&edge| {
-                solution
-                    .current_solution
-                    .loops_on_edge(edge)
-                    .iter()
-                    .filter(|&&loop_id| solution.current_solution.loop_to_direction(loop_id) == configuration.direction)
-                    .count()
-                    == 0
-            })
+        // !occupied.contains(a)
+        //     && !occupied.contains(b)
+        //     && [a[0], a[1], b[0], b[1]].iter().all(|&edge| {
+        //         solution
+        //             .current_solution
+        //             .loops_on_edge(edge)
+        //             .iter()
+        //             .filter(|&&loop_id| solution.current_solution.loop_to_direction(loop_id) == configuration.direction)
+        //             .count()
+        //             == 0
+        //     })
+        true
     };
 
     let g_original = &mesh_resmut.flow_graphs[configuration.direction as usize];

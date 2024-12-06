@@ -234,6 +234,7 @@ impl Dual {
         let intersections = dual.loop_intersections(loops)?;
         let faces = dual.loop_faces(&intersections)?;
         let loop_segments = dual.loop_segments(loops, &intersections);
+
         dual.assign_loop_structure(&faces, &intersections, &loop_segments)?;
         dual.assign_subsurfaces()?;
         dual.verify_properties_and_assign_sides(loops)?;
@@ -265,13 +266,23 @@ impl Dual {
         self.loop_structure.edges[segment].direction
     }
 
+    pub fn zone_to_loops(&self, zone: ZoneID) -> Vec<LoopID> {
+        let direction = self.zones[zone].direction;
+        let segments = self.zones[zone].regions.iter().flat_map(|&region| self.loop_structure.edges(region));
+        let segments_of_direction = segments.filter(|&segment| self.loop_structure.edges[segment].direction == direction);
+        let loops_of_direction = segments_of_direction
+            .map(|segment| self.loop_structure.edges[segment].loop_id)
+            .collect::<HashSet<_>>();
+        loops_of_direction.into_iter().collect()
+    }
+
     pub fn segment_to_side(&self, segment: SegmentID, mask: [u32; 3]) -> Side {
         let cc = self.side_ccs[self.loop_structure.edges[segment].direction as usize]
             .iter()
             .position(|cc| cc.contains(&segment))
             .unwrap() as u8;
 
-        let side = self.loop_structure.edges[segment].side.clone().unwrap();
+        let side = self.loop_structure.edges[segment].side.unwrap();
 
         if mask[self.loop_structure.edges[segment].direction as usize] & (1 << cc) == 1 {
             side.flip()
