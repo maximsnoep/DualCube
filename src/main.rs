@@ -38,8 +38,8 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use winit::window::Icon;
 
-// pub const BACKGROUND_COLOR: bevy::prelude::Color = bevy::prelude::Color::rgb(255. / 255., 255. / 255., 255. / 255.);
-pub const BACKGROUND_COLOR: bevy::prelude::Color = bevy::prelude::Color::srgb(27. / 255., 27. / 255., 27. / 255.);
+pub const BACKGROUND_COLOR: bevy::prelude::Color = bevy::prelude::Color::rgb(255. / 255., 255. / 255., 255. / 255.);
+// pub const BACKGROUND_COLOR: bevy::prelude::Color = bevy::prelude::Color::srgb(27. / 255., 27. / 255., 27. / 255.);
 
 slotmap::new_key_type! {
     pub struct VertID;

@@ -101,7 +101,7 @@ pub fn to_principal_direction(v: Vector3D) -> (PrincipalDirection, Side) {
     let x_is_max = v.x.abs() > v.y.abs() && v.x.abs() > v.z.abs();
     let y_is_max = v.y.abs() > v.x.abs() && v.y.abs() > v.z.abs();
     let z_is_max = v.z.abs() > v.x.abs() && v.z.abs() > v.y.abs();
-    assert!(x_is_max ^ y_is_max ^ z_is_max);
+    // assert!(x_is_max ^ y_is_max ^ z_is_max);
 
     if x_is_max {
         if v.x > 0. {

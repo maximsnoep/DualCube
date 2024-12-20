@@ -3,6 +3,7 @@ use crate::{vec3_to_vector3d, Configuration, InputResource, MainMesh, RenderedMe
 use crate::{CameraHandles, EmbeddedMesh};
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::prelude::*;
+use bevy::render::camera::ScalingMode;
 use bevy::render::render_resource::{Extent3d, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages};
 use douconel::douconel::Douconel;
 use douconel::douconel_embedded::HasPosition;
@@ -111,17 +112,36 @@ pub fn reset(commands: &mut Commands, cameras: &Query<Entity, With<Camera>>, ima
     for object in all::<Objects>() {
         let handle = images.add(image.clone());
         handles.map.insert(CameraFor(object), handle.clone());
-        commands.spawn((
-            Camera3dBundle {
-                camera: Camera {
-                    target: handle.into(),
-                    ..Default::default()
+        if object == Objects::PolycubeDual || object == Objects::PolycubePrimal {
+            commands.spawn((
+                Camera3dBundle {
+                    camera: Camera {
+                        target: handle.into(),
+                        ..Default::default()
+                    },
+                    projection: bevy::prelude::Projection::Orthographic(OrthographicProjection {
+                        // 6 world units per window height.
+                        scaling_mode: ScalingMode::FixedVertical(30.0),
+                        ..default()
+                    }),
+                    tonemapping: Tonemapping::None,
+                    ..default()
                 },
-                tonemapping: Tonemapping::None,
-                ..default()
-            },
-            CameraFor(object),
-        ));
+                CameraFor(object),
+            ));
+        } else {
+            commands.spawn((
+                Camera3dBundle {
+                    camera: Camera {
+                        target: handle.into(),
+                        ..Default::default()
+                    },
+                    tonemapping: Tonemapping::None,
+                    ..default()
+                },
+                CameraFor(object),
+            ));
+        }
     }
 }
 
@@ -134,6 +154,7 @@ pub fn setup(
 ) {
     let (config, _) = config_store.config_mut::<DefaultGizmoConfigGroup>();
     config.line_width = 3.;
+    // config.line_perspective = true;
 
     self::reset(&mut commands, &cameras, &mut images, &mut handles);
 }
@@ -275,7 +296,7 @@ pub fn update(
                                 &mut gizmos_cache.lines,
                                 u,
                                 v,
-                                n * 0.005,
+                                n * 0.01,
                                 color,
                                 translation + Vec3::from(Objects::MeshDualLoops),
                                 scale,
