@@ -292,6 +292,22 @@ pub fn update(
                         }
                     }
                 }
+
+                for edge_id in mesh_resmut.mesh.edge_ids() {
+                    let (u_id, v_id) = mesh_resmut.mesh.endpoints(edge_id);
+                    let u = mesh_resmut.mesh.position(u_id);
+                    let v = mesh_resmut.mesh.position(v_id);
+                    let n = mesh_resmut.mesh.edge_normal(edge_id);
+                    add_line2(
+                        &mut gizmos_cache.lines,
+                        u,
+                        v,
+                        n * 0.005,
+                        hutspot::color::GRAY,
+                        translation + Vec3::from(object),
+                        scale,
+                    );
+                }
             }
             Objects::PolycubeDual => {
                 if let Some(polycube) = &solution.current_solution.polycube.clone() {
@@ -723,7 +739,34 @@ pub fn update(
                 }
             }
             Objects::Debug2 => {
-                let (mesh, translation, scale) = get_mesh(&(*mesh_resmut.mesh).clone(), &HashMap::new());
+                let mut color_map = HashMap::new();
+
+                if let Ok(dual) = &solution.current_solution.dual {
+                    for (zone_id, zone) in &dual.zones {
+                        let dir = zone.direction;
+                        if dir != configuration.direction {
+                            continue;
+                        }
+                        let color = dir.to_dual_color();
+                        let rand1 = (rand::random::<f32>() - 0.5) / 10.;
+                        let rand2 = (rand::random::<f32>() - 0.5) / 10.;
+                        let rand3 = (rand::random::<f32>() - 0.5) / 10.;
+                        let rand_color = [color[0] + rand1, color[1] + rand2, color[2] + rand3];
+
+                        for &region_id in &zone.regions {
+                            let region = &dual.loop_structure.faces[region_id];
+                            let verts_in_region = &region.verts;
+
+                            for vert_id in verts_in_region {
+                                for face_id in mesh_resmut.mesh.star(*vert_id) {
+                                    color_map.insert(face_id, rand_color);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let (mesh, translation, scale) = get_mesh(&(*mesh_resmut.mesh).clone(), &color_map);
                 mesh_resmut.properties.scale = scale;
                 mesh_resmut.properties.translation = vec3_to_vector3d(translation);
 
@@ -759,21 +802,6 @@ pub fn update(
 
                             let n = mesh_resmut.mesh.edge_normal(edgepair[0]);
                             add_line2(&mut gizmos_cache.lines, u, v, offset + n * 0.01, color, translation + Vec3::from(object), scale);
-                        }
-                    }
-
-                    for (zone_id, zone) in &dual.zones {
-                        for &region_id in &zone.regions {
-                            let dir = zone.direction;
-                            let color = dir.to_dual_color();
-                            let region = &dual.loop_structure.faces[region_id];
-                            let verts_in_region = &region.verts;
-
-                            for vert in verts_in_region {
-                                let pos = mesh_resmut.mesh.position(*vert);
-                                let n = mesh_resmut.mesh.vert_normal(*vert);
-                                add_line(&mut gizmos_cache.lines, pos, n, 0.1, color, translation + Vec3::from(object), scale);
-                            }
                         }
                     }
                 } else {

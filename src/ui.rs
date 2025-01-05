@@ -186,6 +186,9 @@ pub fn update(
                             );
                         }
 
+                        // add slider for alpha (or 1-beta)
+                        slider(ui, "alpha", &mut conf.alpha, 0.0..=1.0);
+
                         if let Some(edgepair) = conf.selected {
                             if let Some(Some(sol)) = solution.next[conf.direction as usize].get(&edgepair) {
                                 ui.label("DUAL[");

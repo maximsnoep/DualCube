@@ -1,6 +1,7 @@
+use graph_cycles::Cycles;
 use itertools::Itertools;
 use ordered_float::{FloatCore, OrderedFloat};
-use petgraph::algo::{astar, Measure};
+use petgraph::algo::{astar, tarjan_scc, Measure};
 use petgraph::{graph::NodeIndex, Directed, Graph};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -84,11 +85,26 @@ impl<V: Eq + PartialEq + Hash + Default + Copy, E: Copy> Graaf<V, E> {
             .neighbors(a)
             .map(|b| (a, b))
             .filter_map(|(a, b)| {
-                let extra = measure(self.petgraph.edges_connecting(a, b).next().unwrap().weight().to_owned());
+                let extra = measure(self.get_weight(a, b));
                 let path = self.shortest_path(b, a, measure);
                 path.map(|(cost, path)| (path, cost + extra))
             })
             .min_by_key(|(_, cost)| OrderedFloat(cost.to_owned()))
             .map(|(path, _)| path)
+    }
+
+    pub fn get_weight(&self, a: NodeIndex, b: NodeIndex) -> E {
+        self.petgraph.edges_connecting(a, b).next().unwrap().weight().to_owned()
+    }
+
+    pub fn all_cycles(&self) -> Vec<Vec<NodeIndex>> {
+        self.petgraph.cycles()
+    }
+
+    pub fn cc(&self) -> Vec<Vec<V>> {
+        tarjan_scc(&self.petgraph)
+            .into_iter()
+            .map(|cc| cc.into_iter().map(|index| self.index_to_node(index).unwrap().to_owned()).collect_vec())
+            .collect_vec()
     }
 }

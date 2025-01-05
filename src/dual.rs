@@ -201,6 +201,7 @@ pub enum PropertyViolationError<IntersectionID> {
     LoopStructureError(MeshError<IntersectionID>),
     PathTooLong,
     PathEmpty,
+    DisconnectedLoop,
 }
 
 #[derive(Debug)]
@@ -254,16 +255,51 @@ impl Dual {
     }
 
     pub fn segment_to_edges(&self, segment: SegmentID) -> Vec<EdgeID> {
-        [
-            vec![self.loop_structure.edges[segment].start],
-            self.loop_structure.edges[segment].between.clone(),
-            vec![self.loop_structure.edges[segment].end],
-        ]
-        .concat()
+        let mut start = vec![self.loop_structure.edges[segment].start];
+        let between = self.loop_structure.edges[segment].between.clone();
+        let mut end = vec![self.loop_structure.edges[segment].end];
+
+        let edges = [start, between, end].concat();
+
+        let mut fixed_edges = vec![];
+
+        for edge_pair in edges.windows(2) {
+            let (from, to) = (edge_pair[0], edge_pair[1]);
+
+            // they are either twins, or they share a face
+            let they_are_twins = self.mesh_ref.twin(from) == to;
+            let they_share_face = self.mesh_ref.face(from) == self.mesh_ref.face(to);
+
+            if they_are_twins || they_share_face {
+                fixed_edges.push(from);
+            } else {
+                // there is an edge missing between them.
+                // this missing edge is either the twin of from or the twin of to.
+                let candidate_missing1 = self.mesh_ref.twin(from);
+                let candidate_missing2 = self.mesh_ref.twin(to);
+
+                // the true missing edge is the one that is twin to one and shares face with the other.
+                let candidate_missing1_is_true = self.mesh_ref.face(candidate_missing1) == self.mesh_ref.face(to);
+                let candidate_missing2_is_true = self.mesh_ref.face(candidate_missing2) == self.mesh_ref.face(from);
+                assert!(candidate_missing1_is_true ^ candidate_missing2_is_true);
+
+                let missing = if candidate_missing1_is_true { candidate_missing1 } else { candidate_missing2 };
+
+                fixed_edges.push(from);
+                fixed_edges.push(missing);
+            }
+        }
+        fixed_edges.push(edges[edges.len() - 1]);
+
+        fixed_edges
     }
 
     pub fn segment_to_direction(&self, segment: SegmentID) -> PrincipalDirection {
         self.loop_structure.edges[segment].direction
+    }
+
+    pub fn zone_to_segments(&self, zone: ZoneID) -> Vec<SegmentID> {
+        self.zones[zone].regions.iter().flat_map(|&region| self.loop_structure.edges(region)).collect()
     }
 
     pub fn zone_to_loops(&self, zone: ZoneID) -> Vec<LoopID> {
@@ -289,6 +325,10 @@ impl Dual {
         } else {
             side
         }
+    }
+
+    pub fn segment_to_label(&self, segment: SegmentID) -> PrincipalDirection {
+        self.loop_structure.edges[segment].direction
     }
 
     pub fn filter_direction(&self, selection: &[SegmentID], direction: PrincipalDirection) -> Vec<SegmentID> {
@@ -500,6 +540,11 @@ impl Dual {
             })
             .collect();
 
+        // If any loop has no intersections, we return an error
+        if loop_to_intersections.values().any(|x| x.is_empty()) {
+            return Err(PropertyViolationError::DisconnectedLoop);
+        }
+
         // For each intersection:
         //   We find its (4) next intersections by following its associated loops
         let mut intersections = HashMap::new();
@@ -550,8 +595,7 @@ impl Dual {
                     })
                     .collect_vec();
 
-                assert!(!(nexts.len() < 4), "Should simply be impossible {nexts:?} (len: {})", nexts.len());
-                if nexts.len() > 4 {
+                if nexts.len() != 4 {
                     return Err(PropertyViolationError::NonSimpleIntersection);
                 }
                 for next in &nexts {
