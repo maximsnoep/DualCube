@@ -34,6 +34,7 @@ pub enum Objects {
     MeshAlignmentScore,
     MeshOrthogonalityScore,
     Debug,
+    Debug2,
 }
 
 impl From<Objects> for String {
@@ -47,6 +48,7 @@ impl From<Objects> for String {
             Objects::MeshAlignmentScore => "alignment (score)",
             Objects::MeshOrthogonalityScore => "orthogonality (score)",
             Objects::Debug => "DEBUG!!!",
+            Objects::Debug2 => "DEBUG2!!!",
         }
         .to_owned()
     }
@@ -63,6 +65,7 @@ impl From<Objects> for Vec3 {
             Objects::MeshAlignmentScore => Self::new(0., 1_000., 0.),
             Objects::MeshOrthogonalityScore => Self::new(0., 1_000., 1_000.),
             Objects::Debug => Self::new(0_000., 0_000., 1_000.),
+            Objects::Debug2 => Self::new(0_000., 0_000., -1_000.),
         }
     }
 }
@@ -154,7 +157,6 @@ pub fn setup(
 ) {
     let (config, _) = config_store.config_mut::<DefaultGizmoConfigGroup>();
     config.line_width = 3.;
-    // config.line_perspective = true;
 
     self::reset(&mut commands, &cameras, &mut images, &mut handles);
 }
@@ -201,15 +203,20 @@ pub fn update(
     mut mesh_resmut: ResMut<InputResource>,
     mut solution: ResMut<SolutionResource>,
     mut gizmos_cache: ResMut<GizmosCache>,
-    mut cameras: Query<(&mut Transform, &CameraFor)>,
+    mut cameras: Query<(&mut Transform, &mut Projection, &CameraFor)>,
 ) {
-    let main_transform = cameras.iter().find(|(_, camera_for)| camera_for.0 == Objects::MeshDualLoops).unwrap().0;
+    let main_transform = cameras.iter().find(|(_, _, camera_for)| camera_for.0 == Objects::MeshDualLoops).unwrap().0;
     let normalized_translation = main_transform.translation - Vec3::from(Objects::MeshDualLoops);
     let normalized_rotation = main_transform.rotation;
 
-    for (mut sub_transform, sub_object) in &mut cameras {
+    let distance = normalized_translation.length();
+
+    for (mut sub_transform, mut sub_projection, sub_object) in &mut cameras {
         sub_transform.translation = normalized_translation + Vec3::from(sub_object.0);
         sub_transform.rotation = normalized_rotation;
+        if let Projection::Orthographic(orthographic) = sub_projection.as_mut() {
+            orthographic.scaling_mode = ScalingMode::FixedVertical(distance);
+        }
     }
 
     // The rest of this function function should only be called when the mesh (RenderedMesh or Solution) is changed.
@@ -273,6 +280,9 @@ pub fn update(
                         for edgepair in solution.current_solution.get_pairs_of_sequence(&dual.segment_to_edges(segment_id)) {
                             let u = mesh_resmut.mesh.midpoint(edgepair[0]);
                             let v = mesh_resmut.mesh.midpoint(edgepair[1]);
+                            // let u = solution.current_solution.get_coordinates_of_loop_in_edge(loop_id, edgepair[0]);
+                            // let v = solution.current_solution.get_coordinates_of_loop_in_edge(loop_id, edgepair[1]);
+
                             let n = mesh_resmut.mesh.edge_normal(edgepair[0]);
                             add_line2(
                                 &mut gizmos_cache.lines,
@@ -289,8 +299,11 @@ pub fn update(
                     for loop_id in solution.current_solution.loops.keys() {
                         let color = solution.current_solution.loop_to_direction(loop_id).to_dual_color();
                         for edgepair in solution.current_solution.get_pairs_of_loop(loop_id) {
-                            let u = mesh_resmut.mesh.midpoint(edgepair[0]);
-                            let v = mesh_resmut.mesh.midpoint(edgepair[1]);
+                            // let u = mesh_resmut.mesh.midpoint(edgepair[0]);
+                            // let v = mesh_resmut.mesh.midpoint(edgepair[1]);
+                            let u = solution.current_solution.get_coordinates_of_loop_in_edge(loop_id, edgepair[0]);
+                            let v = solution.current_solution.get_coordinates_of_loop_in_edge(loop_id, edgepair[1]);
+
                             let n = mesh_resmut.mesh.edge_normal(edgepair[0]);
                             add_line2(
                                 &mut gizmos_cache.lines,
@@ -304,6 +317,22 @@ pub fn update(
                         }
                     }
                 }
+
+                // for edge_id in mesh_resmut.mesh.edge_ids() {
+                //     let (u_id, v_id) = mesh_resmut.mesh.endpoints(edge_id);
+                //     let u = mesh_resmut.mesh.position(u_id);
+                //     let v = mesh_resmut.mesh.position(v_id);
+                //     let n = mesh_resmut.mesh.edge_normal(edge_id);
+                //     add_line2(
+                //         &mut gizmos_cache.lines,
+                //         u,
+                //         v,
+                //         n * 0.005,
+                //         hutspot::color::GRAY,
+                //         translation + Vec3::from(object),
+                //         scale,
+                //     );
+                // }
             }
             Objects::PolycubeDual => {
                 if let Some(polycube) = &solution.current_solution.polycube.clone() {
@@ -731,6 +760,87 @@ pub fn update(
                         //         scale,
                         //     );
                         // }
+                    }
+                }
+            }
+            Objects::Debug2 => {
+                let mut color_map = HashMap::new();
+
+                if let Ok(dual) = &solution.current_solution.dual {
+                    for (zone_id, zone) in &dual.zones {
+                        let dir = zone.direction;
+                        if dir != configuration.direction {
+                            continue;
+                        }
+                        let color = dir.to_dual_color();
+                        let rand1 = (rand::random::<f32>() - 0.5) / 10.;
+                        let rand2 = (rand::random::<f32>() - 0.5) / 10.;
+                        let rand3 = (rand::random::<f32>() - 0.5) / 10.;
+                        let rand_color = [color[0] + rand1, color[1] + rand2, color[2] + rand3];
+
+                        for &region_id in &zone.regions {
+                            let region = &dual.loop_structure.faces[region_id];
+                            let verts_in_region = &region.verts;
+
+                            for vert_id in verts_in_region {
+                                for face_id in mesh_resmut.mesh.star(*vert_id) {
+                                    color_map.insert(face_id, rand_color);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let (mesh, translation, scale) = get_mesh(&(*mesh_resmut.mesh).clone(), &color_map);
+                mesh_resmut.properties.scale = scale;
+                mesh_resmut.properties.translation = vec3_to_vector3d(translation);
+
+                commands.spawn((
+                    get_pbrbundle(meshes.add(mesh), translation + Vec3::from(object), scale, &standard_material),
+                    RenderedMesh,
+                ));
+
+                if let Ok(dual) = &solution.current_solution.dual {
+                    for segment_id in dual.loop_structure.edge_ids() {
+                        let direction = dual.loop_structure.edges[segment_id].direction;
+                        let side = dual.segment_to_side(segment_id, configuration.sides_mask);
+                        let mut offset = Vector3D::new(0., 0., 0.);
+                        let dist = 0.001 * f64::from(scale);
+                        match side {
+                            Side::Upper => match direction {
+                                PrincipalDirection::X => offset[0] += dist,
+                                PrincipalDirection::Y => offset[1] += dist,
+                                PrincipalDirection::Z => offset[2] += dist,
+                            },
+                            Side::Lower => match direction {
+                                PrincipalDirection::X => offset[0] -= dist,
+                                PrincipalDirection::Y => offset[1] -= dist,
+                                PrincipalDirection::Z => offset[2] -= dist,
+                            },
+                        };
+                        let color = direction.to_dual_color_sided(side);
+                        for edgepair in solution.current_solution.get_pairs_of_sequence(&dual.segment_to_edges(segment_id)) {
+                            let u = mesh_resmut.mesh.midpoint(edgepair[0]);
+                            let v = mesh_resmut.mesh.midpoint(edgepair[1]);
+                            // let u = solution.current_solution.get_coordinates_of_loop_in_edge(loop_id, edgepair[0]);
+                            // let v = solution.current_solution.get_coordinates_of_loop_in_edge(loop_id, edgepair[1]);
+
+                            let n = mesh_resmut.mesh.edge_normal(edgepair[0]);
+                            add_line2(&mut gizmos_cache.lines, u, v, offset + n * 0.01, color, translation + Vec3::from(object), scale);
+                        }
+                    }
+                } else {
+                    for loop_id in solution.current_solution.loops.keys() {
+                        let color = solution.current_solution.loop_to_direction(loop_id).to_dual_color();
+                        for edgepair in solution.current_solution.get_pairs_of_loop(loop_id) {
+                            // let u = mesh_resmut.mesh.midpoint(edgepair[0]);
+                            // let v = mesh_resmut.mesh.midpoint(edgepair[1]);
+                            let u = solution.current_solution.get_coordinates_of_loop_in_edge(loop_id, edgepair[0]);
+                            let v = solution.current_solution.get_coordinates_of_loop_in_edge(loop_id, edgepair[1]);
+
+                            let n = mesh_resmut.mesh.edge_normal(edgepair[0]);
+                            add_line2(&mut gizmos_cache.lines, u, v, n * 0.005, color, translation + Vec3::from(object), scale);
+                        }
                     }
                 }
             }

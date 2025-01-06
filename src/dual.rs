@@ -101,7 +101,7 @@ pub fn to_principal_direction(v: Vector3D) -> (PrincipalDirection, Side) {
     let x_is_max = v.x.abs() > v.y.abs() && v.x.abs() > v.z.abs();
     let y_is_max = v.y.abs() > v.x.abs() && v.y.abs() > v.z.abs();
     let z_is_max = v.z.abs() > v.x.abs() && v.z.abs() > v.y.abs();
-    // assert!(x_is_max ^ y_is_max ^ z_is_max);
+    assert!(x_is_max ^ y_is_max ^ z_is_max);
 
     if x_is_max {
         if v.x > 0. {
@@ -201,6 +201,7 @@ pub enum PropertyViolationError<IntersectionID> {
     LoopStructureError(MeshError<IntersectionID>),
     PathTooLong,
     PathEmpty,
+    DisconnectedLoop,
 }
 
 #[derive(Debug)]
@@ -234,6 +235,7 @@ impl Dual {
         let intersections = dual.loop_intersections(loops)?;
         let faces = dual.loop_faces(&intersections)?;
         let loop_segments = dual.loop_segments(loops, &intersections);
+
         dual.assign_loop_structure(&faces, &intersections, &loop_segments)?;
         dual.assign_subsurfaces()?;
         dual.verify_properties_and_assign_sides(loops)?;
@@ -253,16 +255,61 @@ impl Dual {
     }
 
     pub fn segment_to_edges(&self, segment: SegmentID) -> Vec<EdgeID> {
-        [
-            vec![self.loop_structure.edges[segment].start],
-            self.loop_structure.edges[segment].between.clone(),
-            vec![self.loop_structure.edges[segment].end],
-        ]
-        .concat()
+        let mut start = vec![self.loop_structure.edges[segment].start];
+        let between = self.loop_structure.edges[segment].between.clone();
+        let mut end = vec![self.loop_structure.edges[segment].end];
+
+        let edges = [start, between, end].concat();
+
+        let mut fixed_edges = vec![];
+
+        for edge_pair in edges.windows(2) {
+            let (from, to) = (edge_pair[0], edge_pair[1]);
+
+            // they are either twins, or they share a face
+            let they_are_twins = self.mesh_ref.twin(from) == to;
+            let they_share_face = self.mesh_ref.face(from) == self.mesh_ref.face(to);
+
+            if they_are_twins || they_share_face {
+                fixed_edges.push(from);
+            } else {
+                // there is an edge missing between them.
+                // this missing edge is either the twin of from or the twin of to.
+                let candidate_missing1 = self.mesh_ref.twin(from);
+                let candidate_missing2 = self.mesh_ref.twin(to);
+
+                // the true missing edge is the one that is twin to one and shares face with the other.
+                let candidate_missing1_is_true = self.mesh_ref.face(candidate_missing1) == self.mesh_ref.face(to);
+                let candidate_missing2_is_true = self.mesh_ref.face(candidate_missing2) == self.mesh_ref.face(from);
+                assert!(candidate_missing1_is_true ^ candidate_missing2_is_true);
+
+                let missing = if candidate_missing1_is_true { candidate_missing1 } else { candidate_missing2 };
+
+                fixed_edges.push(from);
+                fixed_edges.push(missing);
+            }
+        }
+        fixed_edges.push(edges[edges.len() - 1]);
+
+        fixed_edges
     }
 
     pub fn segment_to_direction(&self, segment: SegmentID) -> PrincipalDirection {
         self.loop_structure.edges[segment].direction
+    }
+
+    pub fn zone_to_segments(&self, zone: ZoneID) -> Vec<SegmentID> {
+        self.zones[zone].regions.iter().flat_map(|&region| self.loop_structure.edges(region)).collect()
+    }
+
+    pub fn zone_to_loops(&self, zone: ZoneID) -> Vec<LoopID> {
+        let direction = self.zones[zone].direction;
+        let segments = self.zones[zone].regions.iter().flat_map(|&region| self.loop_structure.edges(region));
+        let segments_of_direction = segments.filter(|&segment| self.loop_structure.edges[segment].direction == direction);
+        let loops_of_direction = segments_of_direction
+            .map(|segment| self.loop_structure.edges[segment].loop_id)
+            .collect::<HashSet<_>>();
+        loops_of_direction.into_iter().collect()
     }
 
     pub fn segment_to_side(&self, segment: SegmentID, mask: [u32; 3]) -> Side {
@@ -271,13 +318,17 @@ impl Dual {
             .position(|cc| cc.contains(&segment))
             .unwrap() as u8;
 
-        let side = self.loop_structure.edges[segment].side.clone().unwrap();
+        let side = self.loop_structure.edges[segment].side.unwrap();
 
         if mask[self.loop_structure.edges[segment].direction as usize] & (1 << cc) == 1 {
             side.flip()
         } else {
             side
         }
+    }
+
+    pub fn segment_to_label(&self, segment: SegmentID) -> PrincipalDirection {
+        self.loop_structure.edges[segment].direction
     }
 
     pub fn filter_direction(&self, selection: &[SegmentID], direction: PrincipalDirection) -> Vec<SegmentID> {
@@ -489,6 +540,11 @@ impl Dual {
             })
             .collect();
 
+        // If any loop has no intersections, we return an error
+        if loop_to_intersections.values().any(|x| x.is_empty()) {
+            return Err(PropertyViolationError::DisconnectedLoop);
+        }
+
         // For each intersection:
         //   We find its (4) next intersections by following its associated loops
         let mut intersections = HashMap::new();
@@ -539,8 +595,7 @@ impl Dual {
                     })
                     .collect_vec();
 
-                assert!(!(nexts.len() < 4), "Should simply be impossible {nexts:?} (len: {})", nexts.len());
-                if nexts.len() > 4 {
+                if nexts.len() != 4 {
                     return Err(PropertyViolationError::NonSimpleIntersection);
                 }
                 for next in &nexts {
