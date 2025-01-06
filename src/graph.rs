@@ -1,4 +1,4 @@
-use graph_cycles::Cycles;
+use crate::all_cycles_from::Cycles;
 use itertools::Itertools;
 use ordered_float::{FloatCore, OrderedFloat};
 use petgraph::algo::{astar, tarjan_scc, Measure};
@@ -97,8 +97,8 @@ impl<V: Eq + PartialEq + Hash + Default + Copy, E: Copy> Graaf<V, E> {
         self.petgraph.edges_connecting(a, b).next().unwrap().weight().to_owned()
     }
 
-    pub fn all_cycles(&self) -> Vec<Vec<NodeIndex>> {
-        self.petgraph.cycles()
+    pub fn all_cycles(&self, start: NodeIndex, aux_map: HashMap<NodeIndex, usize>) -> Vec<Vec<NodeIndex>> {
+        self.petgraph.cycles(start, aux_map)
     }
 
     pub fn cc(&self) -> Vec<Vec<V>> {

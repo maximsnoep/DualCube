@@ -1996,6 +1996,7 @@ dependencies = [
 name = "douconel-test-env"
 version = "0.1.0"
 dependencies = [
+ "ahash",
  "bevy",
  "bevy_egui",
  "bevy_mod_raycast",

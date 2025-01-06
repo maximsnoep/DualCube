@@ -20,7 +20,11 @@ use rand::{
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
 use slotmap::{SecondaryMap, SlotMap};
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    hash::Hash,
+    sync::Arc,
+};
 
 slotmap::new_key_type! {
     pub struct LoopID;
@@ -629,26 +633,57 @@ impl Solution {
 
             let ccs = graph.cc();
 
+            println!("nubmer of nodes: {}", nodes.len());
+            println!("number of edges: {}", edges.len());
+
             println!("Found {} connected components", ccs.len());
 
             // find the cc with our region
-            // all segments of this region:
+            // all segments of this region
             let region_segments = dual.loop_structure.edges(region_id);
             let region_cc = ccs.iter().filter(|&cc| cc.iter().any(|&edge| region_segments.contains(&edge))).collect_vec();
             println!("Found {} connected components with region", region_cc.len());
 
-            let reachable = region_cc.into_iter().flatten().collect_vec();
+            let region_cc_full = region_cc.into_iter().filter(|cc| cc.len() > 1).collect_vec();
+            assert!(region_cc_full.len() == 1);
+
+            let reachable = region_cc_full[0];
 
             // filter
             let nodes = nodes.into_iter().filter(|node| reachable.contains(&node)).collect_vec();
+
             let edges = edges
                 .into_iter()
                 .filter(|(from, to, _)| reachable.contains(&from) && reachable.contains(&to))
                 .collect_vec();
 
-            let graph = Graaf::from(nodes, edges);
+            let graph = Graaf::from(nodes.clone(), edges.clone());
 
-            let cycles = graph.all_cycles();
+            let mut aux_map = HashMap::new();
+
+            let all_regions = dual.loop_structure.face_ids().into_iter().collect_vec();
+
+            for &segment in reachable {
+                let segment_region = dual.loop_structure.face(segment);
+                let index_region = all_regions.iter().position(|&r| r == segment_region).unwrap();
+
+                aux_map.insert(graph.node_to_index(&segment).unwrap(), index_region);
+            }
+
+            let mut cycles = vec![];
+            for segment in region_segments {
+                println!("Finding cycles for segment {:?}", segment);
+                let mut new_cycles = vec![];
+                if let Some(index) = graph.node_to_index(&segment) {
+                    new_cycles = graph.all_cycles(index, aux_map.clone());
+                }
+                println!("Found {} cycles for segment {:?}", new_cycles.len(), segment);
+
+                cycles.extend(new_cycles);
+            }
+
+            println!("number of nodes: {}", nodes.len());
+            println!("number of edges: {}", edges.len());
 
             println!("Found {} cycles", cycles.len());
 
@@ -659,6 +694,8 @@ impl Solution {
 
             // filter out all cycles with length 2
             let cycle_to_edges = cycle_to_edges.into_iter().filter(|cycle| cycle.len() > 2).collect_vec();
+
+            println!("Found {} cycles length more than 2", cycles.len());
 
             // filter out all cycles that traverse the same loop region twice
             let cycle_to_edges = cycle_to_edges
@@ -700,107 +737,31 @@ impl Solution {
                 candidate_paths = cycle_to_edges
                     .into_par_iter()
                     .flat_map(|chosen_cycle| {
-                        let mut timer = Timer::new();
-                        timer.reset();
                         let mut augmented_cycle = chosen_cycle.clone();
 
                         // Find a path that goes exactly through the selected segments of the cycle.
 
-                        // let all_segments = dual.loop_structure.edge_ids().into_iter().collect_vec();
-                        // let blocked_segments = all_segments
-                        //     .iter()
-                        //     .copied()
-                        //     .filter(|&segment| !augmented_cycle.contains(&segment))
-                        //     .collect_vec();
-                        // let blocked_edges = blocked_segments.into_iter().flat_map(|segment| dual.segment_to_edges(segment)).collect_vec();
-                        // timer.report("Blocked edges");
-                        // timer.reset();
+                        let all_segments = chosen_cycle
+                            .iter()
+                            .map(|&edge| dual.loop_structure.nexts(edge))
+                            .flatten()
+                            .collect::<HashSet<_>>();
+                        let blocked_segments = all_segments
+                            .iter()
+                            .copied()
+                            .filter(|&segment| !augmented_cycle.contains(&segment))
+                            .collect::<HashSet<_>>();
+                        let blocked_edges = blocked_segments
+                            .into_iter()
+                            .flat_map(|segment| dual.segment_to_edges(segment))
+                            .collect::<HashSet<_>>();
 
-                        // let mut blocked_edges2 = vec![];
+                        let mut blocked_edges2 = HashSet::new();
                         // make sure every two segments in chosen_cycle are pairs, it could be the case that the 1st and nth segment are a pair
                         if augmented_cycle[0] == dual.loop_structure.twin(chosen_cycle[augmented_cycle.len() - 1]) {
                             augmented_cycle.push(augmented_cycle[0]);
                             augmented_cycle.remove(0);
                         }
-
-                        // // Find all directed edges passing through the selected segments (chosen_cycle)
-                        // for selected_segment_pair in augmented_cycle.windows(2) {
-                        //     let (segment1, segment2) = (selected_segment_pair[0], selected_segment_pair[1]);
-                        //     // we consider this pair only if segment1 is the first segment, and twin of segment2
-                        //     if segment1 != dual.loop_structure.twin(segment2) {
-                        //         continue;
-                        //     }
-
-                        //     let edges = dual.segment_to_edges(segment1);
-                        //     // their edges are the same, but we only consider segment1, as its the first segment
-
-                        //     // for every two edges, find the third edge of the passed triangle
-                        //     for edge_pair in edges.windows(2) {
-                        //         let (e1, e2) = (edge_pair[0], edge_pair[1]);
-
-                        //         if e1 == self.mesh_ref.twin(e2) {
-                        //             continue;
-                        //         }
-
-                        //         let triangle = self.mesh_ref.face(e1);
-                        //         assert!(triangle == self.mesh_ref.face(e2));
-
-                        //         let third_edge = self.mesh_ref.edges(triangle).into_iter().find(|&e| e != e1 && e != e2).unwrap();
-
-                        //         // figure out if the third edge is adjacent to this segment (or to its twin)
-                        //         let this_region = dual.loop_structure.face(segment1);
-                        //         let this_region_verts = &dual.loop_structure.faces[this_region].verts;
-                        //         let (vert1, vert2) = self.mesh_ref.endpoints(third_edge);
-                        //         if this_region_verts.contains(&vert1) && this_region_verts.contains(&vert2) {
-                        //             // this is edge is inside the region adjacent to the segment
-                        //             // this means that we allow traversal FROM this edge, into the segment/loop
-                        //             // this means we do NOT allow traversal FROM the segment/loop, into this edge
-
-                        //             // as such, we block the edges from the segment/loop to this edge
-                        //             blocked_edges2.push([third_edge, e1]);
-                        //             blocked_edges2.push([third_edge, e2]);
-                        //         } else {
-                        //             // this edge is outside the region adjacent to the segment
-                        //             // this means that we allow traversal FROM the segment/loop, into this edge
-                        //             // this means we do NOT allow traversal FROM this edge, into the segment/loop
-
-                        //             // as such, we block the edges from this edge to the segment/loop
-
-                        //             blocked_edges2.push([e1, third_edge]);
-                        //             blocked_edges2.push([e2, third_edge]);
-                        //         }
-                        //     }
-                        // }
-                        // timer.report("Blocked edges 2");
-                        // timer.reset();
-
-                        // let occupied = self.occupied_edgepairs();
-                        // let filter = |(a, b): (&[EdgeID; 2], &[EdgeID; 2])| {
-                        //     !occupied.contains(a)
-                        //         && !occupied.contains(b)
-                        //         && [a[0], a[1], b[0], b[1]].iter().all(|&edge| {
-                        //             self.loops_on_edge(edge)
-                        //                 .iter()
-                        //                 .filter(|&&loop_id| self.loop_to_direction(loop_id) == direction)
-                        //                 .count()
-                        //                 == 0
-                        //         })
-                        //         && !blocked_edges.contains(&a[0])
-                        //         && !blocked_edges.contains(&a[1])
-                        //         && !blocked_edges.contains(&b[0])
-                        //         && !blocked_edges.contains(&b[1])
-                        //         && !blocked_edges2.contains(a)
-                        //         && !blocked_edges2.contains(b)
-                        // };
-
-                        // let g_original = &flow_graphs[direction as usize];
-                        // let g = g_original.filter(filter);
-
-                        // Go through each zone: add all its edges to the graph
-                        // Go through each segment: add all its "traversal" edges to the graph
-                        // EXCEPT THE LAST SEGMENT, it should point to an augmented (or double) version of the first zone.
-
-                        let mut nodes = vec![];
 
                         // Find all directed edges passing through the selected segments (chosen_cycle)
                         for selected_segment_pair in augmented_cycle.windows(2) {
@@ -810,39 +771,9 @@ impl Solution {
                                 continue;
                             }
 
-                            // Get the zone associated with segment1
-                            let zone = dual.loop_structure.face(segment1);
-
-                            // Get the edges of the zone
-                            let verts = &dual.loop_structure.faces[zone].verts;
-                            let zone_nodes = verts
-                                .into_iter()
-                                .flat_map(|&v| self.mesh_ref.star(v))
-                                .filter(|&f| {
-                                    let corners = self.mesh_ref.corners(f);
-                                    let v1 = corners[0];
-                                    let v2 = corners[1];
-                                    let v3 = corners[2];
-                                    verts.contains(&v1) && verts.contains(&v2) && verts.contains(&v3)
-                                })
-                                .flat_map(|face_id| {
-                                    let edges = self.mesh_ref.edges(face_id);
-                                    assert!(edges.len() == 3);
-                                    vec![
-                                        [edges[0], edges[1]],
-                                        [edges[1], edges[0]],
-                                        [edges[0], edges[2]],
-                                        [edges[2], edges[0]],
-                                        [edges[1], edges[2]],
-                                        [edges[2], edges[1]],
-                                    ]
-                                })
-                                .collect::<Vec<_>>();
-
-                            nodes.extend(zone_nodes);
-
-                            let mut segment_nodes = vec![];
                             let edges = dual.segment_to_edges(segment1);
+                            // their edges are the same, but we only consider segment1, as its the first segment
+
                             // for every two edges, find the third edge of the passed triangle
                             for edge_pair in edges.windows(2) {
                                 let (e1, e2) = (edge_pair[0], edge_pair[1]);
@@ -866,88 +797,32 @@ impl Solution {
                                     // this means we do NOT allow traversal FROM the segment/loop, into this edge
 
                                     // as such, we block the edges from the segment/loop to this edge
-                                    segment_nodes.push([e1, third_edge]);
-                                    segment_nodes.push([e2, third_edge]);
+                                    blocked_edges2.insert([third_edge, e1]);
+                                    blocked_edges2.insert([third_edge, e2]);
                                 } else {
                                     // this edge is outside the region adjacent to the segment
                                     // this means that we allow traversal FROM the segment/loop, into this edge
                                     // this means we do NOT allow traversal FROM this edge, into the segment/loop
 
                                     // as such, we block the edges from this edge to the segment/loop
-                                    segment_nodes.push([third_edge, e1]);
-                                    segment_nodes.push([third_edge, e2]);
+
+                                    blocked_edges2.insert([e1, third_edge]);
+                                    blocked_edges2.insert([e2, third_edge]);
                                 }
                             }
-
-                            nodes.extend(segment_nodes);
                         }
-                        timer.report("Blocked edges 2");
-                        timer.reset();
 
-                        let edges = nodes
-                            .clone()
-                            .into_par_iter()
-                            .flat_map(|node| {
-                                self.mesh_ref.neighbor_function_edgepairgraph()(node)
-                                    .into_iter()
-                                    .filter(|neighbor| nodes.contains(&neighbor))
-                                    .map(|neighbor| {
-                                        assert!(self.mesh_ref.twin(node[1]) == neighbor[0]);
-                                        let middle_edge = node[1];
-                                        let (m1, m2) = self.mesh_ref.endpoints(middle_edge);
+                        let filter = |(a, b): (&[EdgeID; 2], &[EdgeID; 2])| {
+                            !blocked_edges.contains(&a[0])
+                                && !blocked_edges.contains(&a[1])
+                                && !blocked_edges.contains(&b[0])
+                                && !blocked_edges.contains(&b[1])
+                                && !blocked_edges2.contains(a)
+                                && !blocked_edges2.contains(b)
+                        };
 
-                                        let start_edge = node[0];
-                                        let end_edge = neighbor[1];
-                                        // Vector from middle_edge to start_edge
-                                        let vector_a = self.mesh_ref.midpoint(start_edge) - self.mesh_ref.midpoint(middle_edge);
-                                        // Vector from middle_edge to end_edge
-                                        let vector_b = self.mesh_ref.midpoint(end_edge) - self.mesh_ref.midpoint(middle_edge);
-
-                                        // Vector from middle_edge to m1
-                                        let vector_m1 = self.mesh_ref.position(m1) - self.mesh_ref.midpoint(middle_edge);
-                                        // Vector from middle_edge to m2
-                                        let vector_m2 = self.mesh_ref.position(m2) - self.mesh_ref.midpoint(middle_edge);
-
-                                        // Angle around m1
-                                        let angle_around_m1 = self.mesh_ref.vec_angle(vector_a, vector_m1) + self.mesh_ref.vec_angle(vector_b, vector_m1);
-
-                                        // Angle around m2
-                                        let angle_around_m2 = self.mesh_ref.vec_angle(vector_a, vector_m2) + self.mesh_ref.vec_angle(vector_b, vector_m2);
-
-                                        // Whichever angle is shorter is the "real" angle
-                                        let angle = if angle_around_m1 < angle_around_m2 {
-                                            angle_around_m1
-                                        } else {
-                                            angle_around_m2
-                                        };
-
-                                        // Weight is based on how far the angle is from 180 degrees
-                                        let temp = PI - angle;
-                                        let angular_weight = if temp < 0. { 0. } else { temp + 1. };
-
-                                        // Alignment per edge
-                                        // Vector_a
-                                        // Find the face that is bounded by the two edges
-                                        let face_a = self.mesh_ref.face(start_edge);
-                                        let alignment_vector_a = 1. + (-vector_a).cross(&self.mesh_ref.normal(face_a)).angle(&direction.into());
-
-                                        // Vector_b
-                                        // Find the face that is bounded by the two edges
-                                        let face_b = self.mesh_ref.face(end_edge);
-                                        let alignment_vector_b = 1. + vector_b.cross(&self.mesh_ref.normal(face_b)).angle(&direction.into());
-
-                                        let weight = (angular_weight, (alignment_vector_a + alignment_vector_b) / 2., 0.);
-
-                                        (node, neighbor, weight)
-                                    })
-                                    .collect_vec()
-                            })
-                            .collect::<Vec<_>>();
-
-                        let g = Graaf::from(nodes, edges);
-
-                        timer.report("Filtered graph");
-                        timer.reset();
+                        let g_original = &flow_graphs[direction as usize];
+                        let g = g_original.filter(filter);
 
                         // between 5 and 15
                         let alpha = rand::random::<f64>();
@@ -970,9 +845,6 @@ impl Solution {
                             .into_iter()
                             .flat_map(|node_index| g.index_to_node(node_index).unwrap().to_owned())
                             .collect_vec();
-
-                        timer.report("Found shortest cycles");
-                        timer.reset();
 
                         assert!(option_a.len() % 2 == 0);
                         assert!(option_b.len() % 2 == 0);
@@ -1035,9 +907,6 @@ impl Solution {
                             .sum();
 
                         let best_option = if weight_option_a > weight_option_b { option_b } else { option_a };
-
-                        timer.report("Selected best option");
-                        timer.reset();
 
                         Some(best_option)
                     })

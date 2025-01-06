@@ -1,3 +1,4 @@
+mod all_cycles_from;
 mod dual;
 mod graph;
 mod layout;
@@ -740,22 +741,21 @@ fn raycast(
                         .current_solution
                         .construct_guaranteed_loop(region_id, selected_edges, configuration.direction, &mesh_resmut.flow_graphs);
 
-                let mut candidate_solutions = vec![];
-                if candidate_loops.len() > 0 {
-                    for candidate_loop in candidate_loops {
-                        let mut candidate_solution = solution.current_solution.clone();
-                        candidate_solution.add_loop(Loop {
-                            edges: candidate_loop,
-                            direction: configuration.direction,
-                        });
-                        candidate_solution.reconstruct_solution(false);
-                        if candidate_solution.orthogonality.is_some() && candidate_solution.alignment.is_some() {
-                            candidate_solutions.push(candidate_solution);
-                        }
+                let candidate_solutions = candidate_loops.into_par_iter().filter_map(|candidate_loop| {
+                    let mut candidate_solution = solution.current_solution.clone();
+                    candidate_solution.add_loop(Loop {
+                        edges: candidate_loop,
+                        direction: configuration.direction,
+                    });
+                    candidate_solution.reconstruct_solution(false);
+                    if candidate_solution.orthogonality.is_some() && candidate_solution.alignment.is_some() {
+                        return Some(candidate_solution);
+                    } else {
+                        return None;
                     }
-                }
+                });
 
-                let best_solution = candidate_solutions.into_iter().max_by(|a, b| {
+                let best_solution = candidate_solutions.max_by(|a, b| {
                     (a.orthogonality.unwrap() + a.alignment.unwrap() * 10.)
                         .partial_cmp(&(b.orthogonality.unwrap() + b.alignment.unwrap() * 10.))
                         .unwrap()
