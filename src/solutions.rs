@@ -718,6 +718,18 @@ impl Solution {
 
             println!("Found {} valid cycles through selected region", cycle_to_edges.len());
 
+            // filter out all cycles that may be duplicates
+            let cycle_to_edges = cycle_to_edges
+                .into_iter()
+                .unique_by(|cycle| {
+                    let mut sorted = cycle.clone();
+                    sorted.sort();
+                    sorted
+                })
+                .collect_vec();
+
+            println!("Found {} unique cycles through selected region", cycle_to_edges.len());
+
             return Some(cycle_to_edges);
         }
         None

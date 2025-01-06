@@ -3,6 +3,7 @@ use crate::{vec3_to_vector3d, Configuration, InputResource, MainMesh, RenderedMe
 use crate::{CameraHandles, EmbeddedMesh};
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::prelude::*;
+use bevy::render::camera::ScalingMode;
 use bevy::render::render_resource::{Extent3d, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages};
 use douconel::douconel::Douconel;
 use douconel::douconel_embedded::HasPosition;
@@ -114,17 +115,36 @@ pub fn reset(commands: &mut Commands, cameras: &Query<Entity, With<Camera>>, ima
     for object in all::<Objects>() {
         let handle = images.add(image.clone());
         handles.map.insert(CameraFor(object), handle.clone());
-        commands.spawn((
-            Camera3dBundle {
-                camera: Camera {
-                    target: handle.into(),
-                    ..Default::default()
+        if object == Objects::PolycubeDual || object == Objects::PolycubePrimal {
+            commands.spawn((
+                Camera3dBundle {
+                    camera: Camera {
+                        target: handle.into(),
+                        ..Default::default()
+                    },
+                    projection: bevy::prelude::Projection::Orthographic(OrthographicProjection {
+                        // 6 world units per window height.
+                        scaling_mode: ScalingMode::FixedVertical(30.0),
+                        ..default()
+                    }),
+                    tonemapping: Tonemapping::None,
+                    ..default()
                 },
-                tonemapping: Tonemapping::None,
-                ..default()
-            },
-            CameraFor(object),
-        ));
+                CameraFor(object),
+            ));
+        } else {
+            commands.spawn((
+                Camera3dBundle {
+                    camera: Camera {
+                        target: handle.into(),
+                        ..Default::default()
+                    },
+                    tonemapping: Tonemapping::None,
+                    ..default()
+                },
+                CameraFor(object),
+            ));
+        }
     }
 }
 
@@ -183,15 +203,20 @@ pub fn update(
     mut mesh_resmut: ResMut<InputResource>,
     mut solution: ResMut<SolutionResource>,
     mut gizmos_cache: ResMut<GizmosCache>,
-    mut cameras: Query<(&mut Transform, &CameraFor)>,
+    mut cameras: Query<(&mut Transform, &mut Projection, &CameraFor)>,
 ) {
-    let main_transform = cameras.iter().find(|(_, camera_for)| camera_for.0 == Objects::MeshDualLoops).unwrap().0;
+    let main_transform = cameras.iter().find(|(_, _, camera_for)| camera_for.0 == Objects::MeshDualLoops).unwrap().0;
     let normalized_translation = main_transform.translation - Vec3::from(Objects::MeshDualLoops);
     let normalized_rotation = main_transform.rotation;
 
-    for (mut sub_transform, sub_object) in &mut cameras {
+    let distance = normalized_translation.length();
+
+    for (mut sub_transform, mut sub_projection, sub_object) in &mut cameras {
         sub_transform.translation = normalized_translation + Vec3::from(sub_object.0);
         sub_transform.rotation = normalized_rotation;
+        if let Projection::Orthographic(orthographic) = sub_projection.as_mut() {
+            orthographic.scaling_mode = ScalingMode::FixedVertical(distance);
+        }
     }
 
     // The rest of this function function should only be called when the mesh (RenderedMesh or Solution) is changed.
@@ -284,7 +309,7 @@ pub fn update(
                                 &mut gizmos_cache.lines,
                                 u,
                                 v,
-                                n * 0.005,
+                                n * 0.01,
                                 color,
                                 translation + Vec3::from(Objects::MeshDualLoops),
                                 scale,
@@ -293,21 +318,21 @@ pub fn update(
                     }
                 }
 
-                for edge_id in mesh_resmut.mesh.edge_ids() {
-                    let (u_id, v_id) = mesh_resmut.mesh.endpoints(edge_id);
-                    let u = mesh_resmut.mesh.position(u_id);
-                    let v = mesh_resmut.mesh.position(v_id);
-                    let n = mesh_resmut.mesh.edge_normal(edge_id);
-                    add_line2(
-                        &mut gizmos_cache.lines,
-                        u,
-                        v,
-                        n * 0.005,
-                        hutspot::color::GRAY,
-                        translation + Vec3::from(object),
-                        scale,
-                    );
-                }
+                // for edge_id in mesh_resmut.mesh.edge_ids() {
+                //     let (u_id, v_id) = mesh_resmut.mesh.endpoints(edge_id);
+                //     let u = mesh_resmut.mesh.position(u_id);
+                //     let v = mesh_resmut.mesh.position(v_id);
+                //     let n = mesh_resmut.mesh.edge_normal(edge_id);
+                //     add_line2(
+                //         &mut gizmos_cache.lines,
+                //         u,
+                //         v,
+                //         n * 0.005,
+                //         hutspot::color::GRAY,
+                //         translation + Vec3::from(object),
+                //         scale,
+                //     );
+                // }
             }
             Objects::PolycubeDual => {
                 if let Some(polycube) = &solution.current_solution.polycube.clone() {

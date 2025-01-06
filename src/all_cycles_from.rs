@@ -152,8 +152,7 @@ impl<N, E, Ty: EdgeType, Ix: IndexType> Cycles for Graph<N, E, Ty, Ix> {
 struct CycleFinder<G, N> {
     graph: G,
     scc: Vec<N>,
-    blocked: Vec<bool>,
-    blocked2: Vec<bool>,
+    visited: Vec<bool>,
     b: Vec<AHashSet<usize>>,
     stack: Vec<N>,
     s: usize,
@@ -173,8 +172,7 @@ where
         Self {
             graph,
             scc,
-            blocked: vec![false; num_vertices],
-            blocked2: vec![false; num_vertices],
+            visited: vec![false; num_vertices],
             b: vec![Default::default(); num_vertices],
             stack: Default::default(),
             s: Default::default(),
@@ -188,8 +186,7 @@ where
     {
         // cycle finding algorithm from
 
-        self.blocked.fill(false);
-        self.blocked2.fill(false);
+        self.visited.fill(false);
 
         self.s = self.scc.iter().position(|&v| v == start).unwrap();
         for b in &mut self.b[self.s + 1..] {
@@ -204,7 +201,7 @@ where
     where
         F: FnMut(G, &[G::NodeId]) -> ControlFlow<B>,
     {
-        let mut f = false;
+        self.visited[v] = true;
         self.stack.push(self.scc[v]);
 
         // counter based on all items in stack
@@ -212,44 +209,25 @@ where
         for elem in &self.stack {
             let idx = self.scc.iter().position(|v| v == elem).unwrap();
             let reg = self.aux_map.get(&idx).unwrap();
-            *counter.entry(reg).or_insert(1) += 1;
+            *counter.entry(reg).or_insert(0) += 1;
         }
+        let valid = counter.values().all(|&v| v <= 2);
 
-        self.blocked[v] = true;
-
-        // L1:
-        for w in self.adjacent_vertices(v) {
-            if w == self.s {
-                visitor(self.graph, &self.stack);
-                f = true;
-            } else if !self.blocked[w] {
-                self.circuit(w, visitor);
-                f = true;
+        if valid {
+            for w in self.adjacent_vertices(v) {
+                if w == self.s {
+                    visitor(self.graph, &self.stack);
+                } else if !self.visited[w] {
+                    self.circuit(w, visitor);
+                }
             }
         }
 
         // L2:
-        if f {
-            self.unblock(v)
-        } else {
-            for w in self.adjacent_vertices(v) {
-                self.b[w].insert(v);
-            }
-        }
+        self.visited[v] = false;
 
         self.stack.pop(); // v
-        ControlFlow::Continue(f)
-    }
-
-    fn unblock(&mut self, v: usize) {
-        self.blocked[v] = false;
-        let tmp = self.b[v].clone();
-        for w in tmp {
-            if self.blocked[w] {
-                self.unblock(w)
-            }
-        }
-        self.b[v].clear()
+        ControlFlow::Continue(true)
     }
 
     fn adjacent_vertices(&self, v: usize) -> Vec<usize> {
