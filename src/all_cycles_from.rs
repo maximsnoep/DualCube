@@ -167,8 +167,6 @@ where
         let num_vertices = scc.len();
         let aux_map = aux_map.into_iter().map(|(k, v)| (scc.iter().position(|&n| n == k).unwrap(), v)).collect();
 
-        println!("{:?}", aux_map);
-
         Self {
             graph,
             scc,

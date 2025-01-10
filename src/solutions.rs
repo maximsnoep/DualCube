@@ -1,9 +1,9 @@
 use crate::{
-    dual::{Dual, IntersectionID, PrincipalDirection, PropertyViolationError, RegionID, SegmentID, Side, ZoneID},
+    dual::{to_principal_direction, Dual, IntersectionID, PrincipalDirection, PropertyViolationError, RegionID, SegmentID, Side, ZoneID},
     graph::Graaf,
     layout::Layout,
-    polycube::{Polycube, PolycubeFaceID, PolycubeVertID},
-    EdgeID, EmbeddedMesh, FaceID,
+    polycube::{Polycube, PolycubeEdgeID, PolycubeFaceID, PolycubeVertID},
+    EdgeID, EmbeddedMesh, FaceID, VertID,
 };
 use bevy_egui::egui::debug_text::print;
 use douconel::douconel_embedded::HasPosition;
@@ -11,7 +11,7 @@ use hutspot::{consts::PI, geom::Vector3D, timer::Timer};
 use itertools::Itertools;
 use ordered_float::OrderedFloat;
 use petgraph::algo::tarjan_scc;
-use rand::distributions::Distribution;
+use rand::{distributions::Distribution, Rng};
 use rand::{
     distributions::WeightedIndex,
     seq::{IteratorRandom, SliceRandom},
@@ -20,9 +20,11 @@ use rand::{
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
 use slotmap::{SecondaryMap, SlotMap};
+use std::io::Write;
 use std::{
     collections::{HashMap, HashSet},
     hash::Hash,
+    path::PathBuf,
     sync::Arc,
 };
 
@@ -225,6 +227,8 @@ impl Solution {
     }
 
     pub fn reconstruct_solution(&mut self, smoothen: bool) {
+        println!("HELLLOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO\n\n\n");
+
         self.dual = Err(PropertyViolationError::default());
         self.polycube = None;
         self.layout = None;
@@ -235,6 +239,25 @@ impl Solution {
         self.resize_polycube();
         self.compute_alignment();
         self.compute_orthogonality();
+        // self.improve_layout(1000000);
+
+        println!("alignment: {:?}", self.alignment);
+
+        for _ in 0..100 {
+            let current_score = self.alignment.unwrap();
+            if let Ok(dual_ref) = &self.dual {
+                if let Some(Ok(layout)) = &self.layout {
+                    if let Ok(new_layout) = Layout::improve_layout(layout, dual_ref, &self.alignment_per_triangle) {
+                        self.layout = Some(Ok(new_layout));
+                        self.resize_polycube();
+                        self.compute_alignment();
+                        self.compute_orthogonality();
+                    }
+                }
+            }
+
+            println!("alignment: {:?}", self.alignment);
+        }
     }
 
     pub fn smoothen(&mut self) {
@@ -495,7 +518,7 @@ impl Solution {
             .max_by_key(|solution| OrderedFloat(solution.alignment.unwrap_or_default()))
     }
 
-    pub fn find_valid_loops_through_region(&self, region_id: RegionID, direction: PrincipalDirection) -> Option<Vec<Vec<SegmentID>>> {
+    pub fn construct_valid_loop_graph(&self, direction: PrincipalDirection) -> Option<Graaf<SegmentID, f64>> {
         if let Ok(dual) = &self.dual {
             let nodes = dual.loop_structure.edge_ids().into_iter().collect_vec();
             let edges = dual
@@ -631,95 +654,56 @@ impl Solution {
 
             let graph = Graaf::from(nodes.clone(), edges.clone());
 
-            let ccs = graph.cc();
+            return Some(graph);
+        }
 
-            println!("nubmer of nodes: {}", nodes.len());
-            println!("number of edges: {}", edges.len());
+        None
+    }
 
-            println!("Found {} connected components", ccs.len());
-
-            // find the cc with our region
-            // all segments of this region
+    pub fn find_all_valid_loops_through_region(&self, region_id: RegionID, direction: PrincipalDirection) -> Option<Vec<Vec<SegmentID>>> {
+        if let Ok(dual) = &self.dual {
             let region_segments = dual.loop_structure.edges(region_id);
-            let region_cc = ccs.iter().filter(|&cc| cc.iter().any(|&edge| region_segments.contains(&edge))).collect_vec();
-            println!("Found {} connected components with region", region_cc.len());
-
-            let region_cc_full = region_cc.into_iter().filter(|cc| cc.len() > 1).collect_vec();
-            assert!(region_cc_full.len() == 1);
-
-            let reachable = region_cc_full[0];
-
-            // filter
-            let nodes = nodes.into_iter().filter(|node| reachable.contains(&node)).collect_vec();
-
-            let edges = edges
+            let full_graph = self.construct_valid_loop_graph(direction)?;
+            let ccs = full_graph
+                .cc()
                 .into_iter()
-                .filter(|(from, to, _)| reachable.contains(&from) && reachable.contains(&to))
+                .filter(|cc| cc.len() > 1)
+                .filter(|cc| cc.iter().any(|&edge| dual.loop_structure.face(edge) == region_id))
                 .collect_vec();
-
-            let graph = Graaf::from(nodes.clone(), edges.clone());
+            assert!(ccs.len() == 1);
+            let reachable_nodes = ccs[0].clone();
+            let filtered_edges = full_graph
+                .edges()
+                .into_iter()
+                .filter(|(from, to, _)| reachable_nodes.contains(from) && reachable_nodes.contains(to))
+                .collect_vec();
+            let filtered_graph = Graaf::from(reachable_nodes.clone(), filtered_edges);
 
             let mut aux_map = HashMap::new();
 
-            let all_regions = dual.loop_structure.face_ids().into_iter().collect_vec();
-
-            for &segment in reachable {
-                let segment_region = dual.loop_structure.face(segment);
-                let index_region = all_regions.iter().position(|&r| r == segment_region).unwrap();
-
-                aux_map.insert(graph.node_to_index(&segment).unwrap(), index_region);
-            }
-
-            let mut cycles = vec![];
-            for segment in region_segments {
-                println!("Finding cycles for segment {:?}", segment);
-                let mut new_cycles = vec![];
-                if let Some(index) = graph.node_to_index(&segment) {
-                    new_cycles = graph.all_cycles(index, aux_map.clone());
+            for (index, region) in dual.loop_structure.face_ids().into_iter().enumerate() {
+                for segment in dual
+                    .loop_structure
+                    .edges(region)
+                    .into_iter()
+                    .filter(|segment| reachable_nodes.contains(segment))
+                {
+                    aux_map.insert(filtered_graph.node_to_index(&segment).unwrap(), index);
                 }
-                println!("Found {} cycles for segment {:?}", new_cycles.len(), segment);
-
-                cycles.extend(new_cycles);
             }
 
-            println!("number of nodes: {}", nodes.len());
-            println!("number of edges: {}", edges.len());
+            // Find all cycles starting from the region (or from each segment in the region)
+            let mut cycles = vec![];
+            for segment in region_segments.iter().filter(|&segment| reachable_nodes.contains(segment)) {
+                println!("Computing all cycles through segment {segment:?}");
+                let cycles_through_segment = filtered_graph.all_cycles(filtered_graph.node_to_index(&segment).unwrap(), aux_map.clone());
+                println!("Found {} cycles", cycles_through_segment.len());
+                cycles.extend(cycles_through_segment);
+            }
+            println!("Total cycles: {}", cycles.len());
 
-            println!("Found {} cycles", cycles.len());
-
-            let cycle_to_edges = cycles
-                .iter()
-                .map(|cycle| cycle.iter().map(|&edge| graph.index_to_node(edge).unwrap().to_owned()).collect_vec())
-                .collect_vec();
-
-            // filter out all cycles with length 2
-            let cycle_to_edges = cycle_to_edges.into_iter().filter(|cycle| cycle.len() > 2).collect_vec();
-
-            println!("Found {} cycles length more than 2", cycles.len());
-
-            // filter out all cycles that traverse the same loop region twice
-            let cycle_to_edges = cycle_to_edges
-                .into_iter()
-                .filter(|cycle| {
-                    let regions = cycle.iter().map(|&edge| dual.loop_structure.face(edge)).collect_vec();
-                    let unique_regions = regions.iter().unique().count();
-
-                    unique_regions * 2 == regions.len()
-                })
-                .collect_vec();
-
-            println!("Found {} valid cycles", cycle_to_edges.len());
-
-            // find all cycles that contain the region (selected)
-            let cycle_to_edges = cycle_to_edges
-                .into_iter()
-                .filter(|cycle| cycle.iter().any(|&edge| dual.loop_structure.face(edge) == region_id))
-                .collect_vec();
-
-            println!("Found {} valid cycles through selected region", cycle_to_edges.len());
-
-            // filter out all cycles that may be duplicates
-            let cycle_to_edges = cycle_to_edges
+            // Filter out duplicates
+            let cycles = cycles
                 .into_iter()
                 .unique_by(|cycle| {
                     let mut sorted = cycle.clone();
@@ -728,9 +712,119 @@ impl Solution {
                 })
                 .collect_vec();
 
-            println!("Found {} unique cycles through selected region", cycle_to_edges.len());
+            // convert NodeIndex to SegmentID
+            let cycles = cycles
+                .iter()
+                .map(|cycle| cycle.iter().map(|&edge| filtered_graph.index_to_node(edge).unwrap().to_owned()).collect_vec())
+                .collect_vec();
 
-            return Some(cycle_to_edges);
+            // Assert that all cycles are of length larger than 2
+            for cycle in &cycles {
+                assert!(cycle.len() > 2);
+            }
+
+            // Assert that all cycles do not traverse the same loop region twice
+            for cycle in &cycles {
+                let regions = cycle.iter().map(|&edge| dual.loop_structure.face(edge)).collect_vec();
+                let unique_regions = regions.iter().unique().count();
+                assert!(unique_regions * 2 == regions.len());
+            }
+
+            // Assert that all cycles contain the selected region
+            for cycle in &cycles {
+                assert!(cycle.iter().any(|&edge| dual.loop_structure.face(edge) == region_id));
+            }
+
+            return Some(cycles);
+        }
+        None
+    }
+
+    pub fn find_some_valid_loops_through_region(&self, region_id: RegionID, direction: PrincipalDirection) -> Option<Vec<Vec<SegmentID>>> {
+        if let Ok(dual) = &self.dual {
+            let region_segments = dual.loop_structure.edges(region_id);
+            let full_graph = self.construct_valid_loop_graph(direction)?;
+            let ccs = full_graph
+                .cc()
+                .into_iter()
+                .filter(|cc| cc.len() > 1)
+                .filter(|cc| cc.iter().any(|&edge| dual.loop_structure.face(edge) == region_id))
+                .collect_vec();
+            assert!(ccs.len() == 1);
+            let reachable_nodes = ccs[0].clone();
+            let filtered_edges = full_graph
+                .edges()
+                .into_iter()
+                .filter(|(from, to, _)| reachable_nodes.contains(from) && reachable_nodes.contains(to))
+                .collect_vec();
+            let filtered_graph = Graaf::from(reachable_nodes.clone(), filtered_edges);
+
+            let mut constraint_map = HashMap::new();
+
+            for (index, region) in dual.loop_structure.face_ids().into_iter().enumerate() {
+                for segment in dual
+                    .loop_structure
+                    .edges(region)
+                    .into_iter()
+                    .filter(|segment| reachable_nodes.contains(segment))
+                {
+                    constraint_map.insert(filtered_graph.node_to_index(&segment).unwrap(), index);
+                }
+            }
+
+            // Find all "shortest" cycles starting from the starting segment to every other reachable segment.
+            // e.g. starting segment u, any reachable segment v
+            // find the shortest path u->v, and shortest path v->u, and combine them to form a cycle
+            // Filter out cycles that invalidate any of the constraints
+            let mut cycles = vec![];
+            for segment in region_segments.iter().filter(|&segment| reachable_nodes.contains(segment)) {
+                let u = filtered_graph.node_to_index(segment).unwrap();
+                for other_segment in &reachable_nodes {
+                    let v = filtered_graph.node_to_index(other_segment).unwrap();
+                    let shortest_path = filtered_graph.shortest_path(u, v, &|x| x).unwrap().1;
+                    // remove last element of shortest path, as it is the same as the first element of shortest_path_back
+                    let shortest_path = shortest_path.iter().copied().take(shortest_path.len() - 1).collect_vec();
+                    let shortest_path_back = filtered_graph.shortest_path(v, u, &|x| x).unwrap().1;
+                    // remove last element of shortest path, as it is the same as the first element of shortest_path_back
+                    let shortest_path_back = shortest_path_back.iter().copied().take(shortest_path_back.len() - 1).collect_vec();
+                    let cycle = [shortest_path, shortest_path_back].concat();
+                    cycles.push(cycle);
+                }
+            }
+            println!("Total cycles: {}", cycles.len());
+
+            // Filter out duplicates
+            let cycles = cycles
+                .into_iter()
+                .unique_by(|cycle| {
+                    let mut sorted = cycle.clone();
+                    sorted.sort();
+                    sorted
+                })
+                .collect_vec();
+
+            // convert NodeIndex to SegmentID
+            let cycles = cycles
+                .iter()
+                .map(|cycle| cycle.iter().map(|&edge| filtered_graph.index_to_node(edge).unwrap().to_owned()).collect_vec())
+                .collect_vec();
+
+            // Filter such that all cycles are of length larger than 2
+            let cycles = cycles.into_iter().filter(|cycle| cycle.len() > 2).collect_vec();
+            println!("Number of cycles after filtering length: {}", cycles.len());
+
+            // Filter such that all cycles do not traverse the same loop region twice
+            let cycles = cycles
+                .into_iter()
+                .filter(|cycle| {
+                    let regions = cycle.iter().map(|&edge| dual.loop_structure.face(edge)).collect_vec();
+                    let unique_regions = regions.iter().unique().count();
+                    unique_regions * 2 == regions.len()
+                })
+                .collect_vec();
+            println!("Number of cycles after filtering duplicate regions: {}", cycles.len());
+
+            return Some(cycles);
         }
         None
     }
@@ -745,7 +839,7 @@ impl Solution {
         let mut candidate_paths = vec![];
 
         if let Ok(dual) = &self.dual {
-            if let Some(cycle_to_edges) = self.find_valid_loops_through_region(region_id, direction) {
+            if let Some(cycle_to_edges) = self.find_some_valid_loops_through_region(region_id, direction) {
                 candidate_paths = cycle_to_edges
                     .into_par_iter()
                     .flat_map(|chosen_cycle| {
@@ -1024,5 +1118,286 @@ impl Solution {
         }
 
         return Some(best_option);
+    }
+
+    pub fn write_to_flag(&self, path: &PathBuf) -> std::io::Result<()> {
+        let mut file = std::fs::File::create(path)?;
+
+        if let Some(Ok(layout)) = &self.layout {
+            let map = layout
+                .granulated_mesh
+                .face_ids()
+                .into_iter()
+                .enumerate()
+                .map(|(index, face_id)| (face_id, index))
+                .collect::<HashMap<_, _>>();
+            let mut labels = vec![-1; layout.granulated_mesh.face_ids().len()];
+
+            for &patch_id in layout.face_to_patch.keys() {
+                let normal = (layout.polycube_ref.structure.normal(patch_id) as Vector3D).normalize();
+                let label = match to_principal_direction(normal) {
+                    (PrincipalDirection::X, Side::Upper) => 0,
+                    (PrincipalDirection::X, Side::Lower) => 1,
+                    (PrincipalDirection::Y, Side::Upper) => 2,
+                    (PrincipalDirection::Y, Side::Lower) => 3,
+                    (PrincipalDirection::Z, Side::Upper) => 4,
+                    (PrincipalDirection::Z, Side::Lower) => 5,
+                };
+                for &face_id in &layout.face_to_patch[&patch_id].faces {
+                    labels[map[&face_id]] = label;
+                }
+            }
+
+            let labels_out = labels.iter().map(|&x| x.to_string()).collect::<Vec<_>>().join("\n");
+            write!(file, "{}", labels_out).unwrap();
+
+            return Ok(());
+        } else {
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, "No layout available"));
+        }
+    }
+
+    pub fn write_to_obj(&self, path: &PathBuf) -> std::io::Result<()> {
+        if let Some(Ok(layout)) = &self.layout {
+            layout.granulated_mesh.write_to_obj(path)?;
+            return Ok(());
+        } else {
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, "No layout available"));
+        }
+    }
+
+    pub fn export(&self, path_obj: &PathBuf, path_flag: &PathBuf) -> std::io::Result<()> {
+        self.write_to_obj(path_obj);
+        self.write_to_flag(path_flag)?;
+        Ok(())
+    }
+
+    pub fn improve_layout(&mut self, n: usize) {
+        println!("Alignment before: {:?}", self.alignment);
+
+        if let Some(Ok(layout)) = &mut self.layout {
+            let path_ids = layout
+                .edge_to_path
+                .keys()
+                .filter(|&&path_id| {
+                    let twin_id = layout.polycube_ref.structure.twin(path_id).to_owned();
+                    path_id < twin_id
+                })
+                .copied()
+                .collect_vec();
+
+            let filtered_path_ids = path_ids
+                .iter()
+                .filter(|&&path_id| {
+                    let twin_id = layout.polycube_ref.structure.twin(path_id).to_owned();
+                    let face_id = layout.polycube_ref.structure.face(path_id);
+                    let twin_face_id = layout.polycube_ref.structure.face(twin_id);
+                    let normal = layout.polycube_ref.structure.normal(face_id).normalize();
+                    let twin_normal = layout.polycube_ref.structure.normal(twin_face_id).normalize();
+                    normal != twin_normal
+                })
+                .copied()
+                .collect_vec();
+
+            let mut occupied_vertices = layout.edge_to_path.values().flat_map(|path| path.iter().copied()).collect::<HashSet<_>>();
+
+            for i in 0..n {
+                let mut sol = None;
+
+                let mut c = 0;
+                while c < 1000 {
+                    c += 1;
+                    let path_infos = filtered_path_ids
+                        .iter()
+                        .map(|&path_id| {
+                            let face_id = layout.polycube_ref.structure.face(path_id);
+                            let patch = layout.face_to_patch.get(&face_id).unwrap().to_owned();
+
+                            let twin_path_id = layout.polycube_ref.structure.twin(path_id).to_owned();
+                            let twin_face_id = layout.polycube_ref.structure.face(twin_path_id);
+                            let twin_patch = layout.face_to_patch.get(&twin_face_id).unwrap().to_owned();
+                            (path_id, twin_path_id, face_id, twin_face_id, patch, twin_patch)
+                        })
+                        .collect_vec();
+
+                    // grab a random path
+                    let path_info = path_infos.choose(&mut rand::thread_rng()).unwrap().to_owned();
+                    let (path_id, twin_path_id, face_id, twin_face_id, patch, twin_patch) = path_info;
+                    let path = layout.edge_to_path.get(&path_id).unwrap().to_owned();
+
+                    if path.len() < 3 {
+                        continue;
+                    }
+
+                    // grab either a two-flip or a three-flip
+                    let two_flip = rand::random::<bool>();
+                    if two_flip {
+                        // grab a random two-flip in the path
+                        let random_index = rand::thread_rng().gen_range(0..path.len() - 1);
+                        let (a, b) = (path[random_index], path[random_index + 1]);
+
+                        let edge = layout.granulated_mesh.edge_between_verts(a, b).unwrap().0;
+
+                        let triangle = layout.granulated_mesh.face(edge);
+                        let third_vertex = layout.granulated_mesh.corners(triangle).iter().find(|&&v| v != a && v != b).unwrap().to_owned();
+
+                        if !occupied_vertices.contains(&third_vertex) {
+                            assert!(patch.faces.contains(&triangle));
+
+                            let current_normal = layout.polycube_ref.structure.normal(face_id).normalize();
+                            let new_normal = layout.polycube_ref.structure.normal(twin_face_id).normalize();
+
+                            let current_score = (1.
+                                - (1.
+                                    + std::f64::consts::PI
+                                        .mul_add(2., -(4. * current_normal.angle(&layout.granulated_mesh.normal(triangle))))
+                                        .exp())
+                                .recip())
+                            .powi(2);
+                            let new_score = (1.
+                                - (1.
+                                    + std::f64::consts::PI
+                                        .mul_add(2., -(4. * new_normal.angle(&layout.granulated_mesh.normal(triangle))))
+                                        .exp())
+                                .recip())
+                            .powi(2);
+
+                            if new_score >= current_score * 1.1 {
+                                sol = Some((path_id, vec![a, b], vec![a, third_vertex, b], triangle, face_id, twin_face_id));
+                            }
+                        }
+
+                        // otherwise we try the other side
+
+                        let triangle2 = layout.granulated_mesh.face(layout.granulated_mesh.twin(edge));
+                        let third_vertex2 = layout
+                            .granulated_mesh
+                            .corners(triangle2)
+                            .iter()
+                            .find(|&&v| v != a && v != b)
+                            .unwrap()
+                            .to_owned();
+
+                        if !occupied_vertices.contains(&third_vertex2) {
+                            assert!(twin_patch.faces.contains(&triangle2));
+
+                            let current_normal = layout.polycube_ref.structure.normal(twin_face_id).normalize();
+                            let new_normal = layout.polycube_ref.structure.normal(face_id).normalize();
+
+                            let current_score = (1.
+                                - (1.
+                                    + std::f64::consts::PI
+                                        .mul_add(2., -(4. * current_normal.angle(&layout.granulated_mesh.normal(triangle2))))
+                                        .exp())
+                                .recip())
+                            .powi(2);
+                            let new_score = (1.
+                                - (1.
+                                    + std::f64::consts::PI
+                                        .mul_add(2., -(4. * new_normal.angle(&layout.granulated_mesh.normal(triangle2))))
+                                        .exp())
+                                .recip())
+                            .powi(2);
+
+                            if new_score >= current_score * 1.1 {
+                                sol = Some((path_id, vec![a, b], vec![a, third_vertex2, b], triangle2, twin_face_id, face_id));
+                            }
+                        }
+                    } else {
+                        let random_index = rand::thread_rng().gen_range(0..path.len() - 2);
+                        let (u, v, w) = (path[random_index], path[random_index + 1], path[random_index + 2]);
+                        let face_id = layout.polycube_ref.structure.face(path_id);
+                        let patch = layout.face_to_patch.get(&face_id).unwrap().to_owned();
+
+                        let twin_path_id = layout.polycube_ref.structure.twin(path_id).to_owned();
+                        let twin_face_id = layout.polycube_ref.structure.face(twin_path_id);
+                        let twin_patch = layout.face_to_patch.get(&twin_face_id).unwrap().to_owned();
+
+                        let maybe_triangle = layout.granulated_mesh.face_with_verts(&[u, v, w]);
+                        if let Some(triangle_id) = maybe_triangle {
+                            assert!(patch.faces.contains(&triangle_id) || twin_patch.faces.contains(&triangle_id));
+
+                            if patch.faces.contains(&triangle_id) {
+                                let current_normal = layout.polycube_ref.structure.normal(face_id).normalize();
+                                let new_normal = layout.polycube_ref.structure.normal(twin_face_id).normalize();
+
+                                let current_score = (1.
+                                    - (1.
+                                        + std::f64::consts::PI
+                                            .mul_add(2., -(4. * current_normal.angle(&layout.granulated_mesh.normal(triangle_id))))
+                                            .exp())
+                                    .recip())
+                                .powi(2);
+                                let new_score = (1.
+                                    - (1.
+                                        + std::f64::consts::PI
+                                            .mul_add(2., -(4. * new_normal.angle(&layout.granulated_mesh.normal(triangle_id))))
+                                            .exp())
+                                    .recip())
+                                .powi(2);
+
+                                if new_score >= current_score * 1.1 {
+                                    sol = Some((path_id, vec![u, v, w], vec![u, w], triangle_id, face_id, twin_face_id));
+                                }
+                            } else if twin_patch.faces.contains(&triangle_id) {
+                                let current_normal = layout.polycube_ref.structure.normal(twin_face_id).normalize();
+                                let new_normal = layout.polycube_ref.structure.normal(face_id).normalize();
+
+                                let current_score = (1.
+                                    - (1.
+                                        + std::f64::consts::PI
+                                            .mul_add(2., -(4. * current_normal.angle(&layout.granulated_mesh.normal(triangle_id))))
+                                            .exp())
+                                    .recip())
+                                .powi(2);
+                                let new_score = (1.
+                                    - (1.
+                                        + std::f64::consts::PI
+                                            .mul_add(2., -(4. * new_normal.angle(&layout.granulated_mesh.normal(triangle_id))))
+                                            .exp())
+                                    .recip())
+                                .powi(2);
+
+                                if new_score >= current_score * 1.1 {
+                                    sol = Some((path_id, vec![u, v, w], vec![u, w], triangle_id, twin_face_id, face_id));
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some((path_id, find, replace, triangle_id, old_patch, new_patch)) = sol {
+                        let mut path = layout.edge_to_path.get(&path_id).unwrap().clone();
+                        let index = path.iter().position(|&x| x == find[0]).unwrap();
+                        assert!(path[index + 1] == find[1]);
+
+                        path.splice(index..index + find.len(), replace.iter().copied());
+
+                        let twin_id = layout.polycube_ref.structure.twin(path_id).to_owned();
+                        let mut twin_path = path.clone();
+                        twin_path.reverse();
+
+                        layout.edge_to_path.insert(path_id, path);
+                        layout.edge_to_path.insert(twin_id, twin_path);
+
+                        layout.face_to_patch.get_mut(&old_patch).unwrap().faces.remove(&triangle_id);
+                        layout.face_to_patch.get_mut(&new_patch).unwrap().faces.insert(triangle_id);
+
+                        for elem in find {
+                            occupied_vertices.remove(&elem);
+                        }
+                        for elem in replace {
+                            occupied_vertices.insert(elem);
+                        }
+                        break;
+                    }
+                }
+
+                if c == 1000 {
+                    break;
+                }
+            }
+            self.compute_alignment();
+            println!("Alignment after: {:?}", self.alignment);
+        }
     }
 }

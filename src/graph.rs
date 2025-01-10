@@ -31,6 +31,14 @@ impl<V: Eq + PartialEq + Hash + Default + Copy, E: Copy> Graaf<V, E> {
         }
     }
 
+    pub fn nodes(&self) -> Vec<V> {
+        self.nodes.clone()
+    }
+
+    pub fn edges(&self) -> Vec<(V, V, E)> {
+        self.edges.clone()
+    }
+
     pub fn filter(&self, predicate: impl Fn((&V, &V)) -> bool) -> Self {
         let nodes = self.nodes.clone();
         let edges = self.edges.iter().filter(|(from, to, _)| predicate((from, to))).copied().collect_vec();

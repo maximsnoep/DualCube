@@ -10,6 +10,7 @@ mod ui;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::prelude::*;
+use bevy::render::mesh;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{block_on, AsyncComputeTaskPool, Task};
 use bevy::window::WindowMode;
@@ -34,8 +35,9 @@ use smooth_bevy_cameras::LookTransformPlugin;
 use solutions::{Loop, Solution};
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::BufReader;
+use std::io::{self, BufReader, Write};
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use winit::window::Icon;
@@ -51,11 +53,10 @@ slotmap::new_key_type! {
 
 pub type EmbeddedMesh = Douconel<VertID, EmbeddedVertex, EdgeID, Empty, FaceID, Empty>;
 
-#[derive(Resource, Default, Debug, Clone, Serialize, Deserialize)]
+#[derive(Resource, Debug, Clone, Serialize, Deserialize)]
 pub struct Configuration {
     pub direction: PrincipalDirection,
     pub alpha: f64,
-    pub beta: i32,
 
     pub should_continue: bool,
 
@@ -65,15 +66,57 @@ pub struct Configuration {
     pub raycasted: Option<[EdgeID; 2]>,
     pub selected: Option<[EdgeID; 2]>,
 
-    pub compute_primal: bool,
     pub interactive: bool,
     pub delete_mode: bool,
 
     pub ui_is_hovered: [bool; 32],
     pub window_shows_object: [Objects; 4],
     pub window_has_size: [f32; 4],
+    pub window_has_position: [(f32, f32); 4],
 
-    pub camera_speed: f32,
+    pub hex_mesh_status: HexMeshStatus,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+enum HexMeshStatus {
+    None,
+    Loading,
+    Done(HexMeshScore),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct HexMeshScore {
+    hausdorff: f32,
+    avg_jacob: f32,
+    min_jacob: f32,
+    max_jacob: f32,
+    irregular: f32,
+}
+
+impl Default for Configuration {
+    fn default() -> Self {
+        Self {
+            direction: PrincipalDirection::X,
+            alpha: 0.5,
+            should_continue: true,
+            sides_mask: [0, 0, 0],
+            fps: -1.,
+            raycasted: None,
+            selected: None,
+            interactive: false,
+            delete_mode: false,
+            ui_is_hovered: [false; 32],
+            window_shows_object: [
+                Objects::MeshPolycubeLayout,
+                Objects::PolycubePrimal,
+                Objects::MeshAlignmentScore,
+                Objects::MeshInput,
+            ],
+            window_has_size: [256., 256., 256., 0.],
+            window_has_position: [(0., 0.); 4],
+            hex_mesh_status: HexMeshStatus::None,
+        }
+    }
 }
 
 // Updates the FPS counter in `configuration`.
@@ -93,6 +136,11 @@ struct Tasks {
 }
 
 #[derive(Resource, Default)]
+struct HexTasks {
+    generating_chunks: HashMap<usize, Task<Option<HexMeshScore>>>,
+}
+
+#[derive(Resource, Default)]
 pub struct CameraHandles {
     pub map: HashMap<CameraFor, Handle<Image>>,
 }
@@ -101,6 +149,13 @@ pub struct CameraHandles {
 pub struct SaveStateObject {
     mesh: EmbeddedMesh,
     loops: Vec<Loop>,
+    configuration: Configuration,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SaveStateObjectBackwardscompatibility {
+    pub mesh: EmbeddedMesh,
+    pub loops: Vec<Loop>,
 }
 
 #[derive(Component)]
@@ -112,7 +167,10 @@ pub struct MainMesh;
 #[derive(Event, Debug)]
 pub enum ActionEvent {
     LoadFile(PathBuf),
+    ExportAll,
     ExportState,
+    ExportSolution,
+    ToHexmesh,
     ResetCamera,
     Mutate,
     Smoothen,
@@ -175,6 +233,7 @@ fn main() {
         .init_resource::<SolutionResource>()
         .init_resource::<Configuration>()
         .init_resource::<Tasks>()
+        .init_resource::<HexTasks>()
         .init_resource::<CameraHandles>()
         .insert_resource(ClearColor(BACKGROUND_COLOR))
         .insert_resource(AmbientLight {
@@ -208,7 +267,8 @@ fn main() {
         .add_systems(Update, render::update)
         .add_systems(Update, render::gizmos)
         .add_systems(Update, handle_events)
-        .add_systems(Update, handle_tasks)
+        .add_systems(Update, handle_solution_tasks)
+        .add_systems(Update, handle_hexmesh_tasks)
         .add_systems(Update, raycast)
         .add_systems(Update, fps)
         // .add_systems(Update, handle_tasks)
@@ -235,7 +295,28 @@ fn set_window_icon(
     }
 }
 
-pub fn handle_tasks(
+pub fn handle_hexmesh_tasks(mut tasks: ResMut<HexTasks>, mut configuration: ResMut<Configuration>) {
+    tasks.generating_chunks.retain(|id, task| {
+        // check on our task to see how it's doing :)
+        let status = block_on(future::poll_once(task));
+
+        // keep the entry in our HashMap only if the task is not done yet
+        let retain = status.is_none();
+
+        // if this task is done, handle the data it returned!
+        if let Some(chunk_data) = status {
+            println!("HexTask {} is done!", id);
+
+            if let Some(label) = chunk_data {
+                configuration.hex_mesh_status = HexMeshStatus::Done(label);
+            }
+        }
+
+        retain
+    });
+}
+
+pub fn handle_solution_tasks(
     mut tasks: ResMut<Tasks>,
     mut solution: ResMut<SolutionResource>,
     mut ev_writer: EventWriter<ActionEvent>,
@@ -283,6 +364,7 @@ pub fn handle_events(
     mut configuration: ResMut<Configuration>,
 
     mut tasks: ResMut<Tasks>,
+    mut hextasks: ResMut<HexTasks>,
 
     mut commands: Commands,
     cameras: Query<Entity, With<Camera>>,
@@ -301,41 +383,49 @@ pub fn handle_events(
                 match path.extension().unwrap().to_str() {
                     Some("obj" | "stl") => {
                         mesh_resmut.mesh = match Douconel::from_file(path) {
-                            Ok(res) => Arc::new(res.0),
+                            Ok(res) => {
+                                let mut mesh = res.0;
+                                let n = 10_000 - std::cmp::min(10_000, mesh.nr_edges());
+                                mesh.refine(n);
+                                Arc::new(mesh)
+                            }
                             Err(err) => {
                                 panic!("Error while parsing STL file {path:?}: {err:?}");
                             }
                         };
+
                         solution.current_solution = Solution::new(mesh_resmut.mesh.clone());
                     }
                     Some("save") => {
-                        let loaded_state: SaveStateObject = serde_json::from_reader(BufReader::new(File::open(path).unwrap())).unwrap();
+                        if let Ok(loaded_state) = serde_json::from_reader::<_, SaveStateObject>(BufReader::new(File::open(path).unwrap())) {
+                            mesh_resmut.mesh = Arc::new(loaded_state.mesh);
+                            solution.current_solution = Solution::new(mesh_resmut.mesh.clone());
+                            *configuration = loaded_state.configuration.clone();
 
-                        mesh_resmut.mesh = Arc::new(loaded_state.mesh);
+                            for saved_loop in loaded_state.loops {
+                                solution.current_solution.add_loop(saved_loop);
+                            }
+                        } else if let Ok(loaded_state) =
+                            serde_json::from_reader::<_, SaveStateObjectBackwardscompatibility>(BufReader::new(File::open(path).unwrap()))
+                        {
+                            mesh_resmut.mesh = Arc::new(loaded_state.mesh);
+                            solution.current_solution = Solution::new(mesh_resmut.mesh.clone());
 
-                        solution.current_solution = Solution::new(mesh_resmut.mesh.clone());
-
-                        for saved_loop in loaded_state.loops {
-                            solution.current_solution.add_loop(saved_loop);
+                            for saved_loop in loaded_state.loops {
+                                solution.current_solution.add_loop(saved_loop);
+                            }
+                        } else {
+                            println!("Error while parsing save file {path:?}");
                         }
                     }
                     _ => panic!("File format not supported."),
                 }
 
-                configuration.interactive = true;
-                configuration.alpha = 0.5;
-                // configuration.beta = 10;
-                configuration.compute_primal = true;
+                if mesh_resmut.mesh.vert_ids().is_empty() {
+                    return;
+                }
 
-                configuration.window_shows_object[0] = Objects::MeshInput;
-                configuration.window_shows_object[1] = Objects::PolycubePrimal;
-                configuration.window_shows_object[2] = Objects::MeshPolycubeLayout;
-                configuration.window_shows_object[3] = Objects::MeshAlignmentScore;
-
-                configuration.window_has_size[0] = 0.;
-                configuration.window_has_size[1] = 0.;
-                configuration.window_has_size[2] = 0.;
-                configuration.window_has_size[3] = 0.;
+                configuration.hex_mesh_status = HexMeshStatus::None;
 
                 let mut patterns = TreeD::default();
                 for v_id in mesh_resmut.mesh.vert_ids() {
@@ -428,19 +518,159 @@ pub fn handle_events(
 
                 solution.current_solution.reconstruct_solution(false);
             }
-            ActionEvent::ExportState => {
-                let path = format!(
-                    "./out/{}_{:?}.save",
-                    mesh_resmut.properties.source.split("\\").last().unwrap().split('.').next().unwrap(),
-                    SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards").as_millis()
-                );
+            ActionEvent::ExportAll => {
+                if mesh_resmut.mesh.vert_ids().is_empty() {
+                    return;
+                }
+
+                let t = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards").as_secs();
+                let n = mesh_resmut
+                    .properties
+                    .source
+                    .split("\\")
+                    .last()
+                    .unwrap()
+                    .split('.')
+                    .next()
+                    .unwrap()
+                    .split(' ')
+                    .next()
+                    .unwrap();
+
+                let path_save = format!("./out/{n}_{t}.save");
+                let path_obj = format!("./out/{n}_{t}.obj",);
+                let path_flag = format!("./out/{n}_{t}.flag",);
 
                 let state = SaveStateObject {
                     mesh: (*mesh_resmut.mesh).clone(),
                     loops: solution.current_solution.loops.values().cloned().collect(),
+                    configuration: configuration.clone(),
                 };
 
-                fs::write(&PathBuf::from(path), serde_json::to_string(&state).unwrap());
+                fs::write(&PathBuf::from(path_save), serde_json::to_string(&state).unwrap());
+
+                solution.current_solution.export(&PathBuf::from(path_obj), &PathBuf::from(path_flag));
+            }
+
+            ActionEvent::ExportState => {
+                if mesh_resmut.mesh.vert_ids().is_empty() {
+                    return;
+                }
+
+                let t = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards").as_secs();
+                let n = mesh_resmut
+                    .properties
+                    .source
+                    .split("\\")
+                    .last()
+                    .unwrap()
+                    .split('.')
+                    .next()
+                    .unwrap()
+                    .split(' ')
+                    .next()
+                    .unwrap();
+                let path_save = format!("./out/{n}_{t}.save",);
+
+                let state = SaveStateObject {
+                    mesh: (*mesh_resmut.mesh).clone(),
+                    loops: solution.current_solution.loops.values().cloned().collect(),
+                    configuration: configuration.clone(),
+                };
+
+                fs::write(&PathBuf::from(path_save), serde_json::to_string(&state).unwrap());
+            }
+
+            ActionEvent::ExportSolution => {
+                if mesh_resmut.mesh.vert_ids().is_empty() {
+                    return;
+                }
+
+                let t = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards").as_secs();
+                let n = mesh_resmut
+                    .properties
+                    .source
+                    .split("\\")
+                    .last()
+                    .unwrap()
+                    .split('.')
+                    .next()
+                    .unwrap()
+                    .split(' ')
+                    .next()
+                    .unwrap();
+
+                let path_obj = format!("./out/{n}_{t:?}.obj");
+                let path_flag = format!("./out/{n}_{t:?}.flag");
+
+                solution.current_solution.export(&PathBuf::from(path_obj), &PathBuf::from(path_flag));
+            }
+            ActionEvent::ToHexmesh => {
+                if mesh_resmut.mesh.vert_ids().is_empty() {
+                    return;
+                }
+
+                let t = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards").as_secs();
+                let n = mesh_resmut.properties.source.split("\\").last().unwrap().split('.').next().unwrap().to_owned();
+
+                let path_save = format!("./out/{n}_{t}.save");
+                let path_obj = format!("./out/{n}_{t}.obj",);
+                let path_flag = format!("./out/{n}_{t}.flag",);
+
+                let state = SaveStateObject {
+                    mesh: (*mesh_resmut.mesh).clone(),
+                    loops: solution.current_solution.loops.values().cloned().collect(),
+                    configuration: configuration.clone(),
+                };
+
+                fs::write(&PathBuf::from(path_save), serde_json::to_string(&state).unwrap());
+
+                solution.current_solution.export(&PathBuf::from(path_obj), &PathBuf::from(path_flag));
+
+                configuration.hex_mesh_status = HexMeshStatus::Loading;
+
+                let task_pool = AsyncComputeTaskPool::get();
+                let task = task_pool.spawn(async move {
+                    Command::new("wsl")
+                        .args([
+                            "~/polycube-to-hexmesh/pipeline.sh",
+                            &format!("/mnt/c/Users/20182085/Documents/douconel-test-env/out/{n}_{t}.obj"),
+                            "-flag",
+                            &format!("/mnt/c/Users/20182085/Documents/douconel-test-env/out/{n}_{t}.flag"),
+                        ])
+                        .output()
+                        .expect("failed to execute process");
+
+                    // outputs to '~/polycube-to-hexmesh/out/{n}_{t}_hex.mesh'
+
+                    let out = Command::new("wsl")
+                        .args([
+                            "python3",
+                            "~/polycube-to-hexmesh/evaluator.py",
+                            &format!("~/polycube-to-hexmesh/tmp/{n}_{t}_remesh.mesh"),
+                            &format!("~/polycube-to-hexmesh/out/{n}_{t}_hex.mesh"),
+                        ])
+                        .output()
+                        .expect("failed to execute process");
+
+                    let out_str = String::from_utf8(out.stdout).unwrap();
+
+                    println!("{}", out_str);
+
+                    let out_vec = out_str.split('\n').filter(|s| !s.is_empty()).collect_vec();
+
+                    let score = HexMeshScore {
+                        hausdorff: out_vec[0].parse().unwrap(),
+                        avg_jacob: out_vec[1].parse().unwrap(),
+                        min_jacob: out_vec[2].parse().unwrap(),
+                        max_jacob: out_vec[3].parse().unwrap(),
+                        irregular: out_vec[4].parse().unwrap(),
+                    };
+
+                    Some(score)
+                });
+
+                hextasks.generating_chunks.insert(999, task);
             }
             ActionEvent::ResetCamera => {
                 render::reset(&mut commands, &cameras, &mut images, &mut camera_handles);

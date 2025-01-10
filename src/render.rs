@@ -33,6 +33,8 @@ pub enum Objects {
     MeshInput,
     MeshAlignmentScore,
     MeshOrthogonalityScore,
+    MeshPolycubeLabeling,
+    PolycubePrimalPolyhedron,
     Debug,
     Debug2,
 }
@@ -47,6 +49,8 @@ impl From<Objects> for String {
             Objects::MeshInput => "input mesh",
             Objects::MeshAlignmentScore => "alignment (score)",
             Objects::MeshOrthogonalityScore => "orthogonality (score)",
+            Objects::MeshPolycubeLabeling => "polycube labeling",
+            Objects::PolycubePrimalPolyhedron => "polycube polyhedron",
             Objects::Debug => "DEBUG!!!",
             Objects::Debug2 => "DEBUG2!!!",
         }
@@ -64,6 +68,8 @@ impl From<Objects> for Vec3 {
             Objects::MeshInput => Self::new(1_000., 0., 1_000.),
             Objects::MeshAlignmentScore => Self::new(0., 1_000., 0.),
             Objects::MeshOrthogonalityScore => Self::new(0., 1_000., 1_000.),
+            Objects::MeshPolycubeLabeling => Self::new(-1_000., 0., 0.),
+            Objects::PolycubePrimalPolyhedron => Self::new(-1_000., 1_000., 0.),
             Objects::Debug => Self::new(0_000., 0_000., 1_000.),
             Objects::Debug2 => Self::new(0_000., 0_000., -1_000.),
         }
@@ -840,6 +846,113 @@ pub fn update(
 
                             let n = mesh_resmut.mesh.edge_normal(edgepair[0]);
                             add_line2(&mut gizmos_cache.lines, u, v, n * 0.005, color, translation + Vec3::from(object), scale);
+                        }
+                    }
+                }
+            }
+            Objects::MeshPolycubeLabeling => {
+                if let Some(polycube) = &solution.current_solution.polycube {
+                    if let Some(Ok(lay)) = &solution.current_solution.layout {
+                        let mut layout_color_map = HashMap::new();
+
+                        for &face_id in &polycube.structure.face_ids() {
+                            let normal = (polycube.structure.normal(face_id) as Vector3D).normalize();
+                            let (dir, side) = to_principal_direction(normal);
+                            let color = dir.to_primal_color_sided(side);
+                            for &triangle_id in &lay.face_to_patch[&face_id].faces {
+                                layout_color_map.insert(triangle_id, color);
+                            }
+                        }
+
+                        let (mesh, translation, scale) = get_mesh(&lay.granulated_mesh, &layout_color_map);
+
+                        commands.spawn((
+                            get_pbrbundle(meshes.add(mesh), translation + Vec3::from(object), scale, &standard_material),
+                            RenderedMesh,
+                        ));
+
+                        let path_ids = lay
+                            .edge_to_path
+                            .keys()
+                            .filter(|&&path_id| {
+                                let twin_id = lay.polycube_ref.structure.twin(path_id).to_owned();
+                                path_id < twin_id
+                            })
+                            .copied()
+                            .collect_vec();
+
+                        for path_id in path_ids {
+                            let path = lay.edge_to_path.get(&path_id).unwrap();
+
+                            let face_id = lay.polycube_ref.structure.face(path_id);
+
+                            let twin_path_id = lay.polycube_ref.structure.twin(path_id).to_owned();
+                            let twin_face_id = lay.polycube_ref.structure.face(twin_path_id);
+
+                            let normal = lay.polycube_ref.structure.normal(face_id).normalize();
+                            let twin_normal = lay.polycube_ref.structure.normal(twin_face_id).normalize();
+                            if normal != twin_normal {
+                                for vertexpair in path.windows(2) {
+                                    if lay.granulated_mesh.edge_between_verts(vertexpair[0], vertexpair[1]).is_none() {
+                                        println!("Edge between {:?} and {:?} does not exist", vertexpair[0], vertexpair[1]);
+                                        continue;
+                                    }
+                                    let edge_id = lay.granulated_mesh.edge_between_verts(vertexpair[0], vertexpair[1]).unwrap().0;
+                                    let (u_id, v_id) = lay.granulated_mesh.endpoints(edge_id);
+                                    let u = lay.granulated_mesh.position(u_id);
+                                    let v = lay.granulated_mesh.position(v_id);
+                                    let n = lay.granulated_mesh.edge_normal(edge_id);
+                                    add_line2(
+                                        &mut gizmos_cache.lines,
+                                        u,
+                                        v,
+                                        n * 0.01,
+                                        hutspot::color::BLACK,
+                                        translation + Vec3::from(object),
+                                        scale,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Objects::PolycubePrimalPolyhedron => {
+                if let Some(polycube) = &solution.current_solution.polycube.clone() {
+                    let mut colormap = HashMap::new();
+                    for &face_id in &polycube.structure.face_ids() {
+                        let normal = (polycube.structure.normal(face_id) as Vector3D).normalize();
+                        let (dir, side) = to_principal_direction(normal);
+                        let color = dir.to_primal_color_sided(side);
+                        colormap.insert(face_id, color);
+                    }
+
+                    let (mesh, translation, scale) = get_mesh(&polycube.structure, &colormap);
+
+                    commands.spawn((
+                        get_pbrbundle(meshes.add(mesh), translation + Vec3::from(object), scale, &standard_material),
+                        RenderedMesh,
+                    ));
+
+                    // Draw the edges of the polycube.
+                    for edge_id in polycube.structure.edge_ids() {
+                        let face1 = polycube.structure.face(edge_id);
+                        let face2 = polycube.structure.face(polycube.structure.twin(edge_id));
+                        let normal1 = polycube.structure.normal(face1);
+                        let normal2 = polycube.structure.normal(face2);
+                        if normal1 != normal2 {
+                            let endpoints = polycube.structure.endpoints(edge_id);
+                            let u = polycube.structure.position(endpoints.0);
+                            let v = polycube.structure.position(endpoints.1);
+                            let line = DrawableLine::from_line(
+                                u,
+                                v,
+                                polycube.structure.normal(polycube.structure.face(edge_id)) * 0.005,
+                                vec3_to_vector3d(translation + Vec3::from(object)),
+                                scale,
+                            );
+                            let c = hutspot::color::BLACK;
+                            gizmos_cache.lines.push((line.u, line.v, c));
                         }
                     }
                 }

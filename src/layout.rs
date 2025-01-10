@@ -8,10 +8,14 @@ use hutspot::geom::Vector3D;
 use itertools::Itertools;
 use log::warn;
 use ordered_float::OrderedFloat;
+use rand::distributions::WeightedIndex;
+use rand::prelude::Distribution;
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
+use slotmap::SecondaryMap;
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Copy)]
 pub enum NodeType {
@@ -48,9 +52,9 @@ impl Layout {
         };
         layout.place_vertices(dual_ref)?;
         layout.place_paths()?;
-        if smoothen {
-            layout.smoothening();
-        }
+        // if smoothen {
+        //     layout.smoothening();
+        // }
         layout.assign_patches()?;
         Ok(layout)
     }
@@ -782,5 +786,44 @@ impl Layout {
                 return;
             }
         }
+    }
+
+    pub fn improve_layout(layout: &Self, dual_ref: &Dual, alignment: &SecondaryMap<FaceID, f64>) -> Result<Self, PropertyViolationError<PolycubeVertID>> {
+        let mut layout = Layout {
+            polycube_ref: layout.polycube_ref.clone(),
+            granulated_mesh: layout.granulated_mesh.clone(),
+
+            vert_to_corner: BiHashMap::new(),
+            face_to_patch: HashMap::new(),
+            edge_to_path: HashMap::new(),
+        };
+
+        // For every currently placed corner.
+        // Look at vertices in the corresponding loop region.
+        // Select 1 vertex in the loop region, sampled by the average alignment score.
+        for corner_id in layout.polycube_ref.structure.vert_ids() {
+            let region_id = layout.polycube_ref.region_to_vertex.get_by_right(&corner_id).unwrap().to_owned();
+            let vertices = dual_ref.loop_structure.faces[region_id].verts.clone().into_iter().collect_vec();
+            let alignments = vertices
+                .iter()
+                .map(|&v| {
+                    let adjacent_faces = layout.granulated_mesh.star(v);
+                    let alignment = adjacent_faces.iter().map(|&f| alignment[f]).sum::<f64>() / adjacent_faces.len() as f64;
+                    alignment
+                })
+                .collect_vec();
+
+            let dist = WeightedIndex::new(&alignments).unwrap();
+            let best_vertex = vertices[dist.sample(&mut rand::thread_rng())];
+            layout.vert_to_corner.insert(corner_id, best_vertex);
+        }
+
+        layout.place_vertices(dual_ref)?;
+        layout.place_paths()?;
+        // if smoothen {
+        //     layout.smoothening();
+        // }
+        layout.assign_patches()?;
+        Ok(layout)
     }
 }

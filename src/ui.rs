@@ -1,8 +1,12 @@
+use std::process::Command;
+
 use crate::render::{CameraFor, Objects};
+use crate::HexMeshStatus;
 use crate::{dual::PrincipalDirection, ActionEvent, CameraHandles, Configuration, InputResource, SolutionResource};
 use bevy::prelude::*;
-use bevy_egui::egui::Rounding;
 use bevy_egui::egui::{emath::Numeric, text::LayoutJob, Align, Color32, FontId, Frame, Layout, Slider, TextFormat, TopBottomPanel, Ui, Window};
+use bevy_egui::egui::{Pos2, Rect, RichText, Rounding, Vec2, WidgetText};
+
 use enum_iterator::all;
 use tico::tico;
 
@@ -62,14 +66,24 @@ pub fn update(
                     .show(ui, |ui| {
                         bevy_egui::egui::menu::bar(ui, |ui| {
                             bevy_egui::egui::menu::menu_button(ui, "File", |ui| {
-                                if ui.button("Export").clicked() {
-                                    ev_w.send(ActionEvent::ExportState);
-                                }
-                                ui.add_space(5.);
                                 if ui.button("Load").clicked() {
                                     if let Some(path) = rfd::FileDialog::new().add_filter("triangulated geometry", &["obj", "stl", "save"]).pick_file() {
                                         ev_w.send(ActionEvent::LoadFile(path));
                                     }
+                                }
+                                ui.add_space(5.);
+                                if ui.button("Export").clicked() {
+                                    ev_w.send(ActionEvent::ExportAll);
+                                }
+                                ui.add_space(5.);
+                                ui.separator();
+                                ui.add_space(5.);
+                                if ui.button("Export as .save").clicked() {
+                                    ev_w.send(ActionEvent::ExportState);
+                                }
+                                ui.add_space(5.);
+                                if ui.button("Export as .obj+.flag").clicked() {
+                                    ev_w.send(ActionEvent::ExportSolution);
                                 }
                                 ui.add_space(5.);
                                 ui.separator();
@@ -144,23 +158,9 @@ pub fn update(
 
                 ui.add_space(5.);
 
-                // SECOND ROW
+                // NEXT ROW
                 ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
                     ui.add_space(15.);
-                    if ui.button("SMOOTHEN").clicked() {
-                        ev_w.send(ActionEvent::Smoothen);
-                    }
-                });
-
-                ui.add_space(5.);
-
-                // SECOND ROW
-                ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
-                    ui.add_space(15.);
-                    if ui.checkbox(&mut conf.should_continue, "AUTO").clicked() && conf.should_continue {
-                        ev_w.send(ActionEvent::Mutate);
-                        conf.interactive = false;
-                    }
                 });
 
                 ui.add_space(5.);
@@ -168,63 +168,138 @@ pub fn update(
                 // THIRD ROW
                 ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
                     ui.add_space(15.);
-                    if ui.checkbox(&mut conf.interactive, "MANUAL").clicked() {
-                        conf.should_continue = false;
-                    };
-                    ui.add_space(15.);
-                    if conf.interactive {
-                        for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
-                            radio(
-                                ui,
-                                &mut conf.direction,
-                                direction,
-                                Color32::from_rgb(
-                                    (direction.to_dual_color()[0] * 255.) as u8,
-                                    (direction.to_dual_color()[1] * 255.) as u8,
-                                    (direction.to_dual_color()[2] * 255.) as u8,
-                                ),
-                            );
-                        }
 
-                        // add slider for alpha (or 1-beta)
-                        slider(ui, "alpha", &mut conf.alpha, 0.0..=1.0);
+                    bevy_egui::egui::menu::bar(ui, |ui| {
+                        let rt = RichText::new("AUTO").color(if !conf.interactive { Color32::WHITE } else { Color32::GRAY });
+                        if sleek_button(ui, rt) {
+                            conf.interactive = !conf.interactive;
+                            if conf.interactive {
+                                conf.should_continue = false;
+                            }
+                        };
 
-                        if let Some(edgepair) = conf.selected {
-                            if let Some(Some(sol)) = solution.next[conf.direction as usize].get(&edgepair) {
-                                ui.label("DUAL[");
-                                if sol.dual.is_ok() {
-                                    ui.label(colored_text("Ok", Color32::GREEN));
-                                } else {
-                                    ui.label(colored_text(&format!("{:?}", sol.dual.as_ref().err()), Color32::RED));
-                                }
-                                ui.label("]");
+                        let rt: RichText = RichText::new("|").color(Color32::GRAY);
+                        ui.label(rt);
 
-                                ui.label("EMBD[");
-                                if let Some(layout) = &sol.layout {
-                                    if layout.is_ok() {
+                        let rt = RichText::new("MANUAL").color(if conf.interactive { Color32::WHITE } else { Color32::GRAY });
+                        if sleek_button(ui, rt) {
+                            conf.interactive = !conf.interactive;
+                            if conf.interactive {
+                                conf.should_continue = false;
+                            }
+                        };
+
+                        ui.add_space(15.);
+
+                        if !conf.interactive {
+                            if ui.checkbox(&mut conf.should_continue, "run").clicked() && conf.should_continue {
+                                ev_w.send(ActionEvent::Mutate);
+                            }
+                        } else {
+                            for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
+                                radio(
+                                    ui,
+                                    &mut conf.direction,
+                                    direction,
+                                    Color32::from_rgb(
+                                        (direction.to_dual_color()[0] * 255.) as u8,
+                                        (direction.to_dual_color()[1] * 255.) as u8,
+                                        (direction.to_dual_color()[2] * 255.) as u8,
+                                    ),
+                                );
+                            }
+
+                            // add slider for alpha (or 1-beta)
+                            slider(ui, "alpha", &mut conf.alpha, 0.0..=1.0);
+
+                            if let Some(edgepair) = conf.selected {
+                                if let Some(Some(sol)) = solution.next[conf.direction as usize].get(&edgepair) {
+                                    ui.label("DUAL[");
+                                    if sol.dual.is_ok() {
                                         ui.label(colored_text("Ok", Color32::GREEN));
                                     } else {
-                                        ui.label(colored_text(&format!("{:?}", layout.as_ref().err()), Color32::RED));
+                                        ui.label(colored_text(&format!("{:?}", sol.dual.as_ref().err()), Color32::RED));
                                     }
-                                } else {
-                                    ui.label(colored_text("None", Color32::RED));
-                                }
-                                ui.label("]");
-
-                                if let Some(alignment) = sol.alignment {
-                                    ui.label("ALIGN[");
-                                    ui.label(format!("{alignment:.3}"));
                                     ui.label("]");
-                                }
 
-                                if let Some(orthogonality) = sol.orthogonality {
-                                    ui.label("ORTH[");
-                                    ui.label(format!("{orthogonality:.3}"));
+                                    ui.label("EMBD[");
+                                    if let Some(layout) = &sol.layout {
+                                        if layout.is_ok() {
+                                            ui.label(colored_text("Ok", Color32::GREEN));
+                                        } else {
+                                            ui.label(colored_text(&format!("{:?}", layout.as_ref().err()), Color32::RED));
+                                        }
+                                    } else {
+                                        ui.label(colored_text("None", Color32::RED));
+                                    }
                                     ui.label("]");
+
+                                    if let Some(alignment) = sol.alignment {
+                                        ui.label("ALIGN[");
+                                        ui.label(format!("{alignment:.3}"));
+                                        ui.label("]");
+                                    }
+
+                                    if let Some(orthogonality) = sol.orthogonality {
+                                        ui.label("ORTH[");
+                                        ui.label(format!("{orthogonality:.3}"));
+                                        ui.label("]");
+                                    }
                                 }
                             }
                         }
-                    }
+                    });
+                });
+
+                ui.add_space(5.);
+
+                // NEXT ROW
+                ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
+                    ui.add_space(15.);
+
+                    bevy_egui::egui::menu::bar(ui, |ui| {
+                        let rt = RichText::new("HEXMESH").color(Color32::WHITE);
+                        if sleek_button(ui, rt) {
+                            ev_w.send(ActionEvent::ToHexmesh);
+                        };
+
+                        ui.add_space(15.);
+
+                        match &conf.hex_mesh_status {
+                            HexMeshStatus::None => {}
+                            HexMeshStatus::Loading => {
+                                let mut job = LayoutJob::default();
+                                let elapsed = (time.elapsed_seconds() / 4.) % 1.;
+                                let label = if elapsed < 0.25 {
+                                    " . "
+                                } else if elapsed < 0.5 {
+                                    ".. "
+                                } else if elapsed < 0.75 {
+                                    "..."
+                                } else {
+                                    " .."
+                                };
+                                job.append(label, 0.0, text_format(12.0, Color32::WHITE));
+                                ui.label(job);
+                            }
+                            HexMeshStatus::Done(score) => {
+                                let mut job = LayoutJob::default();
+                                job.append(
+                                    &format!(
+                                        "Hd: {hd}, sJ: {sj} ({sjmin}-{sjmax}), irr: {irr}",
+                                        hd = score.hausdorff,
+                                        sj = score.avg_jacob,
+                                        sjmin = score.min_jacob,
+                                        sjmax = score.max_jacob,
+                                        irr = score.irregular,
+                                    ),
+                                    0.0,
+                                    text_format(9.0, Color32::WHITE),
+                                );
+                                ui.label(job);
+                            }
+                        }
+                    })
                 });
             });
         });
@@ -328,7 +403,7 @@ pub fn update(
             });
         });
 
-    for i in 0..conf.window_shows_object.len() {
+    for i in 0..3 {
         let egui_handle = egui_ctx.add_image(image_handle.map.get(&CameraFor(conf.window_shows_object[i])).unwrap().clone());
         Window::new(format!("window {i}"))
             .frame(Frame {
@@ -448,4 +523,15 @@ pub fn text_format(size: f32, color: Color32) -> TextFormat {
         color,
         ..Default::default()
     }
+}
+
+pub fn sleek_button<T>(ui: &mut Ui, label: T) -> bool
+where
+    T: Into<WidgetText>,
+{
+    bevy_egui::egui::menu::menu_button(ui, label, |ui| {
+        ui.close_menu();
+    })
+    .response
+    .clicked()
 }

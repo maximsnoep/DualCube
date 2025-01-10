@@ -670,16 +670,15 @@ impl Dual {
             .collect()
     }
 
-    fn next_intersection(&self, (this, next): (EdgeID, EdgeID), intersections: &HashMap<EdgeID, Intersection>) -> EdgeID {
+    fn next_intersection(&self, (this, next): (EdgeID, EdgeID), intersections: &HashMap<EdgeID, Intersection>) -> Option<EdgeID> {
         // Given two adjacent intersections (this, next), we find the third intersection in clockwise order.
 
         // Find the local edge that connects this and next
-        let edge_to_this = intersections.get(&next).unwrap().next.iter().find(|&&(_, _, x, _)| x == this).unwrap().0;
+        let edge_to_this = intersections.get(&next).unwrap().next.iter().find(|&&(_, _, x, _)| x == this)?.0;
 
         // Find the local edge that connects next and third (the one with the smallest clockwise angle)
-        intersections
-            .get(&next)
-            .unwrap()
+        let res = intersections
+            .get(&next)?
             .next
             .into_iter()
             .filter(|&(candidate_edge, _, _, _)| candidate_edge != edge_to_this)
@@ -693,9 +692,10 @@ impl Dual {
                 (candidate_x, clockwise_angle)
             })
             .sorted_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
-            .next()
-            .unwrap()
-            .0
+            .next()?
+            .0;
+
+        Some(res)
     }
 
     // Returns error if faces have more than 6 edges (we know the face degree is at most 6, so we can early stop, and we also want to prevent infinite loops / malformed faces)
@@ -715,19 +715,21 @@ impl Dual {
             loop {
                 let u = face[face.len() - 2];
                 let v = face[face.len() - 1];
-                let w = self.next_intersection((u, v), intersections);
+                if let Some(w) = self.next_intersection((u, v), intersections) {
+                    edges.retain(|e| !(e.0 == v && e.1 == w));
+                    if w == face[0] {
+                        break;
+                    }
 
-                edges.retain(|e| !(e.0 == v && e.1 == w));
-                if w == face[0] {
-                    break;
+                    counter += 1;
+                    if counter > 6 {
+                        return Err(PropertyViolationError::FaceWithDegreeMoreThanSix);
+                    }
+
+                    face.push(w);
+                } else {
+                    return Err(PropertyViolationError::UnknownError);
                 }
-
-                counter += 1;
-                if counter > 6 {
-                    return Err(PropertyViolationError::FaceWithDegreeMoreThanSix);
-                }
-
-                face.push(w);
             }
             faces.push(face.iter().map(|&x| fn_to_id(x)).collect_vec());
         }
