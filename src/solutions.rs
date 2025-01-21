@@ -20,13 +20,14 @@ use rand::{
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
 use slotmap::{SecondaryMap, SlotMap};
-use std::io::Write;
 use std::{
     collections::{HashMap, HashSet},
+    f64::NAN,
     hash::Hash,
     path::PathBuf,
     sync::Arc,
 };
+use std::{io::Write, thread::current};
 
 slotmap::new_key_type! {
     pub struct LoopID;
@@ -239,25 +240,45 @@ impl Solution {
         self.resize_polycube();
         self.compute_alignment();
         self.compute_orthogonality();
-        // self.improve_layout(1000000);
 
-        println!("alignment: {:?}", self.alignment);
+        // let mut no_improve = 0;
+        // for i in 0..1000 {
+        //     println!("i: {}, no_improve: {}", i, no_improve);
+        //     if no_improve > 100 {
+        //         break;
+        //     }
 
-        for _ in 0..100 {
-            let current_score = self.alignment.unwrap();
-            if let Ok(dual_ref) = &self.dual {
-                if let Some(Ok(layout)) = &self.layout {
-                    if let Ok(new_layout) = Layout::improve_layout(layout, dual_ref, &self.alignment_per_triangle) {
-                        self.layout = Some(Ok(new_layout));
-                        self.resize_polycube();
-                        self.compute_alignment();
-                        self.compute_orthogonality();
-                    }
-                }
-            }
+        //     let current_score = self.alignment.unwrap();
+        //     if let Ok(dual_ref) = &self.dual {
+        //         if let Some(Ok(layout)) = &self.layout.clone() {
+        //             match Layout::improve_layout(layout, dual_ref, &self.alignment_per_triangle) {
+        //                 Ok(new_layout) => {
+        //                     self.layout = Some(Ok(new_layout.clone()));
+        //                     self.resize_polycube();
+        //                     self.compute_alignment();
+        //                     self.compute_orthogonality();
+        //                     let new_score = self.alignment.unwrap();
+        //                     if (new_score - current_score) > 0.00001 {
+        //                         println!("Improved alignment from {:.2} to {:.2}", current_score, new_score);
+        //                         no_improve = 0;
+        //                     } else {
+        //                         self.layout = Some(Ok(layout.clone()));
+        //                         self.resize_polycube();
+        //                         self.compute_alignment();
+        //                         self.compute_orthogonality();
+        //                         no_improve += 1;
+        //                     }
+        //                     continue;
+        //                 }
+        //                 Err(e) => {}
+        //             }
+        //         }
+        //     }
 
-            println!("alignment: {:?}", self.alignment);
-        }
+        //     no_improve += 1;
+        // }
+
+        // println!("alignment: {:?}", self.alignment);
     }
 
     pub fn smoothen(&mut self) {

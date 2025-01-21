@@ -162,7 +162,7 @@ pub fn setup(
     cameras: Query<Entity, With<Camera>>,
 ) {
     let (config, _) = config_store.config_mut::<DefaultGizmoConfigGroup>();
-    config.line_width = 3.;
+    config.line_width = 2.;
 
     self::reset(&mut commands, &cameras, &mut images, &mut handles);
 }

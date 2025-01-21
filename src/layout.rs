@@ -183,16 +183,17 @@ impl Layout {
         let mut counter = 0;
 
         while let Some(edge_id) = edge_queue.pop_front() {
-            if counter > 10000 {
-                return Err(PropertyViolationError::UnknownError);
-            }
-            counter += 1;
             //println!("Edge queue: {}", edge_queue.len());
 
             // if already found (because of twin), skip
             if self.edge_to_path.contains_key(&edge_id) {
                 continue;
             }
+
+            if counter > 1000 {
+                return Err(PropertyViolationError::UnknownError);
+            }
+            counter += 1;
 
             // check if edge is separating (in combination with the edges already done)
             let covered_edges = self.edge_to_path.keys().chain([&edge_id]).collect::<HashSet<_>>();
@@ -381,10 +382,44 @@ impl Layout {
                 NodeType::Vertex(v_id) => self.granulated_mesh.position(v_id),
             };
 
-            let w_function = |a: NodeType, b: NodeType| OrderedFloat(nodetype_to_pos(a).metric_distance(&nodetype_to_pos(b)));
+            let endpoints = self.polycube_ref.structure.endpoints(edge_id);
+            let direction_vector = self.polycube_ref.structure.position(endpoints.1) - self.polycube_ref.structure.position(endpoints.0);
+            // Should be constant in two of the three directions
+            let direction = {
+                let (x, y, z) = (direction_vector.x.abs(), direction_vector.y.abs(), direction_vector.z.abs());
+                if x > y && x > z {
+                    PrincipalDirection::X
+                } else if y > x && y > z {
+                    PrincipalDirection::Y
+                } else {
+                    PrincipalDirection::Z
+                }
+            };
+
+            if direction == PrincipalDirection::X {
+                assert!(direction_vector.y < 1e-3 && direction_vector.z < 1e-3);
+            } else if direction == PrincipalDirection::Y {
+                assert!(direction_vector.x < 1e-3 && direction_vector.z < 1e-3);
+            } else {
+                assert!(direction_vector.x < 1e-3 && direction_vector.y < 1e-3);
+            }
+
+            // ALL EDGES THAT DEVIATE IN THE DIRECTION OF THE EDGE ARE PENALIZED
+
+            let curvature_function = |a_pos: Vector3D, b_pos: Vector3D| {
+                let a_to_b = b_pos - a_pos;
+                let res = a_to_b.angle(&direction_vector).min(PI - a_to_b.angle(&direction_vector)) + 1.0;
+                1.
+            };
+
+            let w_function = |a: NodeType, b: NodeType| {
+                OrderedFloat(curvature_function(nodetype_to_pos(a), nodetype_to_pos(b)) * nodetype_to_pos(a).metric_distance(&nodetype_to_pos(b)))
+            };
+
+            let h_function = |a: NodeType, b: NodeType| OrderedFloat(nodetype_to_pos(a).metric_distance(&nodetype_to_pos(b)));
 
             let mut granulated_path = vec![];
-            if let Some((path, _)) = hutspot::graph::find_shortest_path_astar(NodeType::Vertex(u), NodeType::Vertex(v), n_function, w_function, w_function) {
+            if let Some((path, _)) = hutspot::graph::find_shortest_path_astar(NodeType::Vertex(u), NodeType::Vertex(v), n_function, w_function, h_function) {
                 let mut last_f_ids_maybe: Option<[FaceID; 3]> = None;
                 for node in path {
                     match node {
@@ -454,8 +489,8 @@ impl Layout {
                 .map(|pair| self.granulated_mesh.distance(pair[0], pair[1]))
                 .sum::<f64>();
 
-            let ratio = (actual_score / lowerbound_score) - 1.0;
-            if ratio > 0.5 {
+            let ratio = (actual_score / lowerbound_score);
+            if ratio > 3. {
                 return Err(PropertyViolationError::PathTooLong);
             }
 
@@ -474,6 +509,8 @@ impl Layout {
             let mut rev_path = granulated_path;
             rev_path.reverse();
             self.edge_to_path.insert(primal.structure.twin(edge_id), rev_path);
+
+            counter = 0;
         }
         Ok(())
     }
@@ -789,41 +826,27 @@ impl Layout {
     }
 
     pub fn improve_layout(layout: &Self, dual_ref: &Dual, alignment: &SecondaryMap<FaceID, f64>) -> Result<Self, PropertyViolationError<PolycubeVertID>> {
-        let mut layout = Layout {
-            polycube_ref: layout.polycube_ref.clone(),
-            granulated_mesh: layout.granulated_mesh.clone(),
+        // Copy the layout, mutate the placement of one of the vertices, then recompute the paths only for this vertex. See if it improves.
 
-            vert_to_corner: BiHashMap::new(),
-            face_to_patch: HashMap::new(),
-            edge_to_path: HashMap::new(),
-        };
+        let mut mutated_layout = layout.clone();
 
-        // For every currently placed corner.
-        // Look at vertices in the corresponding loop region.
-        // Select 1 vertex in the loop region, sampled by the average alignment score.
-        for corner_id in layout.polycube_ref.structure.vert_ids() {
-            let region_id = layout.polycube_ref.region_to_vertex.get_by_right(&corner_id).unwrap().to_owned();
-            let vertices = dual_ref.loop_structure.faces[region_id].verts.clone().into_iter().collect_vec();
-            let alignments = vertices
-                .iter()
-                .map(|&v| {
-                    let adjacent_faces = layout.granulated_mesh.star(v);
-                    let alignment = adjacent_faces.iter().map(|&f| alignment[f]).sum::<f64>() / adjacent_faces.len() as f64;
-                    alignment
-                })
-                .collect_vec();
+        // Grab random vertex
+        // Mutate it by moving it to a neighboring vertex
+        let mut rng = rand::thread_rng();
+        let random_corner = mutated_layout.polycube_ref.structure.vert_ids().choose(&mut rng).unwrap().to_owned();
+        let vertex_id = mutated_layout.vert_to_corner.get_by_left(&random_corner).unwrap().to_owned();
+        let neighboring_vertices = mutated_layout.granulated_mesh.vneighbors(vertex_id);
+        // Select a random neighboring vertex
+        let new_vertex_id = *neighboring_vertices.choose(&mut rng).unwrap();
+        // Update the layout
+        mutated_layout.vert_to_corner.insert(random_corner, new_vertex_id);
 
-            let dist = WeightedIndex::new(&alignments).unwrap();
-            let best_vertex = vertices[dist.sample(&mut rand::thread_rng())];
-            layout.vert_to_corner.insert(corner_id, best_vertex);
-        }
+        // Compute the paths
+        mutated_layout.place_paths()?;
 
-        layout.place_vertices(dual_ref)?;
-        layout.place_paths()?;
-        // if smoothen {
-        //     layout.smoothening();
-        // }
-        layout.assign_patches()?;
-        Ok(layout)
+        // Compute the patches
+        mutated_layout.assign_patches()?;
+
+        Ok(mutated_layout)
     }
 }
