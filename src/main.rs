@@ -1,4 +1,3 @@
-mod all_cycles_from;
 mod dual;
 mod graph;
 mod layout;
@@ -10,7 +9,6 @@ mod ui;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::prelude::*;
-use bevy::render::mesh;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{block_on, AsyncComputeTaskPool, Task};
 use bevy::window::WindowMode;
@@ -19,7 +17,7 @@ use bevy_egui::EguiPlugin;
 use bevy_mod_raycast::prelude::*;
 use douconel::douconel::Douconel;
 use douconel::{douconel::Empty, douconel_embedded::EmbeddedVertex};
-use dual::PrincipalDirection;
+use dual::Orientation;
 use graph::Graaf;
 use hutspot::consts::PI;
 use hutspot::geom::Vector3D;
@@ -34,21 +32,125 @@ use smooth_bevy_cameras::controllers::orbit::OrbitCameraPlugin;
 use smooth_bevy_cameras::LookTransformPlugin;
 use solutions::{Loop, Solution};
 use std::collections::HashMap;
+use std::fmt::Display;
 use std::fs::{self, File};
-use std::io::{self, BufReader, Write};
+use std::io::BufReader;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use winit::window::Icon;
 
-pub const BACKGROUND_COLOR: bevy::prelude::Color = bevy::prelude::Color::rgb(255. / 255., 255. / 255., 255. / 255.);
-// pub const BACKGROUND_COLOR: bevy::prelude::Color = bevy::prelude::Color::srgb(27. / 255., 27. / 255., 27. / 255.);
+// pub const BACKGROUND_COLOR: bevy::prelude::Color = bevy::prelude::Color::srgb(255. / 255., 255. / 255., 255. / 255.);
+pub const BACKGROUND_COLOR: bevy::prelude::Color = bevy::prelude::Color::srgb(27. / 255., 27. / 255., 27. / 255.);
 
 slotmap::new_key_type! {
     pub struct VertID;
     pub struct EdgeID;
     pub struct FaceID;
+}
+
+// Principal directions, used to characterize a polycube (each edge and face is associated with a principal direction)
+#[derive(Copy, Clone, Default, PartialEq, Eq, Debug, Hash, Serialize, Deserialize)]
+pub enum PrincipalDirection {
+    #[default]
+    X,
+    Y,
+    Z,
+}
+
+impl Display for PrincipalDirection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::X => write!(f, "X-axis"),
+            Self::Y => write!(f, "Y-axis"),
+            Self::Z => write!(f, "Z-axis"),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Default, Debug, Serialize, Deserialize)]
+pub enum Perspective {
+    Primal,
+    #[default]
+    Dual,
+}
+
+pub const fn to_color(direction: PrincipalDirection, perspective: Perspective, orientation: Option<Orientation>) -> hutspot::color::Color {
+    match (perspective, direction, orientation) {
+        (Perspective::Primal, PrincipalDirection::X, None) => hutspot::color::RED,
+        (Perspective::Primal, PrincipalDirection::Y, None) => hutspot::color::BLUE,
+        (Perspective::Primal, PrincipalDirection::Z, None) => hutspot::color::YELLOW,
+        (Perspective::Primal, PrincipalDirection::X, Some(Orientation::Forwards)) => hutspot::color::RED,
+        (Perspective::Primal, PrincipalDirection::X, Some(Orientation::Backwards)) => hutspot::color::RED_LIGHT,
+        (Perspective::Primal, PrincipalDirection::Y, Some(Orientation::Forwards)) => hutspot::color::BLUE,
+        (Perspective::Primal, PrincipalDirection::Y, Some(Orientation::Backwards)) => hutspot::color::BLUE_LIGHT,
+        (Perspective::Primal, PrincipalDirection::Z, Some(Orientation::Forwards)) => hutspot::color::YELLOW,
+        (Perspective::Primal, PrincipalDirection::Z, Some(Orientation::Backwards)) => hutspot::color::YELLOW_LIGHT,
+        (Perspective::Dual, PrincipalDirection::X, None) => hutspot::color::GREEN,
+        (Perspective::Dual, PrincipalDirection::Y, None) => hutspot::color::ORANGE,
+        (Perspective::Dual, PrincipalDirection::Z, None) => hutspot::color::PURPLE,
+        (Perspective::Dual, PrincipalDirection::X, Some(Orientation::Forwards)) => hutspot::color::GREEN,
+        (Perspective::Dual, PrincipalDirection::X, Some(Orientation::Backwards)) => hutspot::color::GREEN_LIGHT,
+        (Perspective::Dual, PrincipalDirection::Y, Some(Orientation::Forwards)) => hutspot::color::ORANGE,
+        (Perspective::Dual, PrincipalDirection::Y, Some(Orientation::Backwards)) => hutspot::color::ORANG_LIGHT,
+        (Perspective::Dual, PrincipalDirection::Z, Some(Orientation::Forwards)) => hutspot::color::PURPLE,
+        (Perspective::Dual, PrincipalDirection::Z, Some(Orientation::Backwards)) => hutspot::color::PURPLE_LIGHT,
+    }
+}
+
+impl From<PrincipalDirection> for Vector3D {
+    fn from(dir: PrincipalDirection) -> Self {
+        match dir {
+            PrincipalDirection::X => Self::new(1., 0., 0.),
+            PrincipalDirection::Y => Self::new(0., 1., 0.),
+            PrincipalDirection::Z => Self::new(0., 0., 1.),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum Side {
+    Upper,
+    Lower,
+}
+
+impl Side {
+    pub const fn flip(self) -> Self {
+        match self {
+            Self::Upper => Self::Lower,
+            Self::Lower => Self::Upper,
+        }
+    }
+}
+
+pub fn to_principal_direction(v: Vector3D) -> (PrincipalDirection, Orientation) {
+    let x_is_max = v.x.abs() > v.y.abs() && v.x.abs() > v.z.abs();
+    let y_is_max = v.y.abs() > v.x.abs() && v.y.abs() > v.z.abs();
+    let z_is_max = v.z.abs() > v.x.abs() && v.z.abs() > v.y.abs();
+    assert!(x_is_max ^ y_is_max ^ z_is_max);
+
+    if x_is_max {
+        if v.x > 0. {
+            (PrincipalDirection::X, Orientation::Forwards)
+        } else {
+            (PrincipalDirection::X, Orientation::Backwards)
+        }
+    } else if y_is_max {
+        if v.y > 0. {
+            (PrincipalDirection::Y, Orientation::Forwards)
+        } else {
+            (PrincipalDirection::Y, Orientation::Backwards)
+        }
+    } else if z_is_max {
+        if v.z > 0. {
+            (PrincipalDirection::Z, Orientation::Forwards)
+        } else {
+            (PrincipalDirection::Z, Orientation::Backwards)
+        }
+    } else {
+        unreachable!()
+    }
 }
 
 pub type EmbeddedMesh = Douconel<VertID, EmbeddedVertex, EdgeID, Empty, FaceID, Empty>;
@@ -66,6 +168,7 @@ pub struct Configuration {
     pub raycasted: Option<[EdgeID; 2]>,
     pub selected: Option<[EdgeID; 2]>,
 
+    pub automatic: bool,
     pub interactive: bool,
     pub delete_mode: bool,
 
@@ -98,11 +201,12 @@ impl Default for Configuration {
         Self {
             direction: PrincipalDirection::X,
             alpha: 0.5,
-            should_continue: true,
+            should_continue: false,
             sides_mask: [0, 0, 0],
             fps: -1.,
             raycasted: None,
             selected: None,
+            automatic: false,
             interactive: false,
             delete_mode: false,
             ui_is_hovered: [false; 32],
@@ -376,6 +480,12 @@ pub fn handle_events(
         info!("Received event {ev:?}. Handling...");
         match ev {
             ActionEvent::LoadFile(path) => {
+                let current_configuration = (
+                    configuration.window_has_position,
+                    configuration.window_has_size,
+                    configuration.window_shows_object,
+                );
+
                 *configuration = Configuration::default();
                 *mesh_resmut = InputResource::default();
                 *solution = SolutionResource::default();
@@ -401,6 +511,9 @@ pub fn handle_events(
                             mesh_resmut.mesh = Arc::new(loaded_state.mesh);
                             solution.current_solution = Solution::new(mesh_resmut.mesh.clone());
                             *configuration = loaded_state.configuration.clone();
+                            configuration.window_has_position = current_configuration.0;
+                            configuration.window_has_size = current_configuration.1;
+                            configuration.window_shows_object = current_configuration.2;
 
                             for saved_loop in loaded_state.loops {
                                 solution.current_solution.add_loop(saved_loop);
@@ -516,7 +629,7 @@ pub fn handle_events(
                     mesh_resmut.flow_graphs[direction as usize] = Graaf::from(nodes.clone(), edges);
                 }
 
-                solution.current_solution.reconstruct_solution(false);
+                solution.current_solution.reconstruct_solution();
             }
             ActionEvent::ExportAll => {
                 if mesh_resmut.mesh.vert_ids().is_empty() {
@@ -762,7 +875,7 @@ fn raycast(
         position,
         normal,
         0.1,
-        configuration.direction.to_dual_color(),
+        to_color(configuration.direction, Perspective::Dual, None),
         Vec3::new(
             mesh_resmut.properties.translation.x as f32,
             mesh_resmut.properties.translation.y as f32,
@@ -776,7 +889,7 @@ fn raycast(
         let v = mesh_resmut.mesh.midpoint(edgepair[1]);
         let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edgepair[0]));
         let color = match sol {
-            Some(_) => configuration.direction.to_dual_color(),
+            Some(_) => to_color(configuration.direction, Perspective::Dual, None),
             None => hutspot::color::BLACK.into(),
         };
         add_line2(
@@ -856,7 +969,7 @@ fn raycast(
 
                 let mut new_sol = solution.current_solution.clone();
                 new_sol.del_loop(loop_id);
-                new_sol.reconstruct_solution(false);
+                new_sol.reconstruct_solution();
 
                 solution.current_solution = new_sol;
                 solution.next[0].clear();
@@ -893,7 +1006,8 @@ fn raycast(
 
             if let Some(some_solution) = closest_solution {
                 for loop_id in some_solution.loops.keys() {
-                    let color = some_solution.loop_to_direction(loop_id).to_dual_color();
+                    let direction = some_solution.loop_to_direction(loop_id);
+                    let color = to_color(direction, Perspective::Dual, None);
                     for &edgepair in &some_solution.get_pairs_of_loop(loop_id) {
                         let u = mesh_resmut.mesh.midpoint(edgepair[0]);
                         let v = mesh_resmut.mesh.midpoint(edgepair[1]);
@@ -977,7 +1091,7 @@ fn raycast(
                         edges: candidate_loop,
                         direction: configuration.direction,
                     });
-                    candidate_solution.reconstruct_solution(false);
+                    candidate_solution.reconstruct_solution();
                     if candidate_solution.orthogonality.is_some() && candidate_solution.alignment.is_some() {
                         return Some(candidate_solution);
                     } else {
@@ -1122,7 +1236,7 @@ fn raycast(
             edges: best_option,
             direction: configuration.direction,
         });
-        real_solution.reconstruct_solution(false);
+        real_solution.reconstruct_solution();
 
         solution.next[configuration.direction as usize].insert(edgepair, Some(real_solution));
     }

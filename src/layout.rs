@@ -1,6 +1,6 @@
-use crate::dual::{to_principal_direction, Dual, PrincipalDirection, PropertyViolationError};
+use crate::dual::{Dual, PropertyViolationError};
 use crate::polycube::{Polycube, PolycubeEdgeID, PolycubeFaceID, PolycubeVertID};
-use crate::{EmbeddedMesh, FaceID, VertID};
+use crate::{to_principal_direction, EmbeddedMesh, FaceID, PrincipalDirection, VertID};
 use bimap::BiHashMap;
 use douconel::douconel_embedded::HasPosition;
 use hutspot::consts::PI;
@@ -8,14 +8,11 @@ use hutspot::geom::Vector3D;
 use itertools::Itertools;
 use log::warn;
 use ordered_float::OrderedFloat;
-use rand::distributions::WeightedIndex;
-use rand::prelude::Distribution;
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use slotmap::SecondaryMap;
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Copy)]
 pub enum NodeType {
@@ -32,6 +29,7 @@ pub struct Patch {
 #[derive(Clone, Debug, Default)]
 pub struct Layout {
     pub polycube_ref: Polycube,
+    pub dual_ref: Dual,
 
     // mapping:
     pub granulated_mesh: EmbeddedMesh,
@@ -41,25 +39,26 @@ pub struct Layout {
 }
 
 impl Layout {
-    pub fn embed(dual_ref: &Dual, polycube_ref: &Polycube, smoothen: bool) -> Result<Self, PropertyViolationError<PolycubeVertID>> {
+    pub fn embed(dual_ref: &Dual, polycube_ref: &Polycube) -> Result<Self, PropertyViolationError<PolycubeVertID>> {
         let mut layout = Self {
             polycube_ref: polycube_ref.clone(),
+            dual_ref: dual_ref.clone(),
+
             granulated_mesh: (*dual_ref.mesh_ref).clone(),
 
             vert_to_corner: BiHashMap::new(),
             face_to_patch: HashMap::new(),
             edge_to_path: HashMap::new(),
         };
-        layout.place_vertices(dual_ref)?;
+        layout.place_vertices()?;
         layout.place_paths()?;
-        // if smoothen {
-        //     layout.smoothening();
-        // }
         layout.assign_patches()?;
         Ok(layout)
     }
 
-    fn place_vertices(&mut self, dual: &Dual) -> Result<(), PropertyViolationError<PolycubeVertID>> {
+    fn place_vertices(&mut self) -> Result<(), PropertyViolationError<PolycubeVertID>> {
+        let dual = &self.dual_ref;
+
         // find the best candidate position for each region
         let mut region_to_candidate = HashMap::new();
         for (region_id, region_obj) in &dual.loop_structure.faces {

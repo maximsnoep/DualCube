@@ -1,11 +1,9 @@
-use std::process::Command;
-
 use crate::render::{CameraFor, Objects};
-use crate::HexMeshStatus;
-use crate::{dual::PrincipalDirection, ActionEvent, CameraHandles, Configuration, InputResource, SolutionResource};
+use crate::{to_color, ActionEvent, CameraHandles, Configuration, InputResource, Perspective, SolutionResource};
+use crate::{HexMeshStatus, PrincipalDirection};
 use bevy::prelude::*;
 use bevy_egui::egui::{emath::Numeric, text::LayoutJob, Align, Color32, FontId, Frame, Layout, Slider, TextFormat, TopBottomPanel, Ui, Window};
-use bevy_egui::egui::{Pos2, Rect, RichText, Rounding, Vec2, WidgetText};
+use bevy_egui::egui::{RichText, Rounding, WidgetText};
 
 use enum_iterator::all;
 use tico::tico;
@@ -170,12 +168,15 @@ pub fn update(
                     ui.add_space(15.);
 
                     bevy_egui::egui::menu::bar(ui, |ui| {
-                        let rt = RichText::new("AUTO").color(if !conf.interactive { Color32::WHITE } else { Color32::GRAY });
+                        let rt = RichText::new("AUTO").color(if conf.automatic { Color32::WHITE } else { Color32::GRAY });
                         if sleek_button(ui, rt) {
-                            conf.interactive = !conf.interactive;
-                            if conf.interactive {
-                                conf.should_continue = false;
+                            if conf.automatic {
+                                conf.automatic = false;
+                            } else {
+                                conf.automatic = true;
+                                conf.interactive = false;
                             }
+                            conf.should_continue = false;
                         };
 
                         let rt: RichText = RichText::new("|").color(Color32::GRAY);
@@ -183,28 +184,33 @@ pub fn update(
 
                         let rt = RichText::new("MANUAL").color(if conf.interactive { Color32::WHITE } else { Color32::GRAY });
                         if sleek_button(ui, rt) {
-                            conf.interactive = !conf.interactive;
                             if conf.interactive {
-                                conf.should_continue = false;
+                                conf.interactive = false;
+                            } else {
+                                conf.interactive = true;
+                                conf.automatic = false;
                             }
+                            conf.should_continue = false;
                         };
 
                         ui.add_space(15.);
 
-                        if !conf.interactive {
+                        if conf.automatic {
                             if ui.checkbox(&mut conf.should_continue, "run").clicked() && conf.should_continue {
                                 ev_w.send(ActionEvent::Mutate);
                             }
-                        } else {
+                        }
+
+                        if conf.interactive {
                             for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
                                 radio(
                                     ui,
                                     &mut conf.direction,
                                     direction,
                                     Color32::from_rgb(
-                                        (direction.to_dual_color()[0] * 255.) as u8,
-                                        (direction.to_dual_color()[1] * 255.) as u8,
-                                        (direction.to_dual_color()[2] * 255.) as u8,
+                                        (to_color(direction, Perspective::Dual, None)[0] * 255.) as u8,
+                                        (to_color(direction, Perspective::Dual, None)[1] * 255.) as u8,
+                                        (to_color(direction, Perspective::Dual, None)[2] * 255.) as u8,
                                     ),
                                 );
                             }

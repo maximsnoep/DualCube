@@ -1,16 +1,13 @@
 use crate::{
-    dual::{to_principal_direction, Dual, IntersectionID, PrincipalDirection, PropertyViolationError, RegionID, SegmentID, Side, ZoneID},
+    dual::{Dual, IntersectionID, Orientation, PropertyViolationError, RegionID, SegmentID, ZoneID},
     graph::Graaf,
     layout::Layout,
-    polycube::{Polycube, PolycubeEdgeID, PolycubeFaceID, PolycubeVertID},
-    EdgeID, EmbeddedMesh, FaceID, VertID,
+    polycube::{Polycube, PolycubeFaceID, PolycubeVertID},
+    to_principal_direction, EdgeID, EmbeddedMesh, FaceID, PrincipalDirection,
 };
-use bevy_egui::egui::debug_text::print;
-use douconel::douconel_embedded::HasPosition;
-use hutspot::{consts::PI, geom::Vector3D, timer::Timer};
+use hutspot::{geom::Vector3D, timer::Timer};
 use itertools::Itertools;
 use ordered_float::OrderedFloat;
-use petgraph::algo::tarjan_scc;
 use rand::{distributions::Distribution, Rng};
 use rand::{
     distributions::WeightedIndex,
@@ -20,14 +17,13 @@ use rand::{
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
 use slotmap::{SecondaryMap, SlotMap};
+use std::io::Write;
 use std::{
     collections::{HashMap, HashSet},
-    f64::NAN,
     hash::Hash,
     path::PathBuf,
     sync::Arc,
 };
-use std::{io::Write, thread::current};
 
 slotmap::new_key_type! {
     pub struct LoopID;
@@ -67,7 +63,7 @@ impl Loop {
         seq
     }
 
-    pub fn occupied(loops: &SlotMap<LoopID, Loop>) -> SecondaryMap<EdgeID, Vec<LoopID>> {
+    pub fn occupied(loops: &SlotMap<LoopID, Self>) -> SecondaryMap<EdgeID, Vec<LoopID>> {
         let mut occupied: SecondaryMap<EdgeID, Vec<LoopID>> = SecondaryMap::new();
         for loop_id in loops.keys() {
             for &edge in &loops[loop_id].edges {
@@ -227,17 +223,44 @@ impl Solution {
             .collect()
     }
 
-    pub fn reconstruct_solution(&mut self, smoothen: bool) {
-        println!("HELLLOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO\n\n\n");
+    pub fn validate_loops(&self) {
+        // For all loops, check that the loops is valid
+        for (_, lewp) in &self.loops {
+            let edges = &lewp.edges;
 
+            // Loop should alternate between edges that are twins, and edges that are sharing a face.
+            // If alternate is true, then the next edge should be a twin of the current edge
+            let mut alternate = self.mesh_ref.twin(edges[0]) == edges[1];
+            for edge_pair in edges.windows(2) {
+                if alternate {
+                    assert!(self.mesh_ref.twin(edge_pair[0]) == edge_pair[1]);
+                    alternate = false;
+                } else {
+                    assert!(self.mesh_ref.face(edge_pair[0]) == self.mesh_ref.face(edge_pair[1]));
+                    alternate = true;
+                }
+            }
+
+            // Loop should be closed
+            // Check the last edge with the first edge, should be closing, depending on alternate they should be twins or sharing a face
+            if alternate {
+                assert!(self.mesh_ref.twin(edges[edges.len() - 1]) == edges[0]);
+            } else {
+                assert!(self.mesh_ref.face(edges[edges.len() - 1]) == self.mesh_ref.face(edges[0]));
+            }
+        }
+    }
+
+    pub fn reconstruct_solution(&mut self) {
         self.dual = Err(PropertyViolationError::default());
         self.polycube = None;
         self.layout = None;
 
+        self.validate_loops();
         self.compute_dual();
         self.compute_polycube();
-        self.compute_layout(smoothen);
-        self.resize_polycube();
+        self.compute_layout();
+        // self.resize_polycube();
         self.compute_alignment();
         self.compute_orthogonality();
 
@@ -284,7 +307,7 @@ impl Solution {
     pub fn smoothen(&mut self) {
         self.layout.as_mut().unwrap().as_mut().unwrap().smoothening();
         self.layout.as_mut().unwrap().as_mut().unwrap().assign_patches().unwrap();
-        self.resize_polycube();
+        // self.resize_polycube();
         self.compute_alignment();
         self.compute_orthogonality();
     }
@@ -303,11 +326,11 @@ impl Solution {
         self.layout = None;
     }
 
-    pub fn compute_layout(&mut self, smoothen: bool) {
+    pub fn compute_layout(&mut self) {
         self.layout = None;
         if let (Ok(dual), Some(polycube)) = (&self.dual, &self.polycube) {
             for _ in 0..5 {
-                let layout = Layout::embed(dual, polycube, smoothen);
+                let layout = Layout::embed(dual, polycube);
                 match &layout {
                     Ok(ok_layout) => {
                         let (score_a, score_b) = ok_layout.score();
@@ -325,106 +348,106 @@ impl Solution {
         }
     }
 
-    pub fn resize_polycube(&mut self) {
-        if let (Ok(dual), Some(Ok(layout)), Some(polycube)) = (&mut self.dual, &self.layout, &mut self.polycube) {
-            let (adjacency, adjacency_backwards) = &dual.adjacency;
-            let topological_sort = hutspot::graph::topological_sort::<ZoneID>(&dual.zones.clone().into_iter().map(|(id, _)| id).collect_vec(), |z| {
-                adjacency.get(&z).cloned().unwrap_or_default().into_iter().collect_vec()
-            });
+    // pub fn resize_polycube(&mut self) {
+    //     if let (Ok(dual), Some(Ok(layout)), Some(polycube)) = (&mut self.dual, &self.layout, &mut self.polycube) {
+    //         let (adjacency, adjacency_backwards) = &dual.adjacency;
+    //         let topological_sort = hutspot::graph::topological_sort::<ZoneID>(&dual.zones.clone().into_iter().map(|(id, _)| id).collect_vec(), |z| {
+    //             adjacency.get(&z).cloned().unwrap_or_default().into_iter().collect_vec()
+    //         });
 
-            if topological_sort.is_none() {
-                return;
-            }
+    //         if topological_sort.is_none() {
+    //             return;
+    //         }
 
-            for zone in dual.zones.values_mut() {
-                zone.coordinate = None;
-            }
+    //         for zone in dual.zones.values_mut() {
+    //             zone.coordinate = None;
+    //         }
 
-            for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
-                let mut topo = topological_sort
-                    .clone()
-                    .unwrap()
-                    .into_iter()
-                    .filter(|&z| dual.zones[z].direction == direction)
-                    .collect_vec();
+    //         for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
+    //             let mut topo = topological_sort
+    //                 .clone()
+    //                 .unwrap()
+    //                 .into_iter()
+    //                 .filter(|&z| dual.zones[z].direction == direction)
+    //                 .collect_vec();
 
-                let mut zero_is_set = false;
+    //             let mut zero_is_set = false;
 
-                for &zone_id in &topo {
-                    let dependencies = adjacency_backwards
-                        .get(&zone_id)
-                        .cloned()
-                        .unwrap_or_default()
-                        .iter()
-                        .filter_map(|&z| dual.zones[z].coordinate)
-                        .collect_vec();
+    //             for &zone_id in &topo {
+    //                 let dependencies = adjacency_backwards
+    //                     .get(&zone_id)
+    //                     .cloned()
+    //                     .unwrap_or_default()
+    //                     .iter()
+    //                     .filter_map(|&z| dual.zones[z].coordinate)
+    //                     .collect_vec();
 
-                    let average_coord = hutspot::math::calculate_average_f64(
-                        dual.zones[zone_id]
-                            .regions
-                            .iter()
-                            .filter_map(|&r| polycube.region_to_vertex.get_by_left(&r))
-                            .filter_map(|&v| layout.vert_to_corner.get_by_left(&v))
-                            .map(|&c| layout.granulated_mesh.position(c)[direction as usize]),
-                    );
+    //                 let average_coord = hutspot::math::calculate_average_f64(
+    //                     dual.zones[zone_id]
+    //                         .regions
+    //                         .iter()
+    //                         .filter_map(|&r| polycube.region_to_vertex.get_by_left(&r))
+    //                         .filter_map(|&v| layout.vert_to_corner.get_by_left(&v))
+    //                         .map(|&c| layout.granulated_mesh.position(c)[direction as usize]),
+    //                 );
 
-                    if dependencies.is_empty() {
-                        if zero_is_set {
-                            continue;
-                        }
-                        zero_is_set = true;
-                        dual.zones[zone_id].coordinate = Some(average_coord);
-                    } else {
-                        let max_dependency = dependencies.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap().to_owned();
-                        let new_coord = (average_coord).max(max_dependency + 0.1);
-                        dual.zones[zone_id].coordinate = Some(new_coord);
-                    };
-                }
+    //                 if dependencies.is_empty() {
+    //                     if zero_is_set {
+    //                         continue;
+    //                     }
+    //                     zero_is_set = true;
+    //                     dual.zones[zone_id].coordinate = Some(average_coord);
+    //                 } else {
+    //                     let max_dependency = dependencies.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap().to_owned();
+    //                     let new_coord = (average_coord).max(max_dependency + 0.1);
+    //                     dual.zones[zone_id].coordinate = Some(new_coord);
+    //                 };
+    //             }
 
-                topo.reverse();
+    //             topo.reverse();
 
-                for &zone_id in &topo {
-                    if dual.zones[zone_id].coordinate.is_none() {
-                        let dependencies = adjacency
-                            .get(&zone_id)
-                            .cloned()
-                            .unwrap_or_default()
-                            .iter()
-                            .filter_map(|&z| dual.zones[z].coordinate)
-                            .collect_vec();
+    //             for &zone_id in &topo {
+    //                 if dual.zones[zone_id].coordinate.is_none() {
+    //                     let dependencies = adjacency
+    //                         .get(&zone_id)
+    //                         .cloned()
+    //                         .unwrap_or_default()
+    //                         .iter()
+    //                         .filter_map(|&z| dual.zones[z].coordinate)
+    //                         .collect_vec();
 
-                        let average_coord = hutspot::math::calculate_average_f64(
-                            dual.zones[zone_id]
-                                .regions
-                                .iter()
-                                .flat_map(|&r| polycube.region_to_vertex.get_by_left(&r))
-                                .flat_map(|&v| layout.vert_to_corner.get_by_left(&v))
-                                .map(|&c| layout.granulated_mesh.position(c)[direction as usize]),
-                        );
+    //                     let average_coord = hutspot::math::calculate_average_f64(
+    //                         dual.zones[zone_id]
+    //                             .regions
+    //                             .iter()
+    //                             .flat_map(|&r| polycube.region_to_vertex.get_by_left(&r))
+    //                             .flat_map(|&v| layout.vert_to_corner.get_by_left(&v))
+    //                             .map(|&c| layout.granulated_mesh.position(c)[direction as usize]),
+    //                     );
 
-                        assert!(!dependencies.is_empty());
-                        let min_dependency = dependencies.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap().to_owned();
-                        let new_coord = (average_coord).min(min_dependency - 0.1);
-                        dual.zones[zone_id].coordinate = Some(new_coord);
-                    }
-                }
-            }
+    //                     assert!(!dependencies.is_empty());
+    //                     let min_dependency = dependencies.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap().to_owned();
+    //                     let new_coord = (average_coord).min(min_dependency - 0.1);
+    //                     dual.zones[zone_id].coordinate = Some(new_coord);
+    //                 }
+    //             }
+    //         }
 
-            for region_id in dual.loop_structure.face_ids() {
-                let coordinate = [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z].map(|d| {
-                    dual.zones
-                        .iter()
-                        .find(|(_, z)| z.regions.contains(&region_id) && z.direction == d)
-                        .unwrap()
-                        .1
-                        .coordinate
-                        .unwrap()
-                });
-                let vertex = polycube.region_to_vertex.get_by_left(&region_id).unwrap().to_owned();
-                polycube.structure.verts[vertex].set_position(Vector3D::new(coordinate[0], coordinate[1], coordinate[2]));
-            }
-        }
-    }
+    //         for region_id in dual.loop_structure.face_ids() {
+    //             let coordinate = [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z].map(|d| {
+    //                 dual.zones
+    //                     .iter()
+    //                     .find(|(_, z)| z.regions.contains(&region_id) && z.direction == d)
+    //                     .unwrap()
+    //                     .1
+    //                     .coordinate
+    //                     .unwrap()
+    //             });
+    //             let vertex = polycube.region_to_vertex.get_by_left(&region_id).unwrap().to_owned();
+    //             polycube.structure.verts[vertex].set_position(Vector3D::new(coordinate[0], coordinate[1], coordinate[2]));
+    //         }
+    //     }
+    // }
 
     pub fn compute_alignment(&mut self) {
         self.alignment_per_triangle.clear();
@@ -495,7 +518,7 @@ impl Solution {
                     }
                 }
 
-                new_solution.reconstruct_solution(false);
+                new_solution.reconstruct_solution();
 
                 if new_solution.dual.is_ok() && new_solution.polycube.is_some() && new_solution.layout.is_some() {
                     timer.report(&format!(
@@ -522,7 +545,7 @@ impl Solution {
                 real_solution.del_loop(loop_id);
 
                 let timer = Timer::new();
-                real_solution.reconstruct_solution(false);
+                real_solution.reconstruct_solution();
 
                 if real_solution.dual.is_ok() && real_solution.polycube.is_some() && real_solution.layout.is_some() {
                     timer.report(&format!(
@@ -547,7 +570,7 @@ impl Solution {
                 .edge_ids()
                 .into_iter()
                 .flat_map(|edge| {
-                    let label = dual.segment_to_label(edge);
+                    let label = dual.segment_to_direction(edge);
                     if label == direction {
                         return vec![];
                     }
@@ -562,10 +585,10 @@ impl Solution {
                     let face_with_labels = face
                         .into_iter()
                         .map(|segment| {
-                            let label = dual.segment_to_label(segment);
+                            let label = dual.segment_to_direction(segment);
                             // TODO: probably fix the mask
-                            let side = dual.segment_to_side(segment, [0, 0, 0]);
-                            (segment, label, side)
+                            let orientation = dual.segment_to_orientation(segment);
+                            (segment, label, orientation)
                         })
                         .collect_vec();
 
@@ -582,32 +605,32 @@ impl Solution {
                         // Check if the left side is valid
                         let mut px = left_side
                             .iter()
-                            .filter(|&&(_, label, side)| label == PrincipalDirection::X && side == Side::Upper)
+                            .filter(|&&(_, label, orientation)| label == PrincipalDirection::X && orientation == Orientation::Forwards)
                             .count();
 
                         let mut py = left_side
                             .iter()
-                            .filter(|&&(_, label, side)| label == PrincipalDirection::Y && side == Side::Upper)
+                            .filter(|&&(_, label, orientation)| label == PrincipalDirection::Y && orientation == Orientation::Forwards)
                             .count();
 
                         let mut pz = left_side
                             .iter()
-                            .filter(|&&(_, label, side)| label == PrincipalDirection::Z && side == Side::Upper)
+                            .filter(|&&(_, label, orientation)| label == PrincipalDirection::Z && orientation == Orientation::Forwards)
                             .count();
 
                         let mut mx = left_side
                             .iter()
-                            .filter(|&&(_, label, side)| label == PrincipalDirection::X && side == Side::Lower)
+                            .filter(|&&(_, label, orientation)| label == PrincipalDirection::X && orientation == Orientation::Backwards)
                             .count();
 
                         let mut my = left_side
                             .iter()
-                            .filter(|&&(_, label, side)| label == PrincipalDirection::Y && side == Side::Lower)
+                            .filter(|&&(_, label, orientation)| label == PrincipalDirection::Y && orientation == Orientation::Backwards)
                             .count();
 
                         let mut mz = left_side
                             .iter()
-                            .filter(|&&(_, label, side)| label == PrincipalDirection::Z && side == Side::Lower)
+                            .filter(|&&(_, label, orientation)| label == PrincipalDirection::Z && orientation == Orientation::Backwards)
                             .count();
 
                         match direction {
@@ -626,32 +649,32 @@ impl Solution {
                         // Check if the right side is valid
                         let mut px = right_side
                             .iter()
-                            .filter(|&&(_, label, side)| label == PrincipalDirection::X && side == Side::Upper)
+                            .filter(|&&(_, label, orientation)| label == PrincipalDirection::X && orientation == Orientation::Forwards)
                             .count();
 
                         let mut py = right_side
                             .iter()
-                            .filter(|&&(_, label, side)| label == PrincipalDirection::Y && side == Side::Upper)
+                            .filter(|&&(_, label, orientation)| label == PrincipalDirection::Y && orientation == Orientation::Forwards)
                             .count();
 
                         let mut pz = right_side
                             .iter()
-                            .filter(|&&(_, label, side)| label == PrincipalDirection::Z && side == Side::Upper)
+                            .filter(|&&(_, label, orientation)| label == PrincipalDirection::Z && orientation == Orientation::Forwards)
                             .count();
 
                         let mut mx = right_side
                             .iter()
-                            .filter(|&&(_, label, side)| label == PrincipalDirection::X && side == Side::Lower)
+                            .filter(|&&(_, label, orientation)| label == PrincipalDirection::X && orientation == Orientation::Backwards)
                             .count();
 
                         let mut my = right_side
                             .iter()
-                            .filter(|&&(_, label, side)| label == PrincipalDirection::Y && side == Side::Lower)
+                            .filter(|&&(_, label, orientation)| label == PrincipalDirection::Y && orientation == Orientation::Backwards)
                             .count();
 
                         let mut mz = right_side
                             .iter()
-                            .filter(|&&(_, label, side)| label == PrincipalDirection::Z && side == Side::Lower)
+                            .filter(|&&(_, label, orientation)| label == PrincipalDirection::Z && orientation == Orientation::Backwards)
                             .count();
 
                         match direction {
@@ -678,86 +701,6 @@ impl Solution {
             return Some(graph);
         }
 
-        None
-    }
-
-    pub fn find_all_valid_loops_through_region(&self, region_id: RegionID, direction: PrincipalDirection) -> Option<Vec<Vec<SegmentID>>> {
-        if let Ok(dual) = &self.dual {
-            let region_segments = dual.loop_structure.edges(region_id);
-            let full_graph = self.construct_valid_loop_graph(direction)?;
-            let ccs = full_graph
-                .cc()
-                .into_iter()
-                .filter(|cc| cc.len() > 1)
-                .filter(|cc| cc.iter().any(|&edge| dual.loop_structure.face(edge) == region_id))
-                .collect_vec();
-            assert!(ccs.len() == 1);
-            let reachable_nodes = ccs[0].clone();
-            let filtered_edges = full_graph
-                .edges()
-                .into_iter()
-                .filter(|(from, to, _)| reachable_nodes.contains(from) && reachable_nodes.contains(to))
-                .collect_vec();
-            let filtered_graph = Graaf::from(reachable_nodes.clone(), filtered_edges);
-
-            let mut aux_map = HashMap::new();
-
-            for (index, region) in dual.loop_structure.face_ids().into_iter().enumerate() {
-                for segment in dual
-                    .loop_structure
-                    .edges(region)
-                    .into_iter()
-                    .filter(|segment| reachable_nodes.contains(segment))
-                {
-                    aux_map.insert(filtered_graph.node_to_index(&segment).unwrap(), index);
-                }
-            }
-
-            // Find all cycles starting from the region (or from each segment in the region)
-            let mut cycles = vec![];
-            for segment in region_segments.iter().filter(|&segment| reachable_nodes.contains(segment)) {
-                println!("Computing all cycles through segment {segment:?}");
-                let cycles_through_segment = filtered_graph.all_cycles(filtered_graph.node_to_index(&segment).unwrap(), aux_map.clone());
-                println!("Found {} cycles", cycles_through_segment.len());
-                cycles.extend(cycles_through_segment);
-            }
-            println!("Total cycles: {}", cycles.len());
-
-            // Filter out duplicates
-            let cycles = cycles
-                .into_iter()
-                .unique_by(|cycle| {
-                    let mut sorted = cycle.clone();
-                    sorted.sort();
-                    sorted
-                })
-                .collect_vec();
-
-            // convert NodeIndex to SegmentID
-            let cycles = cycles
-                .iter()
-                .map(|cycle| cycle.iter().map(|&edge| filtered_graph.index_to_node(edge).unwrap().to_owned()).collect_vec())
-                .collect_vec();
-
-            // Assert that all cycles are of length larger than 2
-            for cycle in &cycles {
-                assert!(cycle.len() > 2);
-            }
-
-            // Assert that all cycles do not traverse the same loop region twice
-            for cycle in &cycles {
-                let regions = cycle.iter().map(|&edge| dual.loop_structure.face(edge)).collect_vec();
-                let unique_regions = regions.iter().unique().count();
-                assert!(unique_regions * 2 == regions.len());
-            }
-
-            // Assert that all cycles contain the selected region
-            for cycle in &cycles {
-                assert!(cycle.iter().any(|&edge| dual.loop_structure.face(edge) == region_id));
-            }
-
-            return Some(cycles);
-        }
         None
     }
 
@@ -1157,12 +1100,12 @@ impl Solution {
             for &patch_id in layout.face_to_patch.keys() {
                 let normal = (layout.polycube_ref.structure.normal(patch_id) as Vector3D).normalize();
                 let label = match to_principal_direction(normal) {
-                    (PrincipalDirection::X, Side::Upper) => 0,
-                    (PrincipalDirection::X, Side::Lower) => 1,
-                    (PrincipalDirection::Y, Side::Upper) => 2,
-                    (PrincipalDirection::Y, Side::Lower) => 3,
-                    (PrincipalDirection::Z, Side::Upper) => 4,
-                    (PrincipalDirection::Z, Side::Lower) => 5,
+                    (PrincipalDirection::X, Orientation::Forwards) => 0,
+                    (PrincipalDirection::X, Orientation::Backwards) => 1,
+                    (PrincipalDirection::Y, Orientation::Forwards) => 2,
+                    (PrincipalDirection::Y, Orientation::Backwards) => 3,
+                    (PrincipalDirection::Z, Orientation::Forwards) => 4,
+                    (PrincipalDirection::Z, Orientation::Backwards) => 5,
                 };
                 for &face_id in &layout.face_to_patch[&patch_id].faces {
                     labels[map[&face_id]] = label;

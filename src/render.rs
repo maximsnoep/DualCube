@@ -1,6 +1,8 @@
-use crate::dual::{to_principal_direction, PrincipalDirection, Side};
-use crate::{vec3_to_vector3d, Configuration, InputResource, MainMesh, RenderedMesh, SolutionResource, VertID, BACKGROUND_COLOR};
-use crate::{CameraHandles, EmbeddedMesh};
+use crate::dual::Orientation;
+use crate::{
+    to_color, to_principal_direction, vec3_to_vector3d, Configuration, InputResource, MainMesh, Perspective, RenderedMesh, SolutionResource, BACKGROUND_COLOR,
+};
+use crate::{CameraHandles, PrincipalDirection};
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::prelude::*;
 use bevy::render::camera::ScalingMode;
@@ -266,23 +268,23 @@ pub fn update(
 
                 if let Ok(dual) = &solution.current_solution.dual {
                     for segment_id in dual.loop_structure.edge_ids() {
-                        let direction = dual.loop_structure.edges[segment_id].direction;
-                        let side = dual.segment_to_side(segment_id, configuration.sides_mask);
+                        let direction = dual.segment_to_direction(segment_id);
+                        let orientation = dual.segment_to_orientation(segment_id);
                         let mut offset = Vector3D::new(0., 0., 0.);
                         let dist = 0.001 * f64::from(scale);
-                        match side {
-                            Side::Upper => match direction {
+                        match orientation {
+                            Orientation::Forwards => match direction {
                                 PrincipalDirection::X => offset[0] += dist,
                                 PrincipalDirection::Y => offset[1] += dist,
                                 PrincipalDirection::Z => offset[2] += dist,
                             },
-                            Side::Lower => match direction {
+                            Orientation::Backwards => match direction {
                                 PrincipalDirection::X => offset[0] -= dist,
                                 PrincipalDirection::Y => offset[1] -= dist,
                                 PrincipalDirection::Z => offset[2] -= dist,
                             },
                         };
-                        let color = direction.to_dual_color_sided(side);
+                        let color = to_color(direction, Perspective::Dual, Some(orientation));
                         for edgepair in solution.current_solution.get_pairs_of_sequence(&dual.segment_to_edges(segment_id)) {
                             let u = mesh_resmut.mesh.midpoint(edgepair[0]);
                             let v = mesh_resmut.mesh.midpoint(edgepair[1]);
@@ -303,7 +305,8 @@ pub fn update(
                     }
                 } else {
                     for loop_id in solution.current_solution.loops.keys() {
-                        let color = solution.current_solution.loop_to_direction(loop_id).to_dual_color();
+                        let direction = solution.current_solution.loop_to_direction(loop_id);
+                        let color = to_color(direction, Perspective::Dual, None);
                         for edgepair in solution.current_solution.get_pairs_of_loop(loop_id) {
                             // let u = mesh_resmut.mesh.midpoint(edgepair[0]);
                             // let v = mesh_resmut.mesh.midpoint(edgepair[1]);
@@ -341,98 +344,98 @@ pub fn update(
                 // }
             }
             Objects::PolycubeDual => {
-                if let Some(polycube) = &solution.current_solution.polycube.clone() {
-                    let (mesh, translation, scale) = get_mesh(&polycube.structure.clone(), &HashMap::new());
+                // if let Some(polycube) = &solution.current_solution.polycube.clone() {
+                //     let (mesh, translation, scale) = get_mesh(&polycube.structure.clone(), &HashMap::new());
 
-                    commands.spawn((
-                        get_pbrbundle(meshes.add(mesh), translation + Vec3::from(object), scale, &standard_material),
-                        RenderedMesh,
-                    ));
+                //     commands.spawn((
+                //         get_pbrbundle(meshes.add(mesh), translation + Vec3::from(object), scale, &standard_material),
+                //         RenderedMesh,
+                //     ));
 
-                    // Draw all loop segments / faces axis aligned.
-                    for &face_id in &polycube.structure.face_ids() {
-                        let original_id = polycube.intersection_to_face.get_by_right(&face_id).unwrap();
-                        let this_centroid = polycube.structure.centroid(face_id);
+                //     // Draw all loop segments / faces axis aligned.
+                //     for &face_id in &polycube.structure.face_ids() {
+                //         let original_id = polycube.intersection_to_face.get_by_right(&face_id).unwrap();
+                //         let this_centroid = polycube.structure.centroid(face_id);
 
-                        let normal = (polycube.structure.normal(face_id) as Vector3D).normalize();
-                        let orientation = to_principal_direction(normal).0;
+                //         let normal = (polycube.structure.normal(face_id) as Vector3D).normalize();
+                //         let direction = to_principal_direction(normal).0;
 
-                        for &neighbor_id in &polycube.structure.fneighbors(face_id) {
-                            let next_original_id = polycube.intersection_to_face.get_by_right(&neighbor_id).unwrap();
+                //         for &neighbor_id in &polycube.structure.fneighbors(face_id) {
+                //             let next_original_id = polycube.intersection_to_face.get_by_right(&neighbor_id).unwrap();
 
-                            let edge_between = polycube.structure.edge_between_faces(face_id, neighbor_id).unwrap().0;
-                            let root = polycube.structure.root(edge_between);
-                            let root_pos = polycube.structure.position(root);
+                //             let edge_between = polycube.structure.edge_between_faces(face_id, neighbor_id).unwrap().0;
+                //             let root = polycube.structure.root(edge_between);
+                //             let root_pos = polycube.structure.position(root);
 
-                            let segment = solution
-                                .current_solution
-                                .dual
-                                .as_ref()
-                                .unwrap()
-                                .loop_structure
-                                .edge_between_verts(*original_id, *next_original_id)
-                                .unwrap()
-                                .0;
+                //             let segment = solution
+                //                 .current_solution
+                //                 .dual
+                //                 .as_ref()
+                //                 .unwrap()
+                //                 .loop_structure
+                //                 .edge_between_verts(*original_id, *next_original_id)
+                //                 .unwrap()
+                //                 .0;
 
-                            let direction = solution.current_solution.dual.as_ref().unwrap().loop_structure.edges[segment].direction;
+                //             let assigned_label = solution.current_solution.dual.as_ref().unwrap().segment_to_direction(segment);
 
-                            for side in [Side::Upper, Side::Lower] {
-                                let segment_direction = match (orientation, direction) {
-                                    (PrincipalDirection::X, PrincipalDirection::Y) | (PrincipalDirection::Y, PrincipalDirection::X) => PrincipalDirection::Z,
-                                    (PrincipalDirection::X, PrincipalDirection::Z) | (PrincipalDirection::Z, PrincipalDirection::X) => PrincipalDirection::Y,
-                                    (PrincipalDirection::Y, PrincipalDirection::Z) | (PrincipalDirection::Z, PrincipalDirection::Y) => PrincipalDirection::X,
-                                    _ => unreachable!(),
-                                };
+                //             for orientation in [Orientation::Forwards, Orientation::Backwards] {
+                //                 let segment_direction = match (orientation, direction) {
+                //                     (PrincipalDirection::X, PrincipalDirection::Y) | (PrincipalDirection::Y, PrincipalDirection::X) => PrincipalDirection::Z,
+                //                     (PrincipalDirection::X, PrincipalDirection::Z) | (PrincipalDirection::Z, PrincipalDirection::X) => PrincipalDirection::Y,
+                //                     (PrincipalDirection::Y, PrincipalDirection::Z) | (PrincipalDirection::Z, PrincipalDirection::Y) => PrincipalDirection::X,
+                //                     _ => unreachable!(),
+                //                 };
 
-                                let mut direction_vector = this_centroid;
-                                direction_vector[segment_direction as usize] = root_pos[segment_direction as usize];
+                //                 let mut direction_vector = this_centroid;
+                //                 direction_vector[segment_direction as usize] = root_pos[segment_direction as usize];
 
-                                let mut offset = Vector3D::new(0., 0., 0.);
+                //                 let mut offset = Vector3D::new(0., 0., 0.);
 
-                                let dist = 0.001 * f64::from(scale);
+                //                 let dist = 0.001 * f64::from(scale);
 
-                                match side {
-                                    Side::Upper => match direction {
-                                        PrincipalDirection::X => offset[0] += dist,
-                                        PrincipalDirection::Y => offset[1] += dist,
-                                        PrincipalDirection::Z => offset[2] += dist,
-                                    },
-                                    Side::Lower => match direction {
-                                        PrincipalDirection::X => offset[0] -= dist,
-                                        PrincipalDirection::Y => offset[1] -= dist,
-                                        PrincipalDirection::Z => offset[2] -= dist,
-                                    },
-                                };
+                //                 match orientation {
+                //                     Side::Upper => match direction {
+                //                         PrincipalDirection::X => offset[0] += dist,
+                //                         PrincipalDirection::Y => offset[1] += dist,
+                //                         PrincipalDirection::Z => offset[2] += dist,
+                //                     },
+                //                     Side::Lower => match direction {
+                //                         PrincipalDirection::X => offset[0] -= dist,
+                //                         PrincipalDirection::Y => offset[1] -= dist,
+                //                         PrincipalDirection::Z => offset[2] -= dist,
+                //                     },
+                //                 };
 
-                                let line = DrawableLine::from_line(
-                                    this_centroid,
-                                    direction_vector,
-                                    offset + normal * 0.01,
-                                    vec3_to_vector3d(translation + Vec3::from(object)),
-                                    scale,
-                                );
-                                let c = direction.to_dual_color_sided(side);
-                                gizmos_cache.lines.push((line.u, line.v, c));
-                            }
-                        }
-                    }
+                //                 let line = DrawableLine::from_line(
+                //                     this_centroid,
+                //                     direction_vector,
+                //                     offset + normal * 0.01,
+                //                     vec3_to_vector3d(translation + Vec3::from(object)),
+                //                     scale,
+                //                 );
+                //                 let c = to_color(direction, Perspective::Dual, Some(orientation));
+                //                 gizmos_cache.lines.push((line.u, line.v, c));
+                //             }
+                //         }
+                //     }
 
-                    // Draw the edges of the polycube.
-                    for edge_id in polycube.structure.edge_ids() {
-                        let endpoints = polycube.structure.endpoints(edge_id);
-                        let u = polycube.structure.position(endpoints.0);
-                        let v = polycube.structure.position(endpoints.1);
-                        let line = DrawableLine::from_line(
-                            u,
-                            v,
-                            polycube.structure.normal(polycube.structure.face(edge_id)) * 0.005,
-                            vec3_to_vector3d(translation + Vec3::from(object)),
-                            scale,
-                        );
-                        let c = hutspot::color::GRAY;
-                        gizmos_cache.lines.push((line.u, line.v, c));
-                    }
-                }
+                //     // Draw the edges of the polycube.
+                //     for edge_id in polycube.structure.edge_ids() {
+                //         let endpoints = polycube.structure.endpoints(edge_id);
+                //         let u = polycube.structure.position(endpoints.0);
+                //         let v = polycube.structure.position(endpoints.1);
+                //         let line = DrawableLine::from_line(
+                //             u,
+                //             v,
+                //             polycube.structure.normal(polycube.structure.face(edge_id)) * 0.005,
+                //             vec3_to_vector3d(translation + Vec3::from(object)),
+                //             scale,
+                //         );
+                //         let c = hutspot::color::GRAY;
+                //         gizmos_cache.lines.push((line.u, line.v, c));
+                //     }
+                // }
             }
             Objects::PolycubePrimal => {
                 if let Some(polycube) = &solution.current_solution.polycube.clone() {
@@ -440,7 +443,7 @@ pub fn update(
                     for &face_id in &polycube.structure.face_ids() {
                         let normal = (polycube.structure.normal(face_id) as Vector3D).normalize();
                         let (dir, side) = to_principal_direction(normal);
-                        let color = dir.to_primal_color_sided(side);
+                        let color = to_color(dir, Perspective::Primal, Some(side));
                         colormap.insert(face_id, color);
                     }
 
@@ -476,7 +479,7 @@ pub fn update(
                         for &face_id in &polycube.structure.face_ids() {
                             let normal = (polycube.structure.normal(face_id) as Vector3D).normalize();
                             let (dir, side) = to_principal_direction(normal);
-                            let color = dir.to_primal_color_sided(side);
+                            let color = to_color(dir, Perspective::Primal, Some(side));
                             for &triangle_id in &lay.face_to_patch[&face_id].faces {
                                 layout_color_map.insert(triangle_id, color);
                             }
@@ -621,7 +624,7 @@ pub fn update(
                         for &face_id in &polycube.structure.face_ids() {
                             let normal = (polycube.structure.normal(face_id) as Vector3D).normalize();
                             let (dir, side) = to_principal_direction(normal);
-                            let color = dir.to_primal_color_sided(side);
+                            let color = to_color(dir, Perspective::Primal, Some(side));
                             for &triangle_id in &lay.face_to_patch[&face_id].faces {
                                 layout_color_map.insert(triangle_id, color);
                             }
@@ -778,7 +781,7 @@ pub fn update(
                         if dir != configuration.direction {
                             continue;
                         }
-                        let color = dir.to_dual_color();
+                        let color = to_color(dir, Perspective::Dual, None);
                         let rand1 = (rand::random::<f32>() - 0.5) / 10.;
                         let rand2 = (rand::random::<f32>() - 0.5) / 10.;
                         let rand3 = (rand::random::<f32>() - 0.5) / 10.;
@@ -808,23 +811,23 @@ pub fn update(
 
                 if let Ok(dual) = &solution.current_solution.dual {
                     for segment_id in dual.loop_structure.edge_ids() {
-                        let direction = dual.loop_structure.edges[segment_id].direction;
-                        let side = dual.segment_to_side(segment_id, configuration.sides_mask);
+                        let direction = dual.segment_to_direction(segment_id);
+                        let orientation = dual.segment_to_orientation(segment_id);
                         let mut offset = Vector3D::new(0., 0., 0.);
                         let dist = 0.001 * f64::from(scale);
-                        match side {
-                            Side::Upper => match direction {
+                        match orientation {
+                            Orientation::Forwards => match direction {
                                 PrincipalDirection::X => offset[0] += dist,
                                 PrincipalDirection::Y => offset[1] += dist,
                                 PrincipalDirection::Z => offset[2] += dist,
                             },
-                            Side::Lower => match direction {
+                            Orientation::Backwards => match direction {
                                 PrincipalDirection::X => offset[0] -= dist,
                                 PrincipalDirection::Y => offset[1] -= dist,
                                 PrincipalDirection::Z => offset[2] -= dist,
                             },
                         };
-                        let color = direction.to_dual_color_sided(side);
+                        let color = to_color(direction, Perspective::Dual, Some(orientation));
                         for edgepair in solution.current_solution.get_pairs_of_sequence(&dual.segment_to_edges(segment_id)) {
                             let u = mesh_resmut.mesh.midpoint(edgepair[0]);
                             let v = mesh_resmut.mesh.midpoint(edgepair[1]);
@@ -837,7 +840,8 @@ pub fn update(
                     }
                 } else {
                     for loop_id in solution.current_solution.loops.keys() {
-                        let color = solution.current_solution.loop_to_direction(loop_id).to_dual_color();
+                        let direction = solution.current_solution.loop_to_direction(loop_id);
+                        let color = to_color(direction, Perspective::Dual, None);
                         for edgepair in solution.current_solution.get_pairs_of_loop(loop_id) {
                             // let u = mesh_resmut.mesh.midpoint(edgepair[0]);
                             // let v = mesh_resmut.mesh.midpoint(edgepair[1]);
@@ -858,7 +862,7 @@ pub fn update(
                         for &face_id in &polycube.structure.face_ids() {
                             let normal = (polycube.structure.normal(face_id) as Vector3D).normalize();
                             let (dir, side) = to_principal_direction(normal);
-                            let color = dir.to_primal_color_sided(side);
+                            let color = to_color(dir, Perspective::Primal, Some(side));
                             for &triangle_id in &lay.face_to_patch[&face_id].faces {
                                 layout_color_map.insert(triangle_id, color);
                             }
@@ -923,7 +927,7 @@ pub fn update(
                     for &face_id in &polycube.structure.face_ids() {
                         let normal = (polycube.structure.normal(face_id) as Vector3D).normalize();
                         let (dir, side) = to_principal_direction(normal);
-                        let color = dir.to_primal_color_sided(side);
+                        let color = to_color(dir, Perspective::Primal, Some(side));
                         colormap.insert(face_id, color);
                     }
 
