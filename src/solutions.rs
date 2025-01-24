@@ -260,7 +260,7 @@ impl Solution {
         self.compute_orthogonality();
 
         if let Some(Ok(layout)) = &self.layout {
-            for i in 0..10 {
+            for i in 0..100 {
                 let old_score = self.alignment.unwrap_or_default() + self.orthogonality.unwrap_or_default();
                 let mut sol_copy = self.clone();
 

@@ -107,18 +107,22 @@ impl Polycube {
             }
             topological_sort.reverse();
             for zone in topological_sort {
-                let coordinate = zone_to_target.get(&zone).copied().unwrap_or(0.0);
                 if zone_to_coordinate.contains_key(&zone) {
                     continue;
                 }
                 // Get the dependencies of the zone
                 let dependencies = level_graph[&zone].iter().map(|z| zone_to_coordinate[z]).collect_vec();
                 assert!(!dependencies.is_empty());
+
                 // Assign the coordinate to the zone
-                zone_to_coordinate.insert(
-                    zone,
-                    (dependencies.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap() - 0.1).min(coordinate),
-                );
+                if let Some(coordinate) = zone_to_target.get(&zone).copied() {
+                    zone_to_coordinate.insert(
+                        zone,
+                        (dependencies.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap() - 0.1).min(coordinate),
+                    );
+                } else {
+                    zone_to_coordinate.insert(zone, dependencies.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap() - 0.1);
+                }
             }
         }
 
