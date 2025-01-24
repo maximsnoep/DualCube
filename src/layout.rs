@@ -1,17 +1,14 @@
 use crate::dual::{Dual, PropertyViolationError};
 use crate::polycube::{Polycube, PolycubeEdgeID, PolycubeFaceID, PolycubeVertID};
-use crate::{to_principal_direction, EmbeddedMesh, FaceID, PrincipalDirection, VertID};
+use crate::{EmbeddedMesh, FaceID, PrincipalDirection, VertID};
 use bimap::BiHashMap;
 use douconel::douconel_embedded::HasPosition;
 use hutspot::consts::PI;
 use hutspot::geom::Vector3D;
 use itertools::Itertools;
-use log::warn;
 use ordered_float::OrderedFloat;
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
-use slotmap::SecondaryMap;
-use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Copy)]
@@ -26,9 +23,11 @@ pub struct Patch {
     pub faces: HashSet<FaceID>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Layout {
+    // TODO: make this an actual (arc) reference
     pub polycube_ref: Polycube,
+    // TODO: make this an actual (arc) reference
     pub dual_ref: Dual,
 
     // mapping:
@@ -39,7 +38,7 @@ pub struct Layout {
 }
 
 impl Layout {
-    pub fn embed(dual_ref: &Dual, polycube_ref: &Polycube) -> Result<Self, PropertyViolationError<PolycubeVertID>> {
+    pub fn embed(dual_ref: &Dual, polycube_ref: &Polycube) -> Result<Self, PropertyViolationError> {
         let mut layout = Self {
             polycube_ref: polycube_ref.clone(),
             dual_ref: dual_ref.clone(),
@@ -50,113 +49,96 @@ impl Layout {
             face_to_patch: HashMap::new(),
             edge_to_path: HashMap::new(),
         };
-        layout.place_vertices()?;
+        layout.place_vertices();
         layout.place_paths()?;
-        layout.assign_patches()?;
+        layout.assign_patches();
         Ok(layout)
     }
 
-    fn place_vertices(&mut self) -> Result<(), PropertyViolationError<PolycubeVertID>> {
-        let dual = &self.dual_ref;
+    fn place_vertices(&mut self) {
+        // Clear the mapping
+        self.vert_to_corner.clear();
 
-        // find the best candidate position for each region
+        // Find a candidate location for each region
+        // We simply take the average centroid of all faces in the region, weighted by the area of the faces
         let mut region_to_candidate = HashMap::new();
-        for (region_id, region_obj) in &dual.loop_structure.faces {
-            // Naive labeling of the vertices in the region
-            let naive_labeling = region_obj.verts.iter().map(|&v| {
-                let p = dual.mesh_ref.position(v);
-                let n = dual.mesh_ref.vert_normal(v);
-                let (d, s) = to_principal_direction(n);
-                (p, (d, s))
-            });
+        for (region_id, region_obj) in &self.dual_ref.loop_structure.faces {
+            // Get all vertices in the region
+            let verts = &region_obj.verts;
 
-            let boundary = dual
-                .loop_structure
-                .corners(region_id)
+            // Get all faces in the region (all stars of the vertices)
+            let faces = verts
                 .iter()
-                .map(|&intersection_id| {
-                    let polycube_face = self.polycube_ref.intersection_to_face.get_by_left(&intersection_id).unwrap().to_owned();
-                    let face_normal = self.polycube_ref.structure.normal(polycube_face);
-                    let (d, s) = to_principal_direction(face_normal);
-                    (d, s)
-                })
+                .flat_map(|&v| self.dual_ref.mesh_ref.star(v))
+                .collect::<HashSet<_>>()
+                .into_iter()
                 .collect_vec();
 
-            // find the vertex, that minimizes the worst distance to each
-
-            let boundary_average = boundary
-                .iter()
-                .filter_map(|(d, s)| {
-                    let filtered_verts = naive_labeling.clone().filter(|(_, (d2, s2))| d == d2 && s == s2);
-                    let res = hutspot::math::calculate_average_f64(filtered_verts.map(|(p, _)| p));
-                    if res[0].is_nan() || res[1].is_nan() || res[2].is_nan() {
-                        return None;
-                    }
-                    Some(res)
-                })
-                .collect_vec();
-
-            if boundary_average.is_empty() {
-                return Err(PropertyViolationError::UnknownError);
-            }
-
-            let region_average = hutspot::math::calculate_average_f64(boundary_average.clone().into_iter());
-
-            region_to_candidate.insert(region_id, region_average);
+            // Compute for each face its centroid and its area
+            let face_areas = faces.iter().map(|&f| self.dual_ref.mesh_ref.area(f));
+            let total_area = face_areas.clone().sum::<f64>();
+            let face_centroids = faces.iter().map(|&f| self.dual_ref.mesh_ref.centroid(f));
+            let face_weighted_centroids = face_centroids.zip(face_areas).map(|(centroid, area)| centroid * (area / total_area));
+            // Calculate the weighted average of the centroids
+            let average = hutspot::math::calculate_average_f64(face_weighted_centroids);
+            region_to_candidate.insert(region_id, average);
         }
 
-        // for each zone, find a coordinate that minimizes Hausdorf distance to each subsurface in the zone
-        let mut zone_to_coordinate = HashMap::new();
-        for (zone_id, zone_obj) in &dual.zones {
-            let direction_of_zone = zone_obj.direction;
+        // Find a candidate location for each zone (only a single coordinate, either X, Y or Z, depending on the type of zone
+        // We simply take the coordinate that minimizes the Hausdorf distance to the candidate locations of the regions in the zone
+        let mut zone_to_candidate = HashMap::new();
+        for (zone_id, zone_obj) in &self.dual_ref.zones {
+            let zone_type = zone_obj.direction;
 
-            // get all DIRECTION coordinates of the vertices of the subsurfaces in this zone
-            let subsurface_coordinates = zone_obj
+            // Get all coordinates of the regions in the zone
+            let candidates = zone_obj
                 .regions
                 .iter()
-                .map(|&region_id| region_to_candidate[&region_id][direction_of_zone as usize])
+                .map(|&region_id| region_to_candidate[&region_id][zone_type as usize])
                 .collect_vec();
 
-            // get min and max
-            let min = subsurface_coordinates.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap().to_owned();
-            let max = subsurface_coordinates.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap().to_owned();
-
-            // find the coordinate that minimizes the worst distance to all subsurfaces
-            let mut best_coordinate = min;
+            // Find the coordinate that minimizes the worst distance to all candidates, do this in N steps
+            let n = 5;
+            let min = candidates.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap().to_owned();
+            let max = candidates.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap().to_owned();
+            let steps = (0..n).map(|i| (max - min).mul_add(f64::from(i) / f64::from(n), min)).collect_vec();
+            let mut best_step = min;
             let mut best_worst_distance = f64::INFINITY;
-            for x in (0..10).map(|i| min + (max - min) * (i as f64) / 10.0) {
-                let distance_to_each_subsurface = subsurface_coordinates.iter().map(|&y| (x - y).abs());
-                let worst_distance = distance_to_each_subsurface.max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
+            for step in steps {
+                let distances: Vec<f64> = candidates.iter().map(|&x| (step - x).abs()).collect();
+                let worst_distance = distances.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap().to_owned();
                 if worst_distance < best_worst_distance {
                     best_worst_distance = worst_distance;
-                    best_coordinate = x;
+                    best_step = step;
                 }
             }
 
-            zone_to_coordinate.insert(zone_id, best_coordinate);
+            zone_to_candidate.insert(zone_id, best_step);
         }
 
-        for vert_id in self.polycube_ref.structure.vert_ids() {
-            let region_id = self.polycube_ref.region_to_vertex.get_by_right(&vert_id).unwrap().to_owned();
-            let coordinates = [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z]
-                .map(|d| zone_to_coordinate[&dual.zones.iter().find(|(_, z)| z.regions.contains(&region_id) && z.direction == d).unwrap().0]);
-            let target = Vector3D::new(coordinates[0], coordinates[1], coordinates[2]);
+        // Find the actual vertex in the subsurface that is closest to the candidate location (by combining the three candidate coordinates of corresponding zones)
+        for (region_id, region_obj) in &self.dual_ref.loop_structure.faces {
+            let target = Vector3D::from(
+                [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z]
+                    .map(|direction| zone_to_candidate[&self.dual_ref.region_to_zone(region_id, direction)]),
+            );
 
-            let vertices_in_subsurface = dual.loop_structure.faces[region_id].verts.clone();
-            let best_vertex_in_subsurface = vertices_in_subsurface
+            let vertices = &region_obj.verts;
+            let best_vertex = vertices
                 .iter()
-                .map(|&v| (v, dual.mesh_ref.position(v)))
-                .min_by(|(_, a), (_, b)| (a - target).norm().partial_cmp(&(b - target).norm()).unwrap())
+                .map(|&v| (v, self.dual_ref.mesh_ref.position(v)))
+                .map(|(v, pos)| (v, pos.metric_distance(&target)))
+                .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
                 .unwrap()
                 .0;
 
-            self.vert_to_corner.insert(vert_id, best_vertex_in_subsurface);
+            self.vert_to_corner
+                .insert(self.polycube_ref.region_to_vertex.get_by_left(&region_id).unwrap().to_owned(), best_vertex);
         }
-
-        Ok(())
     }
 
-    fn place_paths(&mut self) -> Result<(), PropertyViolationError<PolycubeVertID>> {
+    // TODO: Make this robust
+    fn place_paths(&mut self) -> Result<(), PropertyViolationError> {
         let primal = &self.polycube_ref;
 
         let primal_vertices = primal
@@ -469,30 +451,6 @@ impl Layout {
                 return Err(PropertyViolationError::PathEmpty);
             }
 
-            let lowerbound_path = hutspot::graph::find_shortest_path_astar(
-                u,
-                v,
-                |a| self.granulated_mesh.vneighbors(a),
-                |a, b| ordered_float::OrderedFloat(self.granulated_mesh.distance(a, b)),
-                |a, b| ordered_float::OrderedFloat(self.granulated_mesh.distance(a, b)),
-            )
-            .unwrap()
-            .0;
-            let lowerbound_score = lowerbound_path
-                .windows(2)
-                .map(|pair| self.granulated_mesh.distance(pair[0], pair[1]))
-                .sum::<f64>();
-
-            let actual_score = granulated_path
-                .windows(2)
-                .map(|pair| self.granulated_mesh.distance(pair[0], pair[1]))
-                .sum::<f64>();
-
-            let ratio = (actual_score / lowerbound_score);
-            if ratio > 3. {
-                return Err(PropertyViolationError::PathTooLong);
-            }
-
             for &v_id in &granulated_path {
                 occupied_vertices.insert(v_id);
             }
@@ -514,19 +472,13 @@ impl Layout {
         Ok(())
     }
 
-    pub fn assign_patches(&mut self) -> Result<(), PropertyViolationError<PolycubeVertID>> {
-        let polycube = &self.polycube_ref;
-
+    pub fn assign_patches(&mut self) {
         // Get all blocked edges (ALL PATHS)
         let blocked = self
             .edge_to_path
             .values()
             .flat_map(|path| path.windows(2))
-            .map(|edgepair| {
-                self.granulated_mesh
-                    .edge_between_verts(edgepair[0], edgepair[1])
-                    .unwrap_or_else(|| panic!("Edge must exist: {edgepair:?}"))
-            })
+            .map(|verts| self.granulated_mesh.edge_between_verts(verts[0], verts[1]).unwrap())
             .flat_map(|(a, b)| {
                 vec![
                     (self.granulated_mesh.face(a), self.granulated_mesh.face(b)),
@@ -536,316 +488,103 @@ impl Layout {
             .collect::<HashSet<_>>();
 
         // Get all face neighbors, but filter out neighbors blocked by the blocked edges
-        let face_neighbors: HashMap<FaceID, Vec<FaceID>> = self
+        let face_to_neighbors = self
             .granulated_mesh
             .faces
             .keys()
-            .map(|face_id: FaceID| {
+            .map(|face_id| {
                 (
                     face_id,
                     self.granulated_mesh
                         .fneighbors(face_id)
                         .into_iter()
                         .filter(|&neighbor_id| !blocked.contains(&(face_id, neighbor_id)))
-                        .collect(),
+                        .collect_vec(),
                 )
             })
-            .collect();
+            .collect::<HashMap<_, _>>();
 
-        // Make a neighborhood function that blocks all edges that are part of the loop segments of this face
-        let nfunction = |face_id: FaceID| face_neighbors[&face_id].clone();
+        // Find all patches (should be equal to the number of faces in the polycube)
+        let patches = hutspot::graph::find_ccs(&self.granulated_mesh.faces.keys().collect_vec(), |face_id: FaceID| {
+            face_to_neighbors[&face_id].clone()
+        });
+        assert!(patches.len() == self.polycube_ref.structure.face_ids().len());
 
-        // Find all connected components (should be equal to the number of faces)
-        let ccs = hutspot::graph::find_ccs(&self.granulated_mesh.faces.keys().collect_vec(), nfunction);
-        if ccs.len() != polycube.structure.face_ids().len() {
-            warn!(
-                "Number of faces ({:?}) must be equal to number of connected components ({:?})",
-                polycube.structure.face_ids().len(),
-                ccs.len()
-            );
-            return Err(PropertyViolationError::PatchesMissing);
-        }
-
-        // Map from some faces to adjacent paths
-        let mut face_to_path: HashMap<FaceID, HashSet<_>> = HashMap::new();
+        // Every path should be part of exactly TWO patches (on both sides)
+        let mut path_to_ccs: HashMap<PolycubeEdgeID, [usize; 2]> = HashMap::new();
         for (path_id, path) in &self.edge_to_path {
-            for vertexpair in path.windows(2) {
-                let edgepair = self.granulated_mesh.edge_between_verts(vertexpair[0], vertexpair[1]).unwrap();
-                let facepair = (self.granulated_mesh.face(edgepair.0), self.granulated_mesh.face(edgepair.1));
-                face_to_path.entry(facepair.0).or_default().insert(path_id);
-                face_to_path.entry(facepair.1).or_default().insert(path_id);
-            }
-        }
-
-        // For each connected component, assign a patch
-        // We can find the correct patch, by checking which paths are part of the connected component
-        // So first map each connected component, to the paths
-        let face_and_cc = ccs
-            .into_iter()
-            .map(|cc| {
-                (
-                    cc.clone(),
-                    cc.into_iter()
-                        .flat_map(|face_id| face_to_path.get(&face_id).cloned().unwrap_or_default())
-                        .collect::<HashSet<_>>(),
-                )
-            })
-            .filter_map(|(cc, paths)| {
-                polycube
-                    .structure
-                    .face_ids()
-                    .into_iter()
-                    .find(|&patch_id| {
-                        // check that all paths of this patch are part of the connected component
-                        polycube.structure.edges(patch_id).iter().all(|&path_id| paths.contains(&path_id))
-                    })
-                    .map(|face_id| (face_id, cc))
-            })
-            .map(|(face_id, subsurface)| {
-                (
-                    face_id,
-                    Patch {
-                        faces: subsurface.into_iter().collect(),
-                    },
-                )
-            })
-            .collect_vec();
-
-        if face_and_cc.len() != polycube.structure.face_ids().len() {
-            warn!(
-                "Number of faces ({:?}) must be equal to number of patches ({:?})",
-                polycube.structure.face_ids().len(),
-                face_and_cc.len()
+            // Loop segment should simply have only two connected components (one for each side)
+            // We do not check all its edges, but only the first one (since they should all be the same)
+            let arbitrary_edge = self.granulated_mesh.edge_between_verts(path[0], path[1]).unwrap().0;
+            // Edge has two faces
+            let (face1, face2) = (
+                self.granulated_mesh.face(arbitrary_edge),
+                self.granulated_mesh.face(self.granulated_mesh.twin(arbitrary_edge)),
             );
-            return Err(PropertyViolationError::PatchesMissing);
+
+            let cc1 = patches.iter().position(|cc| cc.contains(&face1)).unwrap();
+            let cc2 = patches.iter().position(|cc| cc.contains(&face2)).unwrap();
+            assert_ne!(cc1, cc2);
+            path_to_ccs.insert(*path_id, (cc1, cc2).into());
         }
 
-        for (face_id, patch) in face_and_cc {
-            self.face_to_patch.insert(face_id, patch);
+        // For every patch, get the connected component that is shared among its paths
+        for &face_id in &self.polycube_ref.structure.face_ids() {
+            let paths = self.polycube_ref.structure.edges(face_id);
+
+            // Select an arbitrary path
+            let arbitrary_path = paths[0];
+            let [cc1, cc2] = path_to_ccs[&arbitrary_path];
+
+            // Check whether all paths share the same connected component
+            let cc1_shared = paths.iter().all(|&path| path_to_ccs[&path].contains(&cc1));
+            let cc2_shared = paths.iter().all(|&path| path_to_ccs[&path].contains(&cc2));
+            assert!(cc1_shared ^ cc2_shared);
+
+            let faces = if cc1_shared { patches[cc1].clone() } else { patches[cc2].clone() };
+            self.face_to_patch.insert(face_id, Patch { faces });
         }
+    }
+
+    // Try to improve the layou by doing the following:
+    // 1. Change the placement of 1 corner
+    // 2. Re-compute paths for this 1 corner (all its adjacent paths)
+    // 3. Re-compute patches for this 1 corner (all its adjacent patches)
+    pub fn improve(&mut self, corner: PolycubeVertID) -> Result<(), PropertyViolationError> {
+        // Change the placement of this corner
+        // Get all vertices in the adjacent patches
+        // Select a random vertex that is not occupied
+        let occupied = self.vert_to_corner.right_values().collect::<HashSet<_>>();
+        let adjacent_patches = self.polycube_ref.structure.star(corner);
+        let adjacent_patches_vertices = adjacent_patches
+            .iter()
+            .flat_map(|&patch| self.face_to_patch[&patch].faces.iter())
+            .flat_map(|&face| self.granulated_mesh.corners(face))
+            .collect::<HashSet<_>>();
+        let candidates = adjacent_patches_vertices.into_iter().filter(|v| !occupied.contains(v)).collect_vec();
+        let new_vertex = candidates.choose(&mut rand::thread_rng());
+        if new_vertex.is_none() {
+            return Ok(());
+        }
+        self.vert_to_corner.insert(corner, new_vertex.unwrap().to_owned());
+
+        // Get all paths that are adjacent to this corner
+        let edges = self.polycube_ref.structure.outgoing(corner);
+        for edge in edges {
+            self.edge_to_path.remove(&edge);
+        }
+
+        // Get all patches that are adjacent to this corner
+        let faces = self.polycube_ref.structure.star(corner);
+        for face in faces {
+            self.face_to_patch.remove(&face);
+        }
+
+        // TODO: actually recompute only for changed paths..
+        self.place_paths()?;
+
+        self.assign_patches();
 
         Ok(())
-    }
-
-    pub fn score(&self) -> (f64, f64) {
-        let total_area = self
-            .granulated_mesh
-            .faces
-            .keys()
-            .map(|face_id| self.granulated_mesh.vector_area(face_id).norm())
-            .sum::<f64>();
-        let weighted_angle = self
-            .face_to_patch
-            .iter()
-            .flat_map(|(polycube_face_id, patch)| {
-                patch.faces.iter().map(|&face_id| {
-                    let target_normal = self.polycube_ref.structure.normal(*polycube_face_id);
-                    let face_area = self.granulated_mesh.vector_area(face_id).norm();
-                    let face_normal = self.granulated_mesh.normal(face_id);
-                    let angle = (target_normal.angle(&face_normal) / 2.).sin();
-                    (face_area / total_area) * angle
-                })
-            })
-            .sum::<f64>();
-
-        let paths_lowerbound = self
-            .edge_to_path
-            .iter()
-            .map(|(edge_id, actual_path)| {
-                let (u, v) = self.polycube_ref.structure.endpoints(*edge_id);
-                let (u_vert, v_vert) = (
-                    self.vert_to_corner.get_by_left(&u).unwrap().to_owned(),
-                    self.vert_to_corner.get_by_left(&v).unwrap().to_owned(),
-                );
-                let lowerbound_path = hutspot::graph::find_shortest_path_astar(
-                    u_vert,
-                    v_vert,
-                    |a| self.granulated_mesh.vneighbors(a),
-                    |a, b| ordered_float::OrderedFloat(self.granulated_mesh.distance(a, b)),
-                    |a, b| ordered_float::OrderedFloat(self.granulated_mesh.distance(a, b)),
-                )
-                .unwrap()
-                .0;
-                let lowerbound_score = lowerbound_path
-                    .windows(2)
-                    .map(|pair| self.granulated_mesh.distance(pair[0], pair[1]))
-                    .sum::<f64>();
-
-                let actual_score = actual_path.windows(2).map(|pair| self.granulated_mesh.distance(pair[0], pair[1])).sum::<f64>();
-
-                let ratio = (actual_score / lowerbound_score) - 1.0;
-                ratio * (1. / self.edge_to_path.len() as f64)
-            })
-            .sum::<f64>();
-
-        (paths_lowerbound, weighted_angle)
-    }
-
-    pub fn smoothening(&mut self) {
-        // We smoothen each path until path is geodesic
-        // https://dl.acm.org/doi/pdf/10.1145/3414685.3417839
-
-        let keys = self.edge_to_path.keys().copied().collect_vec();
-        for path_id in keys {
-            // Calculate alpha for each vertex in the path.
-            // A path is geodesic if alpha is > 180 degrees (pi) for each vertex
-            // Any vertex with alpha < 180 degrees is a candidate for smoothing
-            let mut wedges = priority_queue::PriorityQueue::new();
-
-            // Every vertex is defined by a wedge of 3 vertices
-            let path = self.edge_to_path.get(&path_id).unwrap();
-            for pair in path.windows(3) {
-                // First we find the correct side (shortest angle/alpha) of the wedge
-                // There are two wedges between a, b, c
-                let (a, b, c) = (pair[0], pair[1], pair[2]);
-                let (wedge1, wedge2) = self.granulated_mesh.wedges(a, b, c);
-
-                if self.granulated_mesh.distance(a, b) < 1e-3 || self.granulated_mesh.distance(b, c) < 1e-3 {
-                    continue;
-                }
-
-                let alpha_wedge1 = wedge1
-                    .clone()
-                    .into_iter()
-                    .tuple_windows()
-                    .map(|(v1, v2)| self.granulated_mesh.vertex_angle(v1, b, v2))
-                    .sum::<f64>();
-                let alpha_wedge2 = wedge2
-                    .clone()
-                    .into_iter()
-                    .tuple_windows()
-                    .map(|(v1, v2)| self.granulated_mesh.vertex_angle(v1, b, v2))
-                    .sum::<f64>();
-
-                if alpha_wedge1 < alpha_wedge2 {
-                    wedges.push((wedge1, b, false), Reverse(OrderedFloat(alpha_wedge1)));
-                } else {
-                    wedges.push((wedge2, b, true), Reverse(OrderedFloat(alpha_wedge2)));
-                }
-            }
-
-            if let Some(worst_wedge) = wedges.peek() {
-                if worst_wedge.1 .0.abs() < PI * 0.9 {
-                    println!("Smoothing path {:?} (worst wedge: {:?})", path_id, worst_wedge.1);
-
-                    while let Some(((mut wedge, b, reverse), cost)) = wedges.pop() {
-                        let path = self.edge_to_path.get(&path_id).unwrap();
-                        if !path.contains(&wedge[0]) || !path.contains(&wedge[wedge.len() - 1]) {
-                            continue;
-                        }
-
-                        // Now we apply flips on the wedge
-                        let mut changed = true;
-                        while changed {
-                            changed = false;
-                            for i in 1..wedge.len() - 1 {
-                                let (ni_prev, ni_cur, ni_next) = (wedge[i - 1], wedge[i], wedge[i + 1]);
-                                let angle = self.granulated_mesh.vertex_angle(ni_next, ni_cur, b) + self.granulated_mesh.vertex_angle(ni_prev, ni_cur, b);
-                                println!("{i}: Angle: {angle:?}");
-                                if angle < std::f64::consts::PI * 0.9
-                                    && self.granulated_mesh.distance(ni_prev, ni_cur) > 1e-3
-                                    && self.granulated_mesh.distance(ni_cur, ni_next) > 1e-3
-                                {
-                                    // We flip the triangle
-                                    if let Some(new_v) = self.granulated_mesh.splip_edge(ni_cur, b) {
-                                        wedge[i] = new_v;
-                                        changed = new_v != ni_cur && new_v != b;
-                                    }
-                                }
-                            }
-                        }
-
-                        // Now we update the path
-                        if reverse {
-                            wedge.reverse();
-                        }
-
-                        println!(" adding wedge: {:?}", wedge);
-
-                        let path = self.edge_to_path.get(&path_id).unwrap().clone();
-
-                        println!(" path id: {:?}", path_id);
-                        println!(" path: {:?}", path);
-
-                        for pair in path.windows(2) {
-                            // does the edge exist?
-                            let edgepair = self.granulated_mesh.edge_between_verts(pair[0], pair[1]);
-                            assert!(edgepair.is_some(), "Edge not found: {:?} {:?} path id: {:?}", pair[0], pair[1], path_id);
-                        }
-
-                        let path_before_wedge = path.iter().take_while(|&&v| v != *wedge.first().unwrap()).copied().collect_vec();
-                        let path_after_wedge = path.iter().skip_while(|&&v| v != *wedge.last().unwrap()).skip(1).copied().collect_vec();
-
-                        let new_path = path_before_wedge.into_iter().chain(wedge).chain(path_after_wedge.into_iter()).collect_vec();
-
-                        for pair in new_path.windows(3) {
-                            // First we find the correct side (shortest angle/alpha) of the wedge
-                            // There are two wedges between a, b, c
-                            let (a, b, c) = (pair[0], pair[1], pair[2]);
-                            let (wedge1, wedge2) = self.granulated_mesh.wedges(a, b, c);
-
-                            if self.granulated_mesh.distance(a, b) < 1e-3 || self.granulated_mesh.distance(b, c) < 1e-3 {
-                                continue;
-                            }
-
-                            let alpha_wedge1 = wedge1
-                                .clone()
-                                .into_iter()
-                                .tuple_windows()
-                                .map(|(v1, v2)| self.granulated_mesh.vertex_angle(v1, b, v2))
-                                .sum::<f64>();
-                            let alpha_wedge2 = wedge2
-                                .clone()
-                                .into_iter()
-                                .tuple_windows()
-                                .map(|(v1, v2)| self.granulated_mesh.vertex_angle(v1, b, v2))
-                                .sum::<f64>();
-
-                            if alpha_wedge1 < alpha_wedge2 {
-                                wedges.push((wedge1, b, false), Reverse(OrderedFloat(alpha_wedge1)));
-                            } else {
-                                wedges.push((wedge2, b, true), Reverse(OrderedFloat(alpha_wedge2)));
-                            }
-                        }
-
-                        let old_length = path.windows(2).map(|pair| self.granulated_mesh.distance(pair[0], pair[1])).sum::<f64>();
-                        let new_length = new_path.windows(2).map(|pair| self.granulated_mesh.distance(pair[0], pair[1])).sum::<f64>();
-
-                        println!("Old length: {:?}, new length: {:?}", old_length, new_length);
-
-                        self.edge_to_path.insert(path_id, new_path.clone());
-                        self.edge_to_path
-                            .insert(self.polycube_ref.structure.twin(path_id), new_path.iter().rev().copied().collect_vec());
-                    }
-                }
-
-                return;
-            }
-        }
-    }
-
-    pub fn improve_layout(layout: &Self, dual_ref: &Dual, alignment: &SecondaryMap<FaceID, f64>) -> Result<Self, PropertyViolationError<PolycubeVertID>> {
-        // Copy the layout, mutate the placement of one of the vertices, then recompute the paths only for this vertex. See if it improves.
-
-        let mut mutated_layout = layout.clone();
-
-        // Grab random vertex
-        // Mutate it by moving it to a neighboring vertex
-        let mut rng = rand::thread_rng();
-        let random_corner = mutated_layout.polycube_ref.structure.vert_ids().choose(&mut rng).unwrap().to_owned();
-        let vertex_id = mutated_layout.vert_to_corner.get_by_left(&random_corner).unwrap().to_owned();
-        let neighboring_vertices = mutated_layout.granulated_mesh.vneighbors(vertex_id);
-        // Select a random neighboring vertex
-        let new_vertex_id = *neighboring_vertices.choose(&mut rng).unwrap();
-        // Update the layout
-        mutated_layout.vert_to_corner.insert(random_corner, new_vertex_id);
-
-        // Compute the paths
-        mutated_layout.place_paths()?;
-
-        // Compute the patches
-        mutated_layout.assign_patches()?;
-
-        Ok(mutated_layout)
     }
 }

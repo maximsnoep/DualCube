@@ -1,14 +1,15 @@
 use crate::{
-    dual::{Dual, IntersectionID, Orientation, PropertyViolationError, RegionID, SegmentID, ZoneID},
+    dual::{Dual, Orientation, PropertyViolationError, RegionID, SegmentID},
     graph::Graaf,
     layout::Layout,
-    polycube::{Polycube, PolycubeFaceID, PolycubeVertID},
+    polycube::{Polycube, PolycubeFaceID},
     to_principal_direction, EdgeID, EmbeddedMesh, FaceID, PrincipalDirection,
 };
+use bevy_egui::egui::emath::align;
 use hutspot::{geom::Vector3D, timer::Timer};
 use itertools::Itertools;
 use ordered_float::OrderedFloat;
-use rand::{distributions::Distribution, Rng};
+use rand::distributions::Distribution;
 use rand::{
     distributions::WeightedIndex,
     seq::{IteratorRandom, SliceRandom},
@@ -82,9 +83,9 @@ pub struct Solution {
     pub mesh_ref: Arc<EmbeddedMesh>,
     pub loops: SlotMap<LoopID, Loop>,
     occupied: SecondaryMap<EdgeID, Vec<LoopID>>,
-    pub dual: Result<Dual, PropertyViolationError<IntersectionID>>,
+    pub dual: Result<Dual, PropertyViolationError>,
     pub polycube: Option<Polycube>,
-    pub layout: Option<Result<Layout, PropertyViolationError<PolycubeVertID>>>,
+    pub layout: Option<Result<Layout, PropertyViolationError>>,
 
     pub alignment_per_triangle: SecondaryMap<FaceID, f64>,
     pub alignment: Option<f64>,
@@ -130,12 +131,6 @@ impl Solution {
             }
             self.occupied.get_mut(e).unwrap().push(loop_id);
         }
-
-        // for [e0, e1] in self.get_pairs_of_loop(loop_id) {
-        //     if let Some(l) = self.is_occupied([e0, e1]) {
-        //         assert!(l == loop_id, "Loop: {loop_id:?} already occupied by {l:?} on edge {:?}", [e0, e1]);
-        //     }
-        // }
 
         loop_id
     }
@@ -264,52 +259,31 @@ impl Solution {
         self.compute_alignment();
         self.compute_orthogonality();
 
-        // let mut no_improve = 0;
-        // for i in 0..1000 {
-        //     println!("i: {}, no_improve: {}", i, no_improve);
-        //     if no_improve > 100 {
-        //         break;
-        //     }
+        if let Some(Ok(layout)) = &self.layout {
+            for i in 0..10 {
+                let old_score = self.alignment.unwrap_or_default() + self.orthogonality.unwrap_or_default();
+                let mut sol_copy = self.clone();
 
-        //     let current_score = self.alignment.unwrap();
-        //     if let Ok(dual_ref) = &self.dual {
-        //         if let Some(Ok(layout)) = &self.layout.clone() {
-        //             match Layout::improve_layout(layout, dual_ref, &self.alignment_per_triangle) {
-        //                 Ok(new_layout) => {
-        //                     self.layout = Some(Ok(new_layout.clone()));
-        //                     self.resize_polycube();
-        //                     self.compute_alignment();
-        //                     self.compute_orthogonality();
-        //                     let new_score = self.alignment.unwrap();
-        //                     if (new_score - current_score) > 0.00001 {
-        //                         println!("Improved alignment from {:.2} to {:.2}", current_score, new_score);
-        //                         no_improve = 0;
-        //                     } else {
-        //                         self.layout = Some(Ok(layout.clone()));
-        //                         self.resize_polycube();
-        //                         self.compute_alignment();
-        //                         self.compute_orthogonality();
-        //                         no_improve += 1;
-        //                     }
-        //                     continue;
-        //                 }
-        //                 Err(e) => {}
-        //             }
-        //         }
-        //     }
-
-        //     no_improve += 1;
-        // }
-
-        // println!("alignment: {:?}", self.alignment);
-    }
-
-    pub fn smoothen(&mut self) {
-        self.layout.as_mut().unwrap().as_mut().unwrap().smoothening();
-        self.layout.as_mut().unwrap().as_mut().unwrap().assign_patches().unwrap();
-        // self.resize_polycube();
-        self.compute_alignment();
-        self.compute_orthogonality();
+                if let Some(Ok(sol_layout)) = &mut sol_copy.layout {
+                    let corner = sol_layout.vert_to_corner.left_values().choose(&mut thread_rng()).unwrap().to_owned();
+                    if sol_layout.improve(corner).is_ok() {
+                        sol_copy.compute_alignment();
+                        let new_score = sol_copy.alignment.unwrap_or_default() + sol_copy.orthogonality.unwrap_or_default();
+                        // Calculate percentage improvement
+                        let improvement = (new_score - old_score) / old_score;
+                        // Print the improvement, color green if positive, red if negative
+                        if improvement > 0.0 {
+                            println!("{i} : {:.3} to {:.3} \x1b[32m({:+.2}%)\x1b[0m", old_score, new_score, improvement * 100.);
+                        } else {
+                            println!("{i} : {:.3} to {:.3} \x1b[31m({:+.2}%)\x1b[0m", old_score, new_score, improvement * 100.);
+                        }
+                        if new_score > old_score {
+                            *self = sol_copy;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     pub fn compute_dual(&mut self) {
@@ -317,137 +291,26 @@ impl Solution {
     }
 
     pub fn compute_polycube(&mut self) {
+        self.polycube = None;
         if let Ok(dual) = &self.dual {
             let polycube = Polycube::from_dual(dual);
             self.polycube = Some(polycube);
-        } else {
-            self.polycube = None;
         }
-        self.layout = None;
     }
 
     pub fn compute_layout(&mut self) {
         self.layout = None;
         if let (Ok(dual), Some(polycube)) = (&self.dual, &self.polycube) {
-            for _ in 0..5 {
-                let layout = Layout::embed(dual, polycube);
-                match &layout {
-                    Ok(ok_layout) => {
-                        let (score_a, score_b) = ok_layout.score();
-                        let score = score_a + score_b;
-                        if score_a < 0.1 {
-                            self.layout = Some(layout);
-                            return;
-                        }
-                    }
-                    Err(e) => {
-                        println!("Failed to embed layout: {:?}", e);
-                    }
-                }
-            }
+            let layout = Layout::embed(dual, polycube);
+            self.layout = Some(layout);
         }
     }
 
-    // pub fn resize_polycube(&mut self) {
-    //     if let (Ok(dual), Some(Ok(layout)), Some(polycube)) = (&mut self.dual, &self.layout, &mut self.polycube) {
-    //         let (adjacency, adjacency_backwards) = &dual.adjacency;
-    //         let topological_sort = hutspot::graph::topological_sort::<ZoneID>(&dual.zones.clone().into_iter().map(|(id, _)| id).collect_vec(), |z| {
-    //             adjacency.get(&z).cloned().unwrap_or_default().into_iter().collect_vec()
-    //         });
-
-    //         if topological_sort.is_none() {
-    //             return;
-    //         }
-
-    //         for zone in dual.zones.values_mut() {
-    //             zone.coordinate = None;
-    //         }
-
-    //         for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
-    //             let mut topo = topological_sort
-    //                 .clone()
-    //                 .unwrap()
-    //                 .into_iter()
-    //                 .filter(|&z| dual.zones[z].direction == direction)
-    //                 .collect_vec();
-
-    //             let mut zero_is_set = false;
-
-    //             for &zone_id in &topo {
-    //                 let dependencies = adjacency_backwards
-    //                     .get(&zone_id)
-    //                     .cloned()
-    //                     .unwrap_or_default()
-    //                     .iter()
-    //                     .filter_map(|&z| dual.zones[z].coordinate)
-    //                     .collect_vec();
-
-    //                 let average_coord = hutspot::math::calculate_average_f64(
-    //                     dual.zones[zone_id]
-    //                         .regions
-    //                         .iter()
-    //                         .filter_map(|&r| polycube.region_to_vertex.get_by_left(&r))
-    //                         .filter_map(|&v| layout.vert_to_corner.get_by_left(&v))
-    //                         .map(|&c| layout.granulated_mesh.position(c)[direction as usize]),
-    //                 );
-
-    //                 if dependencies.is_empty() {
-    //                     if zero_is_set {
-    //                         continue;
-    //                     }
-    //                     zero_is_set = true;
-    //                     dual.zones[zone_id].coordinate = Some(average_coord);
-    //                 } else {
-    //                     let max_dependency = dependencies.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap().to_owned();
-    //                     let new_coord = (average_coord).max(max_dependency + 0.1);
-    //                     dual.zones[zone_id].coordinate = Some(new_coord);
-    //                 };
-    //             }
-
-    //             topo.reverse();
-
-    //             for &zone_id in &topo {
-    //                 if dual.zones[zone_id].coordinate.is_none() {
-    //                     let dependencies = adjacency
-    //                         .get(&zone_id)
-    //                         .cloned()
-    //                         .unwrap_or_default()
-    //                         .iter()
-    //                         .filter_map(|&z| dual.zones[z].coordinate)
-    //                         .collect_vec();
-
-    //                     let average_coord = hutspot::math::calculate_average_f64(
-    //                         dual.zones[zone_id]
-    //                             .regions
-    //                             .iter()
-    //                             .flat_map(|&r| polycube.region_to_vertex.get_by_left(&r))
-    //                             .flat_map(|&v| layout.vert_to_corner.get_by_left(&v))
-    //                             .map(|&c| layout.granulated_mesh.position(c)[direction as usize]),
-    //                     );
-
-    //                     assert!(!dependencies.is_empty());
-    //                     let min_dependency = dependencies.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap().to_owned();
-    //                     let new_coord = (average_coord).min(min_dependency - 0.1);
-    //                     dual.zones[zone_id].coordinate = Some(new_coord);
-    //                 }
-    //             }
-    //         }
-
-    //         for region_id in dual.loop_structure.face_ids() {
-    //             let coordinate = [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z].map(|d| {
-    //                 dual.zones
-    //                     .iter()
-    //                     .find(|(_, z)| z.regions.contains(&region_id) && z.direction == d)
-    //                     .unwrap()
-    //                     .1
-    //                     .coordinate
-    //                     .unwrap()
-    //             });
-    //             let vertex = polycube.region_to_vertex.get_by_left(&region_id).unwrap().to_owned();
-    //             polycube.structure.verts[vertex].set_position(Vector3D::new(coordinate[0], coordinate[1], coordinate[2]));
-    //         }
-    //     }
-    // }
+    pub fn resize_polycube(&mut self) {
+        if let (Ok(dual), Some(polycube), Some(Ok(layout))) = (&self.dual, &mut self.polycube, &self.layout) {
+            polycube.resize(dual, Some(layout));
+        }
+    }
 
     pub fn compute_alignment(&mut self) {
         self.alignment_per_triangle.clear();
@@ -1113,255 +976,24 @@ impl Solution {
             }
 
             let labels_out = labels.iter().map(|&x| x.to_string()).collect::<Vec<_>>().join("\n");
-            write!(file, "{}", labels_out).unwrap();
+            write!(file, "{labels_out}").unwrap();
 
             return Ok(());
-        } else {
-            return Err(std::io::Error::new(std::io::ErrorKind::Other, "No layout available"));
         }
+        Err(std::io::Error::new(std::io::ErrorKind::Other, "No layout available"))
     }
 
     pub fn write_to_obj(&self, path: &PathBuf) -> std::io::Result<()> {
         if let Some(Ok(layout)) = &self.layout {
             layout.granulated_mesh.write_to_obj(path)?;
             return Ok(());
-        } else {
-            return Err(std::io::Error::new(std::io::ErrorKind::Other, "No layout available"));
         }
+        Err(std::io::Error::new(std::io::ErrorKind::Other, "No layout available"))
     }
 
     pub fn export(&self, path_obj: &PathBuf, path_flag: &PathBuf) -> std::io::Result<()> {
-        self.write_to_obj(path_obj);
+        self.write_to_obj(path_obj)?;
         self.write_to_flag(path_flag)?;
         Ok(())
-    }
-
-    pub fn improve_layout(&mut self, n: usize) {
-        println!("Alignment before: {:?}", self.alignment);
-
-        if let Some(Ok(layout)) = &mut self.layout {
-            let path_ids = layout
-                .edge_to_path
-                .keys()
-                .filter(|&&path_id| {
-                    let twin_id = layout.polycube_ref.structure.twin(path_id).to_owned();
-                    path_id < twin_id
-                })
-                .copied()
-                .collect_vec();
-
-            let filtered_path_ids = path_ids
-                .iter()
-                .filter(|&&path_id| {
-                    let twin_id = layout.polycube_ref.structure.twin(path_id).to_owned();
-                    let face_id = layout.polycube_ref.structure.face(path_id);
-                    let twin_face_id = layout.polycube_ref.structure.face(twin_id);
-                    let normal = layout.polycube_ref.structure.normal(face_id).normalize();
-                    let twin_normal = layout.polycube_ref.structure.normal(twin_face_id).normalize();
-                    normal != twin_normal
-                })
-                .copied()
-                .collect_vec();
-
-            let mut occupied_vertices = layout.edge_to_path.values().flat_map(|path| path.iter().copied()).collect::<HashSet<_>>();
-
-            for i in 0..n {
-                let mut sol = None;
-
-                let mut c = 0;
-                while c < 1000 {
-                    c += 1;
-                    let path_infos = filtered_path_ids
-                        .iter()
-                        .map(|&path_id| {
-                            let face_id = layout.polycube_ref.structure.face(path_id);
-                            let patch = layout.face_to_patch.get(&face_id).unwrap().to_owned();
-
-                            let twin_path_id = layout.polycube_ref.structure.twin(path_id).to_owned();
-                            let twin_face_id = layout.polycube_ref.structure.face(twin_path_id);
-                            let twin_patch = layout.face_to_patch.get(&twin_face_id).unwrap().to_owned();
-                            (path_id, twin_path_id, face_id, twin_face_id, patch, twin_patch)
-                        })
-                        .collect_vec();
-
-                    // grab a random path
-                    let path_info = path_infos.choose(&mut rand::thread_rng()).unwrap().to_owned();
-                    let (path_id, twin_path_id, face_id, twin_face_id, patch, twin_patch) = path_info;
-                    let path = layout.edge_to_path.get(&path_id).unwrap().to_owned();
-
-                    if path.len() < 3 {
-                        continue;
-                    }
-
-                    // grab either a two-flip or a three-flip
-                    let two_flip = rand::random::<bool>();
-                    if two_flip {
-                        // grab a random two-flip in the path
-                        let random_index = rand::thread_rng().gen_range(0..path.len() - 1);
-                        let (a, b) = (path[random_index], path[random_index + 1]);
-
-                        let edge = layout.granulated_mesh.edge_between_verts(a, b).unwrap().0;
-
-                        let triangle = layout.granulated_mesh.face(edge);
-                        let third_vertex = layout.granulated_mesh.corners(triangle).iter().find(|&&v| v != a && v != b).unwrap().to_owned();
-
-                        if !occupied_vertices.contains(&third_vertex) {
-                            assert!(patch.faces.contains(&triangle));
-
-                            let current_normal = layout.polycube_ref.structure.normal(face_id).normalize();
-                            let new_normal = layout.polycube_ref.structure.normal(twin_face_id).normalize();
-
-                            let current_score = (1.
-                                - (1.
-                                    + std::f64::consts::PI
-                                        .mul_add(2., -(4. * current_normal.angle(&layout.granulated_mesh.normal(triangle))))
-                                        .exp())
-                                .recip())
-                            .powi(2);
-                            let new_score = (1.
-                                - (1.
-                                    + std::f64::consts::PI
-                                        .mul_add(2., -(4. * new_normal.angle(&layout.granulated_mesh.normal(triangle))))
-                                        .exp())
-                                .recip())
-                            .powi(2);
-
-                            if new_score >= current_score * 1.1 {
-                                sol = Some((path_id, vec![a, b], vec![a, third_vertex, b], triangle, face_id, twin_face_id));
-                            }
-                        }
-
-                        // otherwise we try the other side
-
-                        let triangle2 = layout.granulated_mesh.face(layout.granulated_mesh.twin(edge));
-                        let third_vertex2 = layout
-                            .granulated_mesh
-                            .corners(triangle2)
-                            .iter()
-                            .find(|&&v| v != a && v != b)
-                            .unwrap()
-                            .to_owned();
-
-                        if !occupied_vertices.contains(&third_vertex2) {
-                            assert!(twin_patch.faces.contains(&triangle2));
-
-                            let current_normal = layout.polycube_ref.structure.normal(twin_face_id).normalize();
-                            let new_normal = layout.polycube_ref.structure.normal(face_id).normalize();
-
-                            let current_score = (1.
-                                - (1.
-                                    + std::f64::consts::PI
-                                        .mul_add(2., -(4. * current_normal.angle(&layout.granulated_mesh.normal(triangle2))))
-                                        .exp())
-                                .recip())
-                            .powi(2);
-                            let new_score = (1.
-                                - (1.
-                                    + std::f64::consts::PI
-                                        .mul_add(2., -(4. * new_normal.angle(&layout.granulated_mesh.normal(triangle2))))
-                                        .exp())
-                                .recip())
-                            .powi(2);
-
-                            if new_score >= current_score * 1.1 {
-                                sol = Some((path_id, vec![a, b], vec![a, third_vertex2, b], triangle2, twin_face_id, face_id));
-                            }
-                        }
-                    } else {
-                        let random_index = rand::thread_rng().gen_range(0..path.len() - 2);
-                        let (u, v, w) = (path[random_index], path[random_index + 1], path[random_index + 2]);
-                        let face_id = layout.polycube_ref.structure.face(path_id);
-                        let patch = layout.face_to_patch.get(&face_id).unwrap().to_owned();
-
-                        let twin_path_id = layout.polycube_ref.structure.twin(path_id).to_owned();
-                        let twin_face_id = layout.polycube_ref.structure.face(twin_path_id);
-                        let twin_patch = layout.face_to_patch.get(&twin_face_id).unwrap().to_owned();
-
-                        let maybe_triangle = layout.granulated_mesh.face_with_verts(&[u, v, w]);
-                        if let Some(triangle_id) = maybe_triangle {
-                            assert!(patch.faces.contains(&triangle_id) || twin_patch.faces.contains(&triangle_id));
-
-                            if patch.faces.contains(&triangle_id) {
-                                let current_normal = layout.polycube_ref.structure.normal(face_id).normalize();
-                                let new_normal = layout.polycube_ref.structure.normal(twin_face_id).normalize();
-
-                                let current_score = (1.
-                                    - (1.
-                                        + std::f64::consts::PI
-                                            .mul_add(2., -(4. * current_normal.angle(&layout.granulated_mesh.normal(triangle_id))))
-                                            .exp())
-                                    .recip())
-                                .powi(2);
-                                let new_score = (1.
-                                    - (1.
-                                        + std::f64::consts::PI
-                                            .mul_add(2., -(4. * new_normal.angle(&layout.granulated_mesh.normal(triangle_id))))
-                                            .exp())
-                                    .recip())
-                                .powi(2);
-
-                                if new_score >= current_score * 1.1 {
-                                    sol = Some((path_id, vec![u, v, w], vec![u, w], triangle_id, face_id, twin_face_id));
-                                }
-                            } else if twin_patch.faces.contains(&triangle_id) {
-                                let current_normal = layout.polycube_ref.structure.normal(twin_face_id).normalize();
-                                let new_normal = layout.polycube_ref.structure.normal(face_id).normalize();
-
-                                let current_score = (1.
-                                    - (1.
-                                        + std::f64::consts::PI
-                                            .mul_add(2., -(4. * current_normal.angle(&layout.granulated_mesh.normal(triangle_id))))
-                                            .exp())
-                                    .recip())
-                                .powi(2);
-                                let new_score = (1.
-                                    - (1.
-                                        + std::f64::consts::PI
-                                            .mul_add(2., -(4. * new_normal.angle(&layout.granulated_mesh.normal(triangle_id))))
-                                            .exp())
-                                    .recip())
-                                .powi(2);
-
-                                if new_score >= current_score * 1.1 {
-                                    sol = Some((path_id, vec![u, v, w], vec![u, w], triangle_id, twin_face_id, face_id));
-                                }
-                            }
-                        }
-                    }
-
-                    if let Some((path_id, find, replace, triangle_id, old_patch, new_patch)) = sol {
-                        let mut path = layout.edge_to_path.get(&path_id).unwrap().clone();
-                        let index = path.iter().position(|&x| x == find[0]).unwrap();
-                        assert!(path[index + 1] == find[1]);
-
-                        path.splice(index..index + find.len(), replace.iter().copied());
-
-                        let twin_id = layout.polycube_ref.structure.twin(path_id).to_owned();
-                        let mut twin_path = path.clone();
-                        twin_path.reverse();
-
-                        layout.edge_to_path.insert(path_id, path);
-                        layout.edge_to_path.insert(twin_id, twin_path);
-
-                        layout.face_to_patch.get_mut(&old_patch).unwrap().faces.remove(&triangle_id);
-                        layout.face_to_patch.get_mut(&new_patch).unwrap().faces.insert(triangle_id);
-
-                        for elem in find {
-                            occupied_vertices.remove(&elem);
-                        }
-                        for elem in replace {
-                            occupied_vertices.insert(elem);
-                        }
-                        break;
-                    }
-                }
-
-                if c == 1000 {
-                    break;
-                }
-            }
-            self.compute_alignment();
-            println!("Alignment after: {:?}", self.alignment);
-        }
     }
 }

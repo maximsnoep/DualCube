@@ -805,10 +805,7 @@ pub fn handle_events(
                 let task_pool = AsyncComputeTaskPool::get();
 
                 let mut cloned_solution = solution.current_solution.clone();
-                let task = task_pool.spawn(async move {
-                    cloned_solution.smoothen();
-                    Some(cloned_solution)
-                });
+                let task = task_pool.spawn(async move { Some(cloned_solution) });
 
                 tasks.generating_chunks.insert(0, task);
             }
