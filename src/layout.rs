@@ -66,22 +66,20 @@ impl Layout {
             // Get all vertices in the region
             let verts = &region_obj.verts;
 
-            // Get all faces in the region (all stars of the vertices)
-            let faces = verts
-                .iter()
-                .flat_map(|&v| self.dual_ref.mesh_ref.star(v))
-                .collect::<HashSet<_>>()
-                .into_iter()
-                .collect_vec();
-
             // Compute for each face its centroid and its area
-            let face_areas = faces.iter().map(|&f| self.dual_ref.mesh_ref.area(f));
-            let total_area = face_areas.clone().sum::<f64>();
-            let face_centroids = faces.iter().map(|&f| self.dual_ref.mesh_ref.centroid(f));
-            let face_weighted_centroids = face_centroids.zip(face_areas).map(|(centroid, area)| centroid * (area / total_area));
-            // Calculate the weighted average of the centroids
-            let average = hutspot::math::calculate_average_f64(face_weighted_centroids);
-            region_to_candidate.insert(region_id, average);
+            let center = verts
+                .iter()
+                .map(|&vert| {
+                    let pos = self.dual_ref.mesh_ref.position(vert);
+                    let distance = verts.iter().map(|&v| self.dual_ref.mesh_ref.position(v).metric_distance(&pos)).sum::<f64>();
+                    (vert, distance)
+                })
+                .min_by_key(|(_, distance)| OrderedFloat(*distance))
+                .unwrap()
+                .0;
+
+            let center_pos = self.dual_ref.mesh_ref.position(center);
+            region_to_candidate.insert(region_id, center_pos);
         }
 
         // Find a candidate location for each zone (only a single coordinate, either X, Y or Z, depending on the type of zone

@@ -229,15 +229,12 @@ pub fn update(
                                     ui.label("]");
 
                                     ui.label("EMBD[");
-                                    if let Some(layout) = &sol.layout {
-                                        if layout.is_ok() {
-                                            ui.label(colored_text("Ok", Color32::GREEN));
-                                        } else {
-                                            ui.label(colored_text(&format!("{:?}", layout.as_ref().err()), Color32::RED));
-                                        }
+                                    if sol.layout.is_ok() {
+                                        ui.label(colored_text("Ok", Color32::GREEN));
                                     } else {
-                                        ui.label(colored_text("None", Color32::RED));
+                                        ui.label(colored_text(&format!("{:?}", sol.layout.as_ref().err()), Color32::RED));
                                     }
+
                                     ui.label("]");
 
                                     if let Some(alignment) = sol.alignment {
@@ -354,9 +351,8 @@ pub fn update(
                     job.append("embd", 5.0, text_format(9.0, Color32::WHITE));
                     job.append("[", 0.0, text_format(9.0, Color32::WHITE));
                     match &solution.current_solution.layout {
-                        Some(Ok(_)) => job.append("Ok", 0.0, text_format(9.0, Color32::GREEN)),
-                        Some(Err(err)) => job.append(&format!("{:?}", err), 0.0, text_format(9.0, Color32::RED)),
-                        None => job.append("None", 0.0, text_format(9.0, Color32::RED)),
+                        Ok(_) => job.append("Ok", 0.0, text_format(9.0, Color32::GREEN)),
+                        Err(err) => job.append(&format!("{:?}", err), 0.0, text_format(9.0, Color32::RED)),
                     }
                     job.append("]", 0.0, text_format(9.0, Color32::WHITE));
                     if let Some(alignment) = solution.current_solution.alignment {

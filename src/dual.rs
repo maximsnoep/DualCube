@@ -87,7 +87,7 @@ impl Dual {
         dual.assign_loop_structure()?;
 
         // For each loop region, find its actual subsurface (on the mesh)
-        dual.assign_subsurfaces();
+        dual.assign_subsurfaces()?;
 
         // Find the zones
         dual.assign_zones();
@@ -215,6 +215,7 @@ impl Dual {
     // Returns error if:
     //    1. A loop has less than 4 intersections.
     //    2. A face has more than 6 edges (we know the face degree is at most 6, so we can early stop, and we also want to prevent infinite loops / malformed faces)
+    //    3. Invalid intersection.
     fn assign_loop_structure(&mut self) -> Result<(), PropertyViolationError> {
         // For each edge, we store the loops that pass it
         let mut occupied: HashMap<EdgeID, Vec<LoopID>> = HashMap::new();
@@ -226,10 +227,14 @@ impl Dual {
 
         // Intersections are edges that are occupied exactly twice. It is not possible for an edge to be occupied more than twice.
         // NOTE: An intersection exists on two half-edges, we only store the intersection at the lower ID half-edge
+        if occupied.values().any(|x| x.len() >= 3) {
+            return Err(PropertyViolationError::UnknownError);
+        }
+
         let intersection_markers: HashMap<EdgeID, [LoopID; 2]> = occupied
             .into_iter()
             .filter_map(|(edge, loops)| {
-                assert!(loops.len() == 1 || loops.len() == 2);
+                assert!(loops.len() <= 2);
                 if loops.len() == 2 && edge > self.mesh_ref.twin(edge) {
                     Some((edge, [loops[0], loops[1]]))
                 } else {
@@ -299,11 +304,31 @@ impl Dual {
                     _ => None,
                 })
                 .collect_vec();
+            if (ordered_adjacent_intersections.len() != 4) || (ordered_adjacent_intersections.iter().map(|x| x.1).collect::<HashSet<_>>().len() != 4) {
+                return Err(PropertyViolationError::UnknownError);
+            }
+
             assert!(ordered_adjacent_intersections.len() == 4);
             assert!(ordered_adjacent_intersections.iter().map(|x| x.1).collect::<HashSet<_>>().len() == 4);
+
+            if ordered_adjacent_intersections[0].0 == ordered_adjacent_intersections[1].0 {
+                return Err(PropertyViolationError::UnknownError);
+            }
             assert!(ordered_adjacent_intersections[0].0 != ordered_adjacent_intersections[1].0);
+
+            if ordered_adjacent_intersections[1].0 == ordered_adjacent_intersections[2].0 {
+                return Err(PropertyViolationError::UnknownError);
+            }
             assert!(ordered_adjacent_intersections[1].0 != ordered_adjacent_intersections[2].0);
+
+            if ordered_adjacent_intersections[2].0 == ordered_adjacent_intersections[3].0 {
+                return Err(PropertyViolationError::UnknownError);
+            }
             assert!(ordered_adjacent_intersections[2].0 != ordered_adjacent_intersections[3].0);
+
+            if ordered_adjacent_intersections[3].0 == ordered_adjacent_intersections[0].0 {
+                return Err(PropertyViolationError::UnknownError);
+            }
             assert!(ordered_adjacent_intersections[3].0 != ordered_adjacent_intersections[0].0);
 
             // Add the four adjacent intersections
@@ -351,25 +376,28 @@ impl Dual {
             faces.push(face.iter().map(|&x| edge_id_to_index[&x]).collect_vec());
         }
 
-        let (mut douconel, vmap, _) = LoopStructure::from_faces(&faces).unwrap();
-        assert!(4 * douconel.vert_ids().len() == douconel.edge_ids().len());
-        let intersection_ids = intersections.keys().copied().collect_vec();
-        for vertex_id in douconel.vert_ids() {
-            douconel.verts[vertex_id] = intersection_ids[vmap.get_by_right(&vertex_id).unwrap().to_owned()];
-        }
-        for edge_id in douconel.edge_ids() {
-            let this = douconel.verts[douconel.root(edge_id)];
-            let next = douconel.verts[douconel.toor(edge_id)];
-            let (loop_id, _, orientation) = intersections[&this].iter().find(|&(_, x, _)| *x == next).unwrap().to_owned();
-            douconel.edges[edge_id] = Segment { loop_id, orientation }
-        }
+        if let Ok((mut douconel, vmap, _)) = LoopStructure::from_faces(&faces) {
+            assert!(4 * douconel.vert_ids().len() == douconel.edge_ids().len());
+            let intersection_ids = intersections.keys().copied().collect_vec();
+            for vertex_id in douconel.vert_ids() {
+                douconel.verts[vertex_id] = intersection_ids[vmap.get_by_right(&vertex_id).unwrap().to_owned()];
+            }
+            for edge_id in douconel.edge_ids() {
+                let this = douconel.verts[douconel.root(edge_id)];
+                let next = douconel.verts[douconel.toor(edge_id)];
+                let (loop_id, _, orientation) = intersections[&this].iter().find(|&(_, x, _)| *x == next).unwrap().to_owned();
+                douconel.edges[edge_id] = Segment { loop_id, orientation }
+            }
 
-        self.loop_structure = douconel;
+            self.loop_structure = douconel;
+        } else {
+            return Err(PropertyViolationError::UnknownError);
+        }
 
         Ok(())
     }
 
-    fn assign_subsurfaces(&mut self) {
+    fn assign_subsurfaces(&mut self) -> Result<(), PropertyViolationError> {
         // Get all blocked edges (ALL LOOPS)
         let blocked = self.loops_ref.values().flat_map(|lewp| lewp.edges.iter().copied()).collect::<HashSet<_>>();
 
@@ -390,6 +418,9 @@ impl Dual {
 
         // Find all loop regions (on the mesh, should be equal to the number of faces in the loop structure)
         let loop_regions = hutspot::graph::find_ccs(&self.mesh_ref.verts.keys().collect_vec(), |vertex| vertex_to_neighbors[&vertex].clone());
+        if loop_regions.len() != self.loop_structure.face_ids().len() {
+            return Err(PropertyViolationError::UnknownError);
+        }
         assert!(loop_regions.len() == self.loop_structure.face_ids().len());
 
         // Every loop segment should be part of exactly TWO connected components (on both sides)
@@ -422,6 +453,8 @@ impl Dual {
             let verts = if cc1_shared { loop_regions[cc1].clone() } else { loop_regions[cc2].clone() };
             self.loop_structure.faces[face_id] = Region { verts };
         }
+
+        Ok(())
     }
 
     fn assign_zones(&mut self) {
@@ -534,8 +567,8 @@ impl Dual {
             }
 
             // Verify 3.
+            let mut label_count = [0; 6];
             for edge in edges {
-                let mut label_count = [0; 6];
                 let loop_id = self.segment_to_loop(edge);
                 let direction = self.loops_ref[loop_id].direction;
                 let orientation = self.loop_structure.edges[edge].orientation;
@@ -547,9 +580,9 @@ impl Dual {
                     (PrincipalDirection::Z, Orientation::Forwards) => label_count[4] += 1,
                     (PrincipalDirection::Z, Orientation::Backwards) => label_count[5] += 1,
                 }
-                if label_count.iter().any(|&x| x > 1) {
-                    return Err(PropertyViolationError::InvalidFaceBoundary);
-                }
+            }
+            if label_count.iter().any(|&x| x > 1) {
+                return Err(PropertyViolationError::InvalidFaceBoundary);
             }
         }
 

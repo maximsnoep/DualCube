@@ -6,6 +6,7 @@ use douconel::douconel::{Douconel, Empty};
 use douconel::douconel_embedded::{EmbeddedVertex, HasPosition};
 use hutspot::geom::Vector3D;
 use itertools::Itertools;
+use ordered_float::OrderedFloat;
 use std::collections::HashMap;
 
 slotmap::new_key_type! {
@@ -63,6 +64,8 @@ impl Polycube {
 
     pub fn resize(&mut self, dual: &Dual, layout: Option<&Layout>) {
         let mut zone_to_target = HashMap::new();
+        let mut smallest = 0.1;
+
         if let Some(layout) = layout {
             for zone_id in dual.zones.keys() {
                 let direction = dual.zones[zone_id].direction;
@@ -74,8 +77,14 @@ impl Polycube {
                         .filter_map(|&v| layout.vert_to_corner.get_by_left(&v))
                         .map(|&c| layout.granulated_mesh.position(c)[direction as usize]),
                 );
-                zone_to_target.insert(zone_id, average_coord);
+
+                zone_to_target.insert(zone_id, average_coord * 1000.);
             }
+
+            let min = zone_to_target.values().min_by_key(|&&a| OrderedFloat(a)).unwrap().to_owned();
+            let max = zone_to_target.values().max_by_key(|&&a| OrderedFloat(a)).unwrap().to_owned();
+            let max_dist = max - min;
+            smallest = max_dist * 0.001;
         }
 
         let mut zone_to_dependencies: HashMap<_, Vec<f64>> = HashMap::new();
@@ -91,7 +100,7 @@ impl Polycube {
                 // Get the dependencies of the zone
                 if let Some(dependencies) = zone_to_dependencies.get(&zone) {
                     // Assign value as the maximum of the dependencies + 1
-                    coordinate = (dependencies.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap() + 0.1).max(coordinate);
+                    coordinate = (dependencies.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap() + smallest).max(coordinate);
                 } else {
                     if root_is_set {
                         continue;
@@ -112,16 +121,15 @@ impl Polycube {
                 }
                 // Get the dependencies of the zone
                 let dependencies = level_graph[&zone].iter().map(|z| zone_to_coordinate[z]).collect_vec();
-                assert!(!dependencies.is_empty());
 
                 // Assign the coordinate to the zone
                 if let Some(coordinate) = zone_to_target.get(&zone).copied() {
                     zone_to_coordinate.insert(
                         zone,
-                        (dependencies.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap() - 0.1).min(coordinate),
+                        (dependencies.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap() - smallest).min(coordinate),
                     );
                 } else {
-                    zone_to_coordinate.insert(zone, dependencies.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap() - 0.1);
+                    zone_to_coordinate.insert(zone, dependencies.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap() - smallest);
                 }
             }
         }

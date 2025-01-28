@@ -115,20 +115,11 @@ pub enum Side {
     Lower,
 }
 
-impl Side {
-    pub const fn flip(self) -> Self {
-        match self {
-            Self::Upper => Self::Lower,
-            Self::Lower => Self::Upper,
-        }
-    }
-}
-
 pub fn to_principal_direction(v: Vector3D) -> (PrincipalDirection, Orientation) {
     let x_is_max = v.x.abs() > v.y.abs() && v.x.abs() > v.z.abs();
     let y_is_max = v.y.abs() > v.x.abs() && v.y.abs() > v.z.abs();
     let z_is_max = v.z.abs() > v.x.abs() && v.z.abs() > v.y.abs();
-    assert!(x_is_max ^ y_is_max ^ z_is_max);
+    assert!(x_is_max ^ y_is_max ^ z_is_max, "{v:?}");
 
     if x_is_max {
         if v.x > 0. {
@@ -277,7 +268,6 @@ pub enum ActionEvent {
     ToHexmesh,
     ResetCamera,
     Mutate,
-    Smoothen,
 }
 
 // implement default for KdTree using the New Type Idiom
@@ -597,26 +587,22 @@ pub fn handle_events(
                                     let angle_around_m2 = mesh_resmut.mesh.vec_angle(vector_a, vector_m2) + mesh_resmut.mesh.vec_angle(vector_b, vector_m2);
 
                                     // Whichever angle is shorter is the "real" angle
-                                    let angle = if angle_around_m1 < angle_around_m2 {
-                                        angle_around_m1
-                                    } else {
-                                        angle_around_m2
-                                    };
+                                    let angle = f64::min(angle_around_m1, angle_around_m2);
+                                    assert!((0. ..=PI).contains(&angle));
 
                                     // Weight is based on how far the angle is from 180 degrees
-                                    let temp = PI - angle;
-                                    let angular_weight = if temp < 0. { 0. } else { temp + 1. };
+                                    let angular_weight = PI - angle;
 
                                     // Alignment per edge
                                     // Vector_a
                                     // Find the face that is bounded by the two edges
                                     let face_a = mesh_resmut.mesh.face(start_edge);
-                                    let alignment_vector_a = 1. + (-vector_a).cross(&mesh_resmut.mesh.normal(face_a)).angle(&direction.into());
+                                    let alignment_vector_a = (-vector_a).cross(&mesh_resmut.mesh.normal(face_a)).angle(&direction.into());
 
                                     // Vector_b
                                     // Find the face that is bounded by the two edges
                                     let face_b = mesh_resmut.mesh.face(end_edge);
-                                    let alignment_vector_b = 1. + vector_b.cross(&mesh_resmut.mesh.normal(face_b)).angle(&direction.into());
+                                    let alignment_vector_b = vector_b.cross(&mesh_resmut.mesh.normal(face_b)).angle(&direction.into());
 
                                     let weight = (angular_weight, (alignment_vector_a + alignment_vector_b) / 2., 0.);
 
@@ -627,6 +613,10 @@ pub fn handle_events(
                         .collect::<Vec<_>>();
 
                     mesh_resmut.flow_graphs[direction as usize] = Graaf::from(nodes.clone(), edges);
+                }
+
+                if solution.current_solution.loops.is_empty() {
+                    // solution.current_solution.initialize(&mesh_resmut.flow_graphs);
                 }
 
                 solution.current_solution.reconstruct_solution();
@@ -691,7 +681,7 @@ pub fn handle_events(
                     configuration: configuration.clone(),
                 };
 
-                fs::write(&PathBuf::from(path_save), serde_json::to_string(&state).unwrap());
+                fs::write(PathBuf::from(path_save), serde_json::to_string(&state).unwrap());
             }
 
             ActionEvent::ExportSolution => {
@@ -767,9 +757,6 @@ pub fn handle_events(
                         .expect("failed to execute process");
 
                     let out_str = String::from_utf8(out.stdout).unwrap();
-
-                    println!("{}", out_str);
-
                     let out_vec = out_str.split('\n').filter(|s| !s.is_empty()).collect_vec();
 
                     let score = HexMeshScore {
@@ -793,20 +780,12 @@ pub fn handle_events(
 
                 let cloned_solution = solution.current_solution.clone();
                 let cloned_flow_graphs = mesh_resmut.flow_graphs.clone();
-                if rand::random() {
-                    let task = task_pool.spawn(async move { cloned_solution.mutate_add_loop(20, &cloned_flow_graphs) });
-                    tasks.generating_chunks.insert(0, task);
-                } else {
-                    let task = task_pool.spawn(async move { cloned_solution.mutate_del_loop(20) });
-                    tasks.generating_chunks.insert(1, task);
-                }
-            }
-            ActionEvent::Smoothen => {
-                let task_pool = AsyncComputeTaskPool::get();
 
-                let mut cloned_solution = solution.current_solution.clone();
-                let task = task_pool.spawn(async move { Some(cloned_solution) });
-
+                let task = task_pool.spawn(async move {
+                    {
+                        cloned_solution.mutate_add_loop(10, &cloned_flow_graphs)
+                    }
+                });
                 tasks.generating_chunks.insert(0, task);
             }
         }
@@ -966,15 +945,15 @@ fn raycast(
 
                 let mut new_sol = solution.current_solution.clone();
                 new_sol.del_loop(loop_id);
-                new_sol.reconstruct_solution();
-
-                solution.current_solution = new_sol;
-                solution.next[0].clear();
-                solution.next[1].clear();
-                solution.next[2].clear();
-                cache.cache[0].clear();
-                cache.cache[1].clear();
-                cache.cache[2].clear();
+                if new_sol.reconstruct_solution().is_ok() {
+                    solution.current_solution = new_sol;
+                    solution.next[0].clear();
+                    solution.next[1].clear();
+                    solution.next[2].clear();
+                    cache.cache[0].clear();
+                    cache.cache[1].clear();
+                    cache.cache[2].clear();
+                }
                 return;
             }
         }
@@ -1050,59 +1029,25 @@ fn raycast(
     }
 
     if let Ok(dual) = &solution.current_solution.dual {
-        let targeted_zone = dual
-            .zones
-            .iter()
-            .filter(|(_, zone)| zone.direction == configuration.direction)
-            .find(|(_, zone)| {
-                zone.regions
-                    .iter()
-                    .any(|&region_id| dual.loop_structure.faces[region_id].verts.iter().any(|&face| face == verts[0]))
-                    && zone
-                        .regions
-                        .iter()
-                        .any(|&region_id| dual.loop_structure.faces[region_id].verts.iter().any(|&face| face == verts[1]))
-                    && zone
-                        .regions
-                        .iter()
-                        .any(|&region_id| dual.loop_structure.faces[region_id].verts.iter().any(|&face| face == verts[2]))
-            });
-
-        let targeted_region = dual
-            .loop_structure
-            .faces
-            .iter()
-            .find(|(_, region)| region.verts.contains(&verts[0]) && region.verts.contains(&verts[1]) && region.verts.contains(&verts[2]));
-
         if mouse.just_pressed(MouseButton::Left) || mouse.just_released(MouseButton::Left) {
-            if let Some((region_id, _)) = targeted_region {
-                let selected_edges = mesh_resmut.mesh.edges_in_face_with_vert(face_id, verts[0]).unwrap();
-                let candidate_loops =
-                    solution
-                        .current_solution
-                        .construct_guaranteed_loop(region_id, selected_edges, configuration.direction, &mesh_resmut.flow_graphs);
+            let selected_edges = mesh_resmut.mesh.edges_in_face_with_vert(face_id, verts[0]).unwrap();
+            let alpha = rand::random::<f64>();
+            let measure = |(a, b, c): (f64, f64, f64)| alpha * a.powi(10) + (1. - alpha) * b.powi(10);
 
-                let candidate_solutions = candidate_loops.into_par_iter().filter_map(|candidate_loop| {
-                    let mut candidate_solution = solution.current_solution.clone();
-                    candidate_solution.add_loop(Loop {
-                        edges: candidate_loop,
-                        direction: configuration.direction,
-                    });
-                    candidate_solution.reconstruct_solution();
-                    if candidate_solution.orthogonality.is_some() && candidate_solution.alignment.is_some() {
-                        return Some(candidate_solution);
-                    } else {
-                        return None;
-                    }
+            if let Some(candidate_loop) = solution.current_solution.construct_unbounded_loop(
+                selected_edges,
+                configuration.direction,
+                &mesh_resmut.flow_graphs[configuration.direction as usize],
+                measure,
+            ) {
+                let mut candidate_solution = solution.current_solution.clone();
+                candidate_solution.add_loop(Loop {
+                    edges: candidate_loop,
+                    direction: configuration.direction,
                 });
-
-                let best_solution = candidate_solutions.max_by(|a, b| {
-                    (a.orthogonality.unwrap() + a.alignment.unwrap() * 10.)
-                        .partial_cmp(&(b.orthogonality.unwrap() + b.alignment.unwrap() * 10.))
-                        .unwrap()
-                });
-
-                solution.next[configuration.direction as usize].insert([selected_edges[0], selected_edges[1]], best_solution);
+                if candidate_solution.reconstruct_solution().is_ok() {
+                    solution.next[configuration.direction as usize].insert([selected_edges[0], selected_edges[1]], Some(candidate_solution));
+                }
             }
         }
     } else {

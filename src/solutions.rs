@@ -5,9 +5,9 @@ use crate::{
     polycube::{Polycube, PolycubeFaceID},
     to_principal_direction, EdgeID, EmbeddedMesh, FaceID, PrincipalDirection,
 };
-use bevy_egui::egui::emath::align;
-use hutspot::{geom::Vector3D, timer::Timer};
+use hutspot::geom::Vector3D;
 use itertools::Itertools;
+use log::{error, info};
 use ordered_float::OrderedFloat;
 use rand::distributions::Distribution;
 use rand::{
@@ -28,6 +28,12 @@ use std::{
 
 slotmap::new_key_type! {
     pub struct LoopID;
+}
+
+#[derive(Default, Debug, Clone, Copy, Eq, PartialEq, Hash)]
+pub struct NodeCopy {
+    pub id: [EdgeID; 2],
+    pub t: usize,
 }
 
 // A loop forms the basis of the dual structure.
@@ -83,9 +89,10 @@ pub struct Solution {
     pub mesh_ref: Arc<EmbeddedMesh>,
     pub loops: SlotMap<LoopID, Loop>,
     occupied: SecondaryMap<EdgeID, Vec<LoopID>>,
+
     pub dual: Result<Dual, PropertyViolationError>,
     pub polycube: Option<Polycube>,
-    pub layout: Option<Result<Layout, PropertyViolationError>>,
+    pub layout: Result<Layout, PropertyViolationError>,
 
     pub alignment_per_triangle: SecondaryMap<FaceID, f64>,
     pub alignment: Option<f64>,
@@ -101,12 +108,22 @@ impl Solution {
             occupied: SecondaryMap::new(),
             dual: Err(PropertyViolationError::default()),
             polycube: None,
-            layout: None,
+            layout: Err(PropertyViolationError::default()),
             alignment_per_triangle: SecondaryMap::new(),
             alignment: None,
             orthogonality_per_patch: SecondaryMap::new(),
             orthogonality: None,
         }
+    }
+
+    pub fn clear(&mut self) {
+        self.dual = Err(PropertyViolationError::default());
+        self.polycube = None;
+        self.layout = Err(PropertyViolationError::default());
+        self.alignment_per_triangle.clear();
+        self.alignment = None;
+        self.orthogonality_per_patch.clear();
+        self.orthogonality = None;
     }
 
     pub fn del_loop(&mut self, loop_id: LoopID) {
@@ -218,7 +235,7 @@ impl Solution {
             .collect()
     }
 
-    pub fn validate_loops(&self) {
+    pub fn validate_loops(&self) -> Result<(), PropertyViolationError> {
         // For all loops, check that the loops is valid
         for (_, lewp) in &self.loops {
             let edges = &lewp.edges;
@@ -228,9 +245,15 @@ impl Solution {
             let mut alternate = self.mesh_ref.twin(edges[0]) == edges[1];
             for edge_pair in edges.windows(2) {
                 if alternate {
+                    if self.mesh_ref.twin(edge_pair[0]) != edge_pair[1] {
+                        return Err(PropertyViolationError::UnknownError);
+                    }
                     assert!(self.mesh_ref.twin(edge_pair[0]) == edge_pair[1]);
                     alternate = false;
                 } else {
+                    if self.mesh_ref.face(edge_pair[0]) != self.mesh_ref.face(edge_pair[1]) {
+                        return Err(PropertyViolationError::UnknownError);
+                    }
                     assert!(self.mesh_ref.face(edge_pair[0]) == self.mesh_ref.face(edge_pair[1]));
                     alternate = true;
                 }
@@ -239,84 +262,140 @@ impl Solution {
             // Loop should be closed
             // Check the last edge with the first edge, should be closing, depending on alternate they should be twins or sharing a face
             if alternate {
+                if self.mesh_ref.twin(edges[edges.len() - 1]) != edges[0] {
+                    return Err(PropertyViolationError::UnknownError);
+                }
                 assert!(self.mesh_ref.twin(edges[edges.len() - 1]) == edges[0]);
             } else {
+                if self.mesh_ref.face(edges[edges.len() - 1]) != self.mesh_ref.face(edges[0]) {
+                    return Err(PropertyViolationError::UnknownError);
+                }
                 assert!(self.mesh_ref.face(edges[edges.len() - 1]) == self.mesh_ref.face(edges[0]));
             }
         }
+        Ok(())
     }
 
-    pub fn reconstruct_solution(&mut self) {
-        self.dual = Err(PropertyViolationError::default());
-        self.polycube = None;
-        self.layout = None;
+    pub fn initialize(&mut self, flow_graphs: &[Graaf<[EdgeID; 2], (f64, f64, f64)>; 3]) {
+        let samples = 100;
 
-        self.validate_loops();
-        self.compute_dual();
-        self.compute_polycube();
-        self.compute_layout();
-        // self.resize_polycube();
-        self.compute_alignment();
-        self.compute_orthogonality();
+        let measure = |(a, b, c): (f64, f64, f64)| a.powi(10) + b.powi(10) + c.powi(10);
 
-        if let Some(Ok(layout)) = &self.layout {
-            for i in 0..100 {
-                let old_score = self.alignment.unwrap_or_default() + self.orthogonality.unwrap_or_default();
-                let mut sol_copy = self.clone();
+        // Sample X-loops, Y-loops, Z-loops
+        let x_loops = (0..samples)
+            .filter_map(|_| {
+                let e1 = self.mesh_ref.edges.keys().choose(&mut rand::thread_rng()).unwrap();
+                let e2 = self.mesh_ref.next(e1);
+                self.construct_unbounded_loop([e1, e2], PrincipalDirection::X, &flow_graphs[0], measure)
+            })
+            .collect_vec();
 
-                if let Some(Ok(sol_layout)) = &mut sol_copy.layout {
-                    let corner = sol_layout.vert_to_corner.left_values().choose(&mut thread_rng()).unwrap().to_owned();
-                    if sol_layout.improve(corner).is_ok() {
-                        sol_copy.compute_alignment();
-                        let new_score = sol_copy.alignment.unwrap_or_default() + sol_copy.orthogonality.unwrap_or_default();
-                        // Calculate percentage improvement
-                        let improvement = (new_score - old_score) / old_score;
-                        // Print the improvement, color green if positive, red if negative
-                        if improvement > 0.0 {
-                            println!("{i} : {:.3} to {:.3} \x1b[32m({:+.2}%)\x1b[0m", old_score, new_score, improvement * 100.);
-                        } else {
-                            println!("{i} : {:.3} to {:.3} \x1b[31m({:+.2}%)\x1b[0m", old_score, new_score, improvement * 100.);
-                        }
-                        if new_score > old_score {
-                            *self = sol_copy;
-                        }
+        let y_loops = (0..samples)
+            .filter_map(|_| {
+                let e1 = self.mesh_ref.edges.keys().choose(&mut rand::thread_rng()).unwrap();
+                let e2 = self.mesh_ref.next(e1);
+                self.construct_unbounded_loop([e1, e2], PrincipalDirection::Y, &flow_graphs[1], measure)
+            })
+            .collect_vec();
+
+        let z_loops = (0..samples)
+            .filter_map(|_| {
+                let e1 = self.mesh_ref.edges.keys().choose(&mut rand::thread_rng()).unwrap();
+                let e2 = self.mesh_ref.next(e1);
+                self.construct_unbounded_loop([e1, e2], PrincipalDirection::Z, &flow_graphs[2], measure)
+            })
+            .collect_vec();
+
+        println!("X: {}, Y: {}, Z: {}", x_loops.len(), y_loops.len(), z_loops.len());
+
+        let n = 1;
+        // Select the n best loops based on length
+        let x_best_loops = x_loops.into_iter().sorted_by_key(|lewp| lewp.len()).rev().take(n).collect_vec();
+        let y_best_loops = y_loops.into_iter().sorted_by_key(|lewp| lewp.len()).rev().take(n).collect_vec();
+        let z_best_loops = z_loops.into_iter().sorted_by_key(|lewp| lewp.len()).rev().take(n).collect_vec();
+
+        // Craft n^3 solutions
+        let mut candidate_solutions = vec![];
+        for x_loop in &x_best_loops {
+            for y_loop in &y_best_loops {
+                for z_loop in &z_best_loops {
+                    let mut solution = self.clone();
+                    solution.add_loop(Loop {
+                        edges: x_loop.clone(),
+                        direction: PrincipalDirection::X,
+                    });
+                    solution.add_loop(Loop {
+                        edges: y_loop.clone(),
+                        direction: PrincipalDirection::Y,
+                    });
+                    solution.add_loop(Loop {
+                        edges: z_loop.clone(),
+                        direction: PrincipalDirection::Z,
+                    });
+                    if solution.reconstruct_solution().is_ok() {
+                        candidate_solutions.push(solution);
                     }
                 }
             }
         }
+
+        // Get the best solution based on quality
+        if let Some(best_solution) = candidate_solutions.into_iter().max_by_key(|solution| OrderedFloat(solution.get_quality())) {
+            *self = best_solution;
+        }
     }
 
-    pub fn compute_dual(&mut self) {
+    pub fn reconstruct_solution(&mut self) -> Result<(), PropertyViolationError> {
+        self.clear();
+
+        if let Err(err) = self.validate_loops() {
+            error!("{err:?}");
+            return Err(err);
+        }
+
+        info!("Constructing DUAL...");
         self.dual = Dual::from(self.mesh_ref.clone(), &self.loops);
-    }
-
-    pub fn compute_polycube(&mut self) {
-        self.polycube = None;
-        if let Ok(dual) = &self.dual {
-            let polycube = Polycube::from_dual(dual);
-            self.polycube = Some(polycube);
+        if let Err(e) = &self.dual {
+            error!("{e:?}");
+            return Err(e.clone());
         }
-    }
 
-    pub fn compute_layout(&mut self) {
-        self.layout = None;
-        if let (Ok(dual), Some(polycube)) = (&self.dual, &self.polycube) {
-            let layout = Layout::embed(dual, polycube);
-            self.layout = Some(layout);
+        self.polycube = Some(Polycube::from_dual(self.dual.as_ref().unwrap()));
+
+        info!("Constructing LAYOUT...");
+        for _ in 0..10 {
+            self.layout = Layout::embed(self.dual.as_ref().unwrap(), self.polycube.as_ref().unwrap());
+            if self.layout.is_ok() {
+                break;
+            }
         }
+        if let Err(e) = &self.layout {
+            error!("{e:?}");
+            return Err(e.clone());
+        }
+
+        info!("Resizing POLYCUBE...");
+        self.resize_polycube();
+
+        info!("Computing QUALITY...");
+        self.compute_quality();
+
+        self.optimize(20);
+
+        Ok(())
     }
 
     pub fn resize_polycube(&mut self) {
-        if let (Ok(dual), Some(polycube), Some(Ok(layout))) = (&self.dual, &mut self.polycube, &self.layout) {
+        if let (Ok(dual), Some(polycube), Ok(layout)) = (&self.dual, &mut self.polycube, &self.layout) {
             polycube.resize(dual, Some(layout));
         }
     }
 
-    pub fn compute_alignment(&mut self) {
+    pub fn compute_quality(&mut self) {
         self.alignment_per_triangle.clear();
         self.alignment = None;
 
-        if let (Some(Ok(layout)), Some(polycube)) = (&self.layout, &self.polycube) {
+        if let (Ok(layout), Some(polycube)) = (&self.layout, &self.polycube) {
             let total_area: f64 = layout.granulated_mesh.faces.keys().map(|f| layout.granulated_mesh.area(f)).sum();
             let mut total_score = 0.0;
 
@@ -324,20 +403,18 @@ impl Solution {
                 let mapped_normal = polycube.structure.normal(patch).normalize();
                 for &triangle_id in &patch_faces.faces {
                     let actual_normal = layout.granulated_mesh.normal(triangle_id);
-                    let score = (1. - (1. + std::f64::consts::PI.mul_add(2., -(4. * actual_normal.angle(&mapped_normal))).exp()).recip()).powi(2);
+                    let score = actual_normal.dot(&mapped_normal);
                     self.alignment_per_triangle.insert(triangle_id, score);
                     total_score += score * layout.granulated_mesh.area(triangle_id) / total_area;
                 }
             }
             self.alignment = Some(total_score);
         }
-    }
 
-    pub fn compute_orthogonality(&mut self) {
         self.orthogonality_per_patch.clear();
         self.orthogonality = None;
 
-        if let (Some(Ok(layout)), Some(polycube)) = (&self.layout, &self.polycube) {
+        if let (Ok(layout), Some(polycube)) = (&self.layout, &self.polycube) {
             let total_area: f64 = layout.granulated_mesh.faces.keys().map(|f| layout.granulated_mesh.area(f)).sum();
             let mut total_score = 0.0;
 
@@ -364,38 +441,130 @@ impl Solution {
         }
     }
 
+    pub fn get_quality(&self) -> f64 {
+        let w1 = 1e1;
+        let w2 = 1e-1;
+        let w3 = 1e-2;
+
+        w1 * self.alignment.unwrap_or_default() + w2 * self.orthogonality.unwrap_or_default() + w3 * self.loops.len() as f64
+    }
+
+    pub fn construct_loop(start: &[EdgeID; 2], domain: &Graaf<[EdgeID; 2], (f64, f64, f64)>, measure: &impl Fn((f64, f64, f64)) -> f64) -> Vec<EdgeID> {
+        domain
+            .shortest_cycle(domain.node_to_index(start).unwrap(), measure)
+            .unwrap_or_default()
+            .iter()
+            .flat_map(|&node_index| domain.index_to_node(node_index).unwrap().to_owned())
+            .collect_vec()
+    }
+
+    pub fn construct_unbounded_loop(
+        &self,
+        [e1, e2]: [EdgeID; 2],
+        direction: PrincipalDirection,
+        flow_graph: &Graaf<[EdgeID; 2], (f64, f64, f64)>,
+        measure: impl Fn((f64, f64, f64)) -> f64,
+    ) -> Option<Vec<EdgeID>> {
+        // Filter the original flow graph
+        let occupied = self.occupied_edgepairs();
+        let filter = |(a, b): (&[EdgeID; 2], &[EdgeID; 2])| {
+            !occupied.contains(a)
+                && !occupied.contains(b)
+                && [a[0], a[1], b[0], b[1]].iter().all(|&edge| {
+                    self.loops_on_edge(edge)
+                        .iter()
+                        .filter(|&&loop_id| self.loop_to_direction(loop_id) == direction)
+                        .count()
+                        == 0
+                })
+        };
+        let g_original = &flow_graph;
+        let g = g_original.filter(filter);
+
+        let option_a = Self::construct_loop(&[e1, e2], &g, &measure);
+        let option_b = Self::construct_loop(&[e2, e1], &g, &measure);
+
+        // The path may contain self intersections. We can remove these.
+        // If duplicated vertices are present, remove everything between them.
+        let mut cleaned_option_a = vec![];
+        for edge_id in option_a {
+            if cleaned_option_a.contains(&edge_id) {
+                cleaned_option_a = cleaned_option_a.into_iter().take_while(|&x| x != edge_id).collect_vec();
+            }
+            cleaned_option_a.push(edge_id);
+        }
+
+        let mut cleaned_option_b = vec![];
+        for edge_id in option_b {
+            if cleaned_option_b.contains(&edge_id) {
+                cleaned_option_b = cleaned_option_b.into_iter().take_while(|&x| x != edge_id).collect_vec();
+            }
+            cleaned_option_b.push(edge_id);
+        }
+
+        let best_option = if cleaned_option_a.len() > cleaned_option_b.len() {
+            cleaned_option_a
+        } else {
+            cleaned_option_b
+        };
+
+        if best_option.len() < 5 {
+            return None;
+        }
+
+        Some(best_option)
+    }
+
     pub fn mutate_add_loop(&self, nr_loops: usize, flow_graphs: &[Graaf<[EdgeID; 2], (f64, f64, f64)>; 3]) -> Option<Self> {
+        let edges = self.mesh_ref.edges.keys().collect_vec();
+
+        // map edges to alignment of their two neighboring triangles in a vec of tuples
+        let alignments = edges
+            .iter()
+            .map(|&edge| {
+                let twin = self.mesh_ref.twin(edge);
+                let alignment = (self.alignment_per_triangle.get(self.mesh_ref.face(edge)).unwrap()
+                    + self.alignment_per_triangle.get(self.mesh_ref.face(twin)).unwrap())
+                    / 2.;
+                (1. - alignment)
+            })
+            .collect_vec();
+
+        let dist = WeightedIndex::new(&alignments).unwrap();
+
         (0..nr_loops)
             .into_par_iter()
             .flat_map(move |_| {
-                let timer = Timer::new();
+                let mut rng = thread_rng();
                 let mut new_solution = self.clone();
-                for _ in 0..3 {
+
+                // random int between 1 and 3
+                let random = rand::distributions::Uniform::new_inclusive(1, 3).sample(&mut rng);
+                for _ in 0..random {
                     let direction = [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z]
-                        .choose(&mut rand::thread_rng())
+                        .choose(&mut rng)
                         .unwrap()
                         .to_owned();
 
-                    if let Some(new_loop) = self.construct_loop(direction, flow_graphs) {
+                    // select randomly an edge with skew to lower alignment
+                    let e1 = edges[dist.sample(&mut rng)];
+                    let e2 = self.mesh_ref.next(e1);
+
+                    let alpha = rand::random::<f64>();
+                    let measure = |(a, b, c): (f64, f64, f64)| alpha * a.powi(10) + (1. - alpha) * b.powi(10);
+
+                    // Add guaranteed loop
+                    if let Some(new_loop) = self.construct_unbounded_loop([e1, e2], direction, &flow_graphs[direction as usize], measure) {
                         new_solution.add_loop(Loop { edges: new_loop, direction });
+                        if new_solution.reconstruct_solution().is_err() {
+                            return None;
+                        }
                     }
                 }
 
-                new_solution.reconstruct_solution();
-
-                if new_solution.dual.is_ok() && new_solution.polycube.is_some() && new_solution.layout.is_some() {
-                    timer.report(&format!(
-                        "Found solution\t[alignment: {:.2}]\t[orthogonality: {:.2}]",
-                        new_solution.alignment.unwrap(),
-                        new_solution.orthogonality.unwrap()
-                    ));
-                    return Some(new_solution);
-                }
-
-                timer.report("Invalid solution :/");
-                None
+                Some(new_solution)
             })
-            .max_by_key(|solution| OrderedFloat(solution.alignment.unwrap_or_default()))
+            .max_by_key(|solution| OrderedFloat(solution.get_quality()))
     }
 
     pub fn mutate_del_loop(&self, nr_loops: usize) -> Option<Self> {
@@ -405,24 +574,17 @@ impl Solution {
             .into_par_iter()
             .flat_map(|loop_id| {
                 let mut real_solution = self.clone();
+                let cur_quality = real_solution.get_quality();
                 real_solution.del_loop(loop_id);
-
-                let timer = Timer::new();
-                real_solution.reconstruct_solution();
-
-                if real_solution.dual.is_ok() && real_solution.polycube.is_some() && real_solution.layout.is_some() {
-                    timer.report(&format!(
-                        "Found solution\t[alignment: {:.2}]\t[orthogonality: {:.2}]",
-                        real_solution.alignment.unwrap(),
-                        real_solution.orthogonality.unwrap()
-                    ));
-                    return Some(real_solution);
-                } else {
-                    timer.report("Invalid solution :/");
-                    return None;
+                if real_solution.reconstruct_solution().is_ok() {
+                    let new_quality = real_solution.get_quality();
+                    if new_quality > cur_quality {
+                        return Some(real_solution);
+                    }
                 }
+                None
             })
-            .max_by_key(|solution| OrderedFloat(solution.alignment.unwrap_or_default()))
+            .max_by_key(|solution| OrderedFloat(solution.get_quality()))
     }
 
     pub fn construct_valid_loop_graph(&self, direction: PrincipalDirection) -> Option<Graaf<SegmentID, f64>> {
@@ -442,14 +604,13 @@ impl Solution {
                     let mut valid_neighbors = vec![twin];
 
                     let neighbors = dual.loop_structure.nexts(edge);
-                    let face = [vec![edge], neighbors.clone()].into_iter().flatten().collect_vec();
+                    let face = [vec![edge], neighbors].into_iter().flatten().collect_vec();
 
                     // For each neighbor, figure out their label and orientation.
                     let face_with_labels = face
                         .into_iter()
                         .map(|segment| {
                             let label = dual.segment_to_direction(segment);
-                            // TODO: probably fix the mask
                             let orientation = dual.segment_to_orientation(segment);
                             (segment, label, orientation)
                         })
@@ -618,7 +779,6 @@ impl Solution {
                     cycles.push(cycle);
                 }
             }
-            println!("Total cycles: {}", cycles.len());
 
             // Filter out duplicates
             let cycles = cycles
@@ -638,7 +798,6 @@ impl Solution {
 
             // Filter such that all cycles are of length larger than 2
             let cycles = cycles.into_iter().filter(|cycle| cycle.len() > 2).collect_vec();
-            println!("Number of cycles after filtering length: {}", cycles.len());
 
             // Filter such that all cycles do not traverse the same loop region twice
             let cycles = cycles
@@ -649,7 +808,6 @@ impl Solution {
                     unique_regions * 2 == regions.len()
                 })
                 .collect_vec();
-            println!("Number of cycles after filtering duplicate regions: {}", cycles.len());
 
             return Some(cycles);
         }
@@ -658,299 +816,587 @@ impl Solution {
 
     pub fn construct_guaranteed_loop(
         &self,
-        region_id: RegionID,
-        selected_edges: [EdgeID; 2],
+        [e1, e2]: [EdgeID; 2],
         direction: PrincipalDirection,
-        flow_graphs: &[Graaf<[EdgeID; 2], (f64, f64, f64)>; 3],
-    ) -> Vec<Vec<EdgeID>> {
-        let mut candidate_paths = vec![];
-
+        flow_graph: &Graaf<[EdgeID; 2], (f64, f64, f64)>,
+        measure: impl Fn((f64, f64, f64)) -> f64,
+    ) -> Option<Vec<EdgeID>> {
         if let Ok(dual) = &self.dual {
+            let region_id = dual
+                .loop_structure
+                .face_ids()
+                .iter()
+                .find(|&&region_id| {
+                    let verts = &dual.loop_structure.faces[region_id].verts;
+                    verts.contains(&self.mesh_ref.endpoints(e1).0)
+                        || verts.contains(&self.mesh_ref.endpoints(e1).1)
+                        || verts.contains(&self.mesh_ref.endpoints(e2).0)
+                        || verts.contains(&self.mesh_ref.endpoints(e2).1)
+                })
+                .unwrap()
+                .to_owned();
+
             if let Some(cycle_to_edges) = self.find_some_valid_loops_through_region(region_id, direction) {
-                candidate_paths = cycle_to_edges
-                    .into_par_iter()
-                    .flat_map(|chosen_cycle| {
-                        let mut augmented_cycle = chosen_cycle.clone();
+                let chosen_cycle = cycle_to_edges.iter().choose(&mut rand::thread_rng()).unwrap();
 
-                        // Find a path that goes exactly through the selected segments of the cycle.
+                let mut augmented_cycle = chosen_cycle.clone();
 
-                        let all_segments = chosen_cycle
-                            .iter()
-                            .map(|&edge| dual.loop_structure.nexts(edge))
-                            .flatten()
-                            .collect::<HashSet<_>>();
-                        let blocked_segments = all_segments
-                            .iter()
-                            .copied()
-                            .filter(|&segment| !augmented_cycle.contains(&segment))
-                            .collect::<HashSet<_>>();
-                        let blocked_edges = blocked_segments
-                            .into_iter()
-                            .flat_map(|segment| dual.segment_to_edges(segment))
-                            .collect::<HashSet<_>>();
+                augmented_cycle = augmented_cycle.into_iter().rev().collect_vec();
 
-                        let mut blocked_edges2 = HashSet::new();
-                        // make sure every two segments in chosen_cycle are pairs, it could be the case that the 1st and nth segment are a pair
-                        if augmented_cycle[0] == dual.loop_structure.twin(chosen_cycle[augmented_cycle.len() - 1]) {
-                            augmented_cycle.push(augmented_cycle[0]);
-                            augmented_cycle.remove(0);
+                // Find a path that goes exactly through the selected segments of the cycle.
+
+                let all_segments = chosen_cycle
+                    .iter()
+                    .map(|&edge| dual.loop_structure.nexts(edge))
+                    .flatten()
+                    .collect::<HashSet<_>>();
+                let blocked_segments = all_segments
+                    .iter()
+                    .copied()
+                    .filter(|&segment| !augmented_cycle.contains(&segment))
+                    .collect::<HashSet<_>>();
+                let blocked_edges = blocked_segments
+                    .into_iter()
+                    .flat_map(|segment| dual.segment_to_edges(segment))
+                    .collect::<HashSet<_>>();
+
+                let mut blocked_edges2 = HashSet::new();
+                // make sure every two segments in chosen_cycle are pairs, it could be the case that the 1st and nth segment are a pair
+                if augmented_cycle[0] == dual.loop_structure.twin(chosen_cycle[augmented_cycle.len() - 1]) {
+                    augmented_cycle.push(augmented_cycle[0]);
+                    augmented_cycle.remove(0);
+                }
+
+                // Find all directed edges passing through the selected segments (chosen_cycle)
+                for selected_segment_pair in augmented_cycle.windows(2) {
+                    let (segment1, segment2) = (selected_segment_pair[0], selected_segment_pair[1]);
+                    // we consider this pair only if segment1 is the first segment, and twin of segment2
+                    if segment1 != dual.loop_structure.twin(segment2) {
+                        continue;
+                    }
+
+                    let edges = dual.segment_to_edges(segment1);
+                    // their edges are the same, but we only consider segment1, as its the first segment
+
+                    // for every two edges, find the third edge of the passed triangle
+                    for edge_pair in edges.windows(2) {
+                        let (e1, e2) = (edge_pair[0], edge_pair[1]);
+
+                        if e1 == self.mesh_ref.twin(e2) {
+                            continue;
                         }
 
-                        // Find all directed edges passing through the selected segments (chosen_cycle)
-                        for selected_segment_pair in augmented_cycle.windows(2) {
-                            let (segment1, segment2) = (selected_segment_pair[0], selected_segment_pair[1]);
-                            // we consider this pair only if segment1 is the first segment, and twin of segment2
-                            if segment1 != dual.loop_structure.twin(segment2) {
-                                continue;
-                            }
+                        let triangle = self.mesh_ref.face(e1);
+                        assert!(triangle == self.mesh_ref.face(e2));
 
-                            let edges = dual.segment_to_edges(segment1);
-                            // their edges are the same, but we only consider segment1, as its the first segment
+                        let third_edge = self.mesh_ref.edges(triangle).into_iter().find(|&e| e != e1 && e != e2).unwrap();
 
-                            // for every two edges, find the third edge of the passed triangle
-                            for edge_pair in edges.windows(2) {
-                                let (e1, e2) = (edge_pair[0], edge_pair[1]);
+                        // figure out if the third edge is adjacent to this segment (or to its twin)
+                        let this_region = dual.loop_structure.face(segment1);
+                        let this_region_verts = &dual.loop_structure.faces[this_region].verts;
+                        let (vert1, vert2) = self.mesh_ref.endpoints(third_edge);
+                        if this_region_verts.contains(&vert1) && this_region_verts.contains(&vert2) {
+                            // this is edge is inside the region adjacent to the segment
+                            // this means that we allow traversal FROM this edge, into the segment/loop
+                            // this means we do NOT allow traversal FROM the segment/loop, into this edge
 
-                                if e1 == self.mesh_ref.twin(e2) {
-                                    continue;
-                                }
+                            // as such, we block the edges from the segment/loop to this edge
+                            blocked_edges2.insert([third_edge, e1]);
+                            blocked_edges2.insert([third_edge, e2]);
+                        } else {
+                            // this edge is outside the region adjacent to the segment
+                            // this means that we allow traversal FROM the segment/loop, into this edge
+                            // this means we do NOT allow traversal FROM this edge, into the segment/loop
 
-                                let triangle = self.mesh_ref.face(e1);
-                                assert!(triangle == self.mesh_ref.face(e2));
+                            // as such, we block the edges from this edge to the segment/loop
 
-                                let third_edge = self.mesh_ref.edges(triangle).into_iter().find(|&e| e != e1 && e != e2).unwrap();
-
-                                // figure out if the third edge is adjacent to this segment (or to its twin)
-                                let this_region = dual.loop_structure.face(segment1);
-                                let this_region_verts = &dual.loop_structure.faces[this_region].verts;
-                                let (vert1, vert2) = self.mesh_ref.endpoints(third_edge);
-                                if this_region_verts.contains(&vert1) && this_region_verts.contains(&vert2) {
-                                    // this is edge is inside the region adjacent to the segment
-                                    // this means that we allow traversal FROM this edge, into the segment/loop
-                                    // this means we do NOT allow traversal FROM the segment/loop, into this edge
-
-                                    // as such, we block the edges from the segment/loop to this edge
-                                    blocked_edges2.insert([third_edge, e1]);
-                                    blocked_edges2.insert([third_edge, e2]);
-                                } else {
-                                    // this edge is outside the region adjacent to the segment
-                                    // this means that we allow traversal FROM the segment/loop, into this edge
-                                    // this means we do NOT allow traversal FROM this edge, into the segment/loop
-
-                                    // as such, we block the edges from this edge to the segment/loop
-
-                                    blocked_edges2.insert([e1, third_edge]);
-                                    blocked_edges2.insert([e2, third_edge]);
-                                }
-                            }
+                            blocked_edges2.insert([e1, third_edge]);
+                            blocked_edges2.insert([e2, third_edge]);
                         }
+                    }
+                }
 
-                        let filter = |(a, b): (&[EdgeID; 2], &[EdgeID; 2])| {
-                            !blocked_edges.contains(&a[0])
-                                && !blocked_edges.contains(&a[1])
-                                && !blocked_edges.contains(&b[0])
-                                && !blocked_edges.contains(&b[1])
-                                && !blocked_edges2.contains(a)
-                                && !blocked_edges2.contains(b)
-                        };
+                let filter = |(a, b): (&[EdgeID; 2], &[EdgeID; 2])| {
+                    !blocked_edges.contains(&a[0])
+                        && !blocked_edges.contains(&a[1])
+                        && !blocked_edges.contains(&b[0])
+                        && !blocked_edges.contains(&b[1])
+                        && !blocked_edges2.contains(a)
+                        && !blocked_edges2.contains(b)
+                };
 
-                        let g_original = &flow_graphs[direction as usize];
-                        let g = g_original.filter(filter);
+                let g_original = flow_graph;
+                let g = g_original.filter(filter);
 
-                        // between 5 and 15
-                        let alpha = rand::random::<f64>();
+                let option_a = Self::construct_loop(&[e1, e2], &g, &measure);
+                let option_b = Self::construct_loop(&[e2, e1], &g, &measure);
 
-                        let measure = |(a, b, c): (f64, f64, f64)| alpha * a.powi(10) + (1. - alpha) * b.powi(10);
+                // The path may contain self intersections. We can remove these.
+                // If duplicated vertices are present, remove everything between them.
+                let mut cleaned_option_a = vec![];
+                for edge_id in option_a {
+                    if cleaned_option_a.contains(&edge_id) {
+                        cleaned_option_a = cleaned_option_a.into_iter().take_while(|&x| x != edge_id).collect_vec();
+                    }
+                    cleaned_option_a.push(edge_id);
+                }
 
-                        let [e1, e2] = selected_edges;
+                let mut cleaned_option_b = vec![];
+                for edge_id in option_b {
+                    if cleaned_option_b.contains(&edge_id) {
+                        cleaned_option_b = cleaned_option_b.into_iter().take_while(|&x| x != edge_id).collect_vec();
+                    }
+                    cleaned_option_b.push(edge_id);
+                }
 
-                        let a = g.node_to_index(&[e1, e2]).unwrap();
-                        let b = g.node_to_index(&[e2, e1]).unwrap();
-                        let mut option_a = g
-                            .shortest_cycle(a, &measure)
-                            .unwrap_or_default()
-                            .into_iter()
-                            .flat_map(|node_index| g.index_to_node(node_index).unwrap().to_owned())
-                            .collect_vec();
-                        let mut option_b = g
-                            .shortest_cycle(b, &measure)
-                            .unwrap_or_default()
-                            .into_iter()
-                            .flat_map(|node_index| g.index_to_node(node_index).unwrap().to_owned())
-                            .collect_vec();
+                let best_option = if cleaned_option_a.len() > cleaned_option_b.len() {
+                    cleaned_option_a
+                } else {
+                    cleaned_option_b
+                };
 
-                        assert!(option_a.len() % 2 == 0);
-                        assert!(option_b.len() % 2 == 0);
+                if best_option.len() < 5 {
+                    return None;
+                }
 
-                        let mut option_a_valid = true;
-                        let mut option_b_valid = true;
-
-                        // If path has duplicates, the option is invalid
-                        option_a_valid = option_a.iter().unique().count() == option_a.len();
-                        option_b_valid = option_b.iter().unique().count() == option_b.len();
-
-                        // If path has less than 5 edges, the option is invalid
-                        option_a_valid = option_a.len() >= 5;
-                        option_b_valid = option_b.len() >= 5;
-
-                        if !option_a_valid && !option_b_valid {
-                            return None;
-                        }
-
-                        if option_a_valid && !option_b_valid {
-                            return Some(option_a);
-                        }
-
-                        if !option_a_valid && option_b_valid {
-                            return Some(option_b);
-                        }
-
-                        let weight_option_a: f64 = option_a
-                            .chunks(2)
-                            .map(|window| [window[0], window[1]])
-                            .collect_vec()
-                            .windows(2)
-                            .map(|pairs| {
-                                let pair1 = pairs[0];
-                                let pair2 = pairs[1];
-
-                                let pair1_node = g.node_to_index(&pair1).unwrap();
-                                let pair2_node = g.node_to_index(&pair2).unwrap();
-
-                                let weight = g.get_weight(pair1_node, pair2_node);
-                                measure(weight)
-                            })
-                            .sum();
-
-                        let weight_option_b: f64 = option_b
-                            .chunks(2)
-                            .map(|window| [window[0], window[1]])
-                            .collect_vec()
-                            .windows(2)
-                            .map(|pairs| {
-                                let pair1 = pairs[0];
-                                let pair2 = pairs[1];
-
-                                let pair1_node = g.node_to_index(&pair1).unwrap();
-                                let pair2_node = g.node_to_index(&pair2).unwrap();
-
-                                let weight = g.get_weight(pair1_node, pair2_node);
-                                measure(weight)
-                            })
-                            .sum();
-
-                        let best_option = if weight_option_a > weight_option_b { option_b } else { option_a };
-
-                        Some(best_option)
-                    })
-                    .collect();
+                return Some(best_option);
             }
         }
 
-        println!("Found {} candidate paths", candidate_paths.len());
-
-        candidate_paths
+        None
     }
 
-    pub fn construct_loop(&self, direction: PrincipalDirection, flow_graphs: &[Graaf<[EdgeID; 2], (f64, f64, f64)>; 3]) -> Option<Vec<EdgeID>> {
-        let occupied = self.occupied_edgepairs();
-        let filter = |(a, b): (&[EdgeID; 2], &[EdgeID; 2])| {
-            !occupied.contains(a)
-                && !occupied.contains(b)
-                && [a[0], a[1], b[0], b[1]].iter().all(|&edge| {
-                    self.loops_on_edge(edge)
-                        .iter()
-                        .filter(|&&loop_id| self.loop_to_direction(loop_id) == direction)
-                        .count()
-                        == 0
-                })
-        };
+    // pub fn construct_guaranteed_loop2(&self, region_id: RegionID, selected_edges: [EdgeID; 2], direction: PrincipalDirection) -> Vec<Vec<EdgeID>> {
+    //     println!("Constructing guaranteed loop");
 
-        let g_original = &flow_graphs[direction as usize];
-        let g = g_original.filter(filter);
+    //     let mut candidate_paths = vec![];
 
-        // between 5 and 15
-        let alpha = rand::random::<f64>();
+    //     if let Ok(dual) = &self.dual {
+    //         if let Some(cycle_to_edges) = self.find_some_valid_loops_through_region(region_id, direction) {
+    //             candidate_paths = cycle_to_edges
+    //                 .into_iter()
+    //                 .flat_map(|chosen_cycle| {
+    //                     let mut augmented_cycle = chosen_cycle.clone();
+    //                     // make sure every two segments in chosen_cycle are pairs, it could be the case that the 1st and nth segment are a pair
+    //                     if augmented_cycle[0] == dual.loop_structure.twin(chosen_cycle[augmented_cycle.len() - 1]) {
+    //                         augmented_cycle.push(augmented_cycle[0]);
+    //                         augmented_cycle.remove(0);
+    //                     }
 
-        let measure = |(a, b, c): (f64, f64, f64)| alpha * a.powi(10) + (1. - alpha) * b.powi(10);
+    //                     let mut all_nodes = vec![];
+    //                     let mut all_edges = vec![];
 
-        let edges = self.mesh_ref.edges.keys().collect_vec();
-        // map edges to alignment of their two neighboring triangles in a vec of tuples
-        let alignments = edges
-            .iter()
-            .map(|&edge| {
-                let twin = self.mesh_ref.twin(edge);
-                let triangles = [self.mesh_ref.face(edge), self.mesh_ref.face(twin)];
-                let alignment = triangles
-                    .iter()
-                    .map(|&triangle| self.alignment_per_triangle.get(triangle).unwrap())
-                    .sum::<f64>()
-                    / triangles.len() as f64;
-                (1. - alignment) * 0.8 + 0.2
-            })
-            .collect_vec();
+    //                     // Construct the domain of the path: stitch the consecutive loop regions together.
+    //                     for selected_segment_pair in augmented_cycle.windows(2) {
+    //                         if selected_segment_pair[0] != dual.loop_structure.twin(selected_segment_pair[1]) {
+    //                             continue;
+    //                         }
+    //                         // Look at the lower segment of the pair
+    //                         let segment = selected_segment_pair[0];
+    //                         // Get its loop region
+    //                         let region = dual.loop_structure.face(segment);
+    //                         // Figure out the domain
+    //                         let verts = dual.loop_structure.faces[region].verts.clone();
+    //                         let faces: Vec<FaceID> = verts
+    //                             .iter()
+    //                             .flat_map(|&v| self.mesh_ref.star(v))
+    //                             .filter(|&face| self.mesh_ref.corners(face).iter().all(|c| verts.contains(c)))
+    //                             .collect_vec();
+    //                         let nodes: Vec<NodeCopy> = faces
+    //                             .into_iter()
+    //                             .flat_map(|face_id| {
+    //                                 let edges = self.mesh_ref.edges(face_id);
+    //                                 assert!(edges.len() == 3);
+    //                                 vec![
+    //                                     NodeCopy {
+    //                                         id: [edges[0], edges[1]],
+    //                                         t: 0,
+    //                                     },
+    //                                     NodeCopy {
+    //                                         id: [edges[1], edges[0]],
+    //                                         t: 0,
+    //                                     },
+    //                                     NodeCopy {
+    //                                         id: [edges[0], edges[2]],
+    //                                         t: 0,
+    //                                     },
+    //                                     NodeCopy {
+    //                                         id: [edges[2], edges[0]],
+    //                                         t: 0,
+    //                                     },
+    //                                     NodeCopy {
+    //                                         id: [edges[1], edges[2]],
+    //                                         t: 0,
+    //                                     },
+    //                                     NodeCopy {
+    //                                         id: [edges[2], edges[1]],
+    //                                         t: 0,
+    //                                     },
+    //                                 ]
+    //                             })
+    //                             .collect_vec();
 
-        let dist = WeightedIndex::new(&alignments).unwrap();
+    //                         let edges: Vec<(NodeCopy, NodeCopy)> = nodes
+    //                             .clone()
+    //                             .into_iter()
+    //                             .flat_map(|node| {
+    //                                 self.mesh_ref.neighbor_function_edgepairgraph()(node.id)
+    //                                     .into_iter()
+    //                                     .map(move |neighbor| {
+    //                                         assert!(self.mesh_ref.twin(node.id[1]) == neighbor[0]);
+    //                                         (node, NodeCopy { id: neighbor, t: 0 })
+    //                                     })
+    //                                     .filter(|(a, b)| nodes.contains(a) && nodes.contains(b))
+    //                             })
+    //                             .collect_vec();
 
-        let mut rng = thread_rng();
+    //                         // Get all nodes that are ON the segment
+    //                         let faces_on_segment = dual
+    //                             .segment_to_edges_excl(segment)
+    //                             .into_iter()
+    //                             .map(|edge| self.mesh_ref.face(edge))
+    //                             .collect::<HashSet<_>>();
+    //                         let nodes_on_segment = faces_on_segment
+    //                             .into_iter()
+    //                             .flat_map(|face_id| {
+    //                                 let edges = self.mesh_ref.edges(face_id);
+    //                                 assert!(edges.len() == 3);
+    //                                 vec![
+    //                                     NodeCopy {
+    //                                         id: [edges[0], edges[1]],
+    //                                         t: 0,
+    //                                     },
+    //                                     NodeCopy {
+    //                                         id: [edges[1], edges[0]],
+    //                                         t: 0,
+    //                                     },
+    //                                     NodeCopy {
+    //                                         id: [edges[0], edges[2]],
+    //                                         t: 0,
+    //                                     },
+    //                                     NodeCopy {
+    //                                         id: [edges[2], edges[0]],
+    //                                         t: 0,
+    //                                     },
+    //                                     NodeCopy {
+    //                                         id: [edges[1], edges[2]],
+    //                                         t: 0,
+    //                                     },
+    //                                     NodeCopy {
+    //                                         id: [edges[2], edges[1]],
+    //                                         t: 0,
+    //                                     },
+    //                                 ]
+    //                             })
+    //                             .collect_vec();
 
-        // select randomly an edge with skew to lower alignment
-        let e1 = edges[dist.sample(&mut rng)];
+    //                         let edges_through_segment: Vec<(NodeCopy, NodeCopy)> = nodes_on_segment
+    //                             .clone()
+    //                             .into_iter()
+    //                             .flat_map(|node| {
+    //                                 self.mesh_ref.neighbor_function_edgepairgraph()(node.id)
+    //                                     .into_iter()
+    //                                     .map(move |neighbor| {
+    //                                         assert!(self.mesh_ref.twin(node.id[1]) == neighbor[0]);
+    //                                         (node, NodeCopy { id: neighbor, t: 0 })
+    //                                     })
+    //                                     .filter(|(a, b)| nodes_on_segment.contains(a) && nodes_on_segment.contains(b))
+    //                                 // .filter(|(a, b)| {
+    //                                 //     let (a1, a2) = self.mesh_ref.endpoints(a.id[0]);
+    //                                 //     let (b1, b2) = self.mesh_ref.endpoints(b.id[1]);
+    //                                 //     verts.contains(&a1) && verts.contains(&a2) && !verts.contains(&b1) && !verts.contains(&b2)
+    //                                 // })
+    //                             })
+    //                             .collect_vec();
 
-        // Starting edges.
-        // let e1 = self.mesh_ref.random_edges(1).first().unwrap().to_owned();
-        let e2 = self.mesh_ref.next(e1);
-        let a = g.node_to_index(&[e1, e2]).unwrap();
-        let b = g.node_to_index(&[e2, e1]).unwrap();
-        let option_a = g
-            .shortest_cycle(a, &measure)
-            .unwrap_or_default()
-            .into_iter()
-            .flat_map(|node_index| g.index_to_node(node_index).unwrap().to_owned())
-            .collect_vec();
-        let option_b = g
-            .shortest_cycle(b, &measure)
-            .unwrap_or_default()
-            .into_iter()
-            .flat_map(|node_index| g.index_to_node(node_index).unwrap().to_owned())
-            .collect_vec();
+    //                         let edges_before_segment: Vec<(NodeCopy, NodeCopy)> = nodes_on_segment
+    //                             .clone()
+    //                             .into_iter()
+    //                             .flat_map(|node| {
+    //                                 self.mesh_ref.neighbor_function_edgepairgraph()(node.id)
+    //                                     .into_iter()
+    //                                     .map(move |neighbor| {
+    //                                         assert!(self.mesh_ref.twin(node.id[1]) == neighbor[0]);
+    //                                         (node, NodeCopy { id: neighbor, t: 0 })
+    //                                     })
+    //                                     .filter(|(a, b)| nodes_on_segment.contains(a) && nodes_on_segment.contains(b))
+    //                                 // .filter(|(a, b)| {
+    //                                 //     let (a1, a2) = self.mesh_ref.endpoints(a.id[0]);
+    //                                 //     let (b1, b2) = self.mesh_ref.endpoints(b.id[1]);
+    //                                 //     verts.contains(&a1) && verts.contains(&a2) && verts.contains(&b1) && verts.contains(&b2)
+    //                                 // })
+    //                             })
+    //                             .flat_map(|(a, b)| [(a, b), (b, a)])
+    //                             .collect_vec();
 
-        // The path may contain self intersections. We can remove these.
-        // If duplicated vertices are present, remove everything between them.
-        let mut cleaned_option_a = vec![];
-        for edge_id in option_a {
-            if cleaned_option_a.contains(&edge_id) {
-                cleaned_option_a = cleaned_option_a.into_iter().take_while(|&x| x != edge_id).collect_vec();
-            }
-            cleaned_option_a.push(edge_id);
-        }
+    //                         all_nodes.extend(nodes);
+    //                         all_nodes.extend(nodes_on_segment);
+    //                         all_edges.extend(edges);
+    //                         all_edges.extend(edges_through_segment);
+    //                         all_edges.extend(edges_before_segment);
+    //                     }
 
-        let mut cleaned_option_b = vec![];
-        for edge_id in option_b {
-            if cleaned_option_b.contains(&edge_id) {
-                cleaned_option_b = cleaned_option_b.into_iter().take_while(|&x| x != edge_id).collect_vec();
-            }
-            cleaned_option_b.push(edge_id);
-        }
+    //                     //     // Get the domain of this loop region
+    //                     //     let domain = self
+    //                     //         .mesh_ref
+    //                     //         .verts_to_edges(&dual.loop_structure.faces[region].verts.clone().into_iter().collect_vec());
+    //                     //     let domain_copy = domain.clone().into_iter().map(|v| NodeCopy { id: v, t: 0 }).collect_vec();
 
-        let best_option = if cleaned_option_a.len() > cleaned_option_b.len() {
-            cleaned_option_a
-        } else {
-            cleaned_option_b
-        };
+    //                     //     // For any vertex, check its adjacent vertices, if this adjacent vertex is also in the domain, we have the edge
+    //                     //     let edges = domain
+    //                     //         .iter()
+    //                     //         .flat_map(|&vertex| {
+    //                     //             let adjacent = self.mesh_ref.neighbor_function_edgepairgraph()(vertex);
+    //                     //             adjacent
+    //                     //                 .iter()
+    //                     //                 .filter_map(|&adjacent_vertex| {
+    //                     //                     if domain.contains(&adjacent_vertex) {
+    //                     //                         Some((NodeCopy { id: vertex, t: 0 }, NodeCopy { id: adjacent_vertex, t: 0 }, 1.))
+    //                     //                     } else {
+    //                     //                         None
+    //                     //                     }
+    //                     //                 })
+    //                     //                 .collect_vec()
+    //                     //         })
+    //                     //         .collect_vec();
 
-        // If the best option is empty, we have no valid path.
-        if best_option.len() < 5 {
-            return None;
-        }
+    //                     //     let mut crossing_edges = vec![];
+    //                     //     // for every two edges in this segment, find the third edge
+    //                     //     for edge_pair in dual.segment_to_edges_excl(segment).windows(2) {
+    //                     //         let (e1, e2) = (edge_pair[0], edge_pair[1]);
+    //                     //         let common_endpoint = self.mesh_ref.common_endpoint(e1, e2).unwrap();
+    //                     //         // Only look at the consecutive edges that are not twins.
+    //                     //         if e1 == self.mesh_ref.twin(e2) {
+    //                     //             continue;
+    //                     //         }
 
-        return Some(best_option);
+    //                     //         // Find the triangle of these two edges
+    //                     //         let triangle = self.mesh_ref.face(e1);
+    //                     //         assert!(triangle == self.mesh_ref.face(e2));
+    //                     //         // Get the third edge of this triangle
+    //                     //         let third_edge = self.mesh_ref.edges(triangle).into_iter().find(|&e| e != e1 && e != e2).unwrap();
+
+    //                     //         // Figure out if the third edge is adjacent to this segment (or to its twin)
+    //                     //         let (vert1, vert2) = self.mesh_ref.endpoints(third_edge);
+    //                     //         let third_edge_is_in_domain = domain.contains(&vert1) && domain.contains(&vert2);
+    //                     //         if third_edge_is_in_domain {
+    //                     //             // This means we traverse from this loop region INTO the next loop region (corresponding to the upper segment)
+    //                     //             crossing_edges.push((NodeCopy { id: vert1, t: 0 }, NodeCopy { id: common_endpoint, t: 0 }, 1.));
+    //                     //             crossing_edges.push((NodeCopy { id: vert2, t: 0 }, NodeCopy { id: common_endpoint, t: 0 }, 1.));
+    //                     //         } else {
+    //                     //             // We do not allow to traverse from the upper segment INTO the lower segment
+    //                     //         }
+    //                     //     }
+
+    //                     //     // Add the edges to the domain
+    //                     //     all_nodes.extend(domain_copy);
+    //                     //     all_edges.extend(edges);
+    //                     //     all_edges.extend(crossing_edges);
+    //                     // }
+
+    //                     // // Add the starting loop region again (but as a duplicate, so that we can find a shortest path to itself..)
+    //                     // let last_segment = augmented_cycle[augmented_cycle.len() - 1];
+    //                     // let last_region = dual.loop_structure.face(last_segment);
+    //                     // let last_domain = dual.loop_structure.faces[last_region].verts.clone();
+    //                     // let last_domain_copy = last_domain.clone().into_iter().map(|v| NodeCopy { id: v, t: 1 }).collect_vec();
+    //                     // let last_edges = last_domain
+    //                     //     .iter()
+    //                     //     .flat_map(|&vertex| {
+    //                     //         let adjacent = self.mesh_ref.vneighbors(vertex);
+    //                     //         adjacent
+    //                     //             .iter()
+    //                     //             .filter_map(|&adjacent_vertex| {
+    //                     //                 if last_domain.contains(&adjacent_vertex) {
+    //                     //                     Some((NodeCopy { id: vertex, t: 1 }, NodeCopy { id: adjacent_vertex, t: 1 }, 1.))
+    //                     //                 } else {
+    //                     //                     None
+    //                     //                 }
+    //                     //             })
+    //                     //             .collect_vec()
+    //                     //     })
+    //                     //     .collect_vec();
+
+    //                     // let mut crossing_edges = vec![];
+    //                     // // for every two edges in this segment, find the third edge
+    //                     // for edge_pair in dual.segment_to_edges_excl(last_segment).windows(2) {
+    //                     //     let (e1, e2) = (edge_pair[0], edge_pair[1]);
+    //                     //     let common_endpoint = self.mesh_ref.common_endpoint(e1, e2).unwrap();
+    //                     //     // Only look at the consecutive edges that are not twins.
+    //                     //     if e1 == self.mesh_ref.twin(e2) {
+    //                     //         continue;
+    //                     //     }
+
+    //                     //     // Find the triangle of these two edges
+    //                     //     let triangle = self.mesh_ref.face(e1);
+    //                     //     assert!(triangle == self.mesh_ref.face(e2));
+    //                     //     // Get the third edge of this triangle
+    //                     //     let third_edge = self.mesh_ref.edges(triangle).into_iter().find(|&e| e != e1 && e != e2).unwrap();
+
+    //                     //     // Figure out if the third edge is adjacent to this segment (or to its twin)
+    //                     //     let (vert1, vert2) = self.mesh_ref.endpoints(third_edge);
+    //                     //     let third_edge_is_in_domain = last_domain.contains(&vert1) && last_domain.contains(&vert2);
+    //                     //     if third_edge_is_in_domain {
+    //                     //         // This means we traverse from this loop region INTO the next loop region (corresponding to the upper segment)
+    //                     //         crossing_edges.push((NodeCopy { id: vert1, t: 0 }, NodeCopy { id: common_endpoint, t: 1 }, 1.));
+    //                     //         crossing_edges.push((NodeCopy { id: vert2, t: 0 }, NodeCopy { id: common_endpoint, t: 1 }, 1.));
+    //                     //     } else {
+    //                     //         // We do not allow to traverse from the upper segment INTO the lower segment
+    //                     //     }
+    //                     // }
+
+    //                     // all_nodes.extend(last_domain_copy);
+    //                     // all_edges.extend(last_edges);
+    //                     // all_edges.extend(crossing_edges);
+
+    //                     let all_edges_weighted = all_edges
+    //                         .into_iter()
+    //                         .map(|(a, b)| {
+    //                             let node = a.id;
+    //                             let neighbor = b.id;
+
+    //                             let middle_edge = node[1];
+    //                             let (m1, m2) = self.mesh_ref.endpoints(middle_edge);
+
+    //                             let start_edge = node[0];
+    //                             let end_edge = neighbor[1];
+    //                             // Vector from middle_edge to start_edge
+    //                             let vector_a = self.mesh_ref.midpoint(start_edge) - self.mesh_ref.midpoint(middle_edge);
+    //                             // Vector from middle_edge to end_edge
+    //                             let vector_b = self.mesh_ref.midpoint(end_edge) - self.mesh_ref.midpoint(middle_edge);
+
+    //                             // Vector from middle_edge to m1
+    //                             let vector_m1 = self.mesh_ref.position(m1) - self.mesh_ref.midpoint(middle_edge);
+    //                             // Vector from middle_edge to m2
+    //                             let vector_m2 = self.mesh_ref.position(m2) - self.mesh_ref.midpoint(middle_edge);
+
+    //                             // Angle around m1
+    //                             let angle_around_m1 = self.mesh_ref.vec_angle(vector_a, vector_m1) + self.mesh_ref.vec_angle(vector_b, vector_m1);
+
+    //                             // Angle around m2
+    //                             let angle_around_m2 = self.mesh_ref.vec_angle(vector_a, vector_m2) + self.mesh_ref.vec_angle(vector_b, vector_m2);
+
+    //                             // Whichever angle is shorter is the "real" angle
+    //                             let angle = if angle_around_m1 < angle_around_m2 {
+    //                                 angle_around_m1
+    //                             } else {
+    //                                 angle_around_m2
+    //                             };
+
+    //                             // Weight is based on how far the angle is from 180 degrees
+    //                             let temp = PI - angle;
+    //                             let angular_weight = if temp < 0. { 0. } else { temp };
+
+    //                             // Alignment per edge
+    //                             // Vector_a
+    //                             // Find the face that is bounded by the two edges
+    //                             let face_a = self.mesh_ref.face(start_edge);
+    //                             let alignment_vector_a = (-vector_a).cross(&self.mesh_ref.normal(face_a)).angle(&direction.into());
+
+    //                             // Vector_b
+    //                             // Find the face that is bounded by the two edges
+    //                             let face_b = self.mesh_ref.face(end_edge);
+    //                             let alignment_vector_b = vector_b.cross(&self.mesh_ref.normal(face_b)).angle(&direction.into());
+
+    //                             let weight = (angular_weight, (alignment_vector_a + alignment_vector_b) / 2., 0.);
+
+    //                             (a, b, weight)
+    //                         })
+    //                         .collect_vec();
+
+    //                     let g = Graaf::from(all_nodes, all_edges_weighted);
+
+    //                     // between 5 and 15
+    //                     let alpha = rand::random::<f64>();
+
+    //                     let measure = |(a, b, c): (f64, f64, f64)| alpha * a.powi(10) + (1. - alpha) * b.powi(10);
+
+    //                     let [e1, e2] = selected_edges;
+
+    //                     let a = g.node_to_index(&NodeCopy { id: [e1, e2], t: 0 }).unwrap();
+    //                     let b = g.node_to_index(&NodeCopy { id: [e2, e1], t: 0 }).unwrap();
+    //                     let mut option_a = g
+    //                         .shortest_cycle(a, &measure)
+    //                         .unwrap_or_default()
+    //                         .into_iter()
+    //                         .map(|node_index| g.index_to_node(node_index).unwrap().to_owned())
+    //                         .flat_map(|node_copy| node_copy.id)
+    //                         .collect_vec();
+    //                     let mut option_b = g
+    //                         .shortest_cycle(b, &measure)
+    //                         .unwrap_or_default()
+    //                         .into_iter()
+    //                         .map(|node_index| g.index_to_node(node_index).unwrap().to_owned())
+    //                         .flat_map(|node_copy| node_copy.id)
+    //                         .collect_vec();
+
+    //                     assert!(option_a.len() % 2 == 0);
+    //                     assert!(option_b.len() % 2 == 0);
+
+    //                     let mut option_a_valid = true;
+    //                     let mut option_b_valid = true;
+
+    //                     // If path has duplicates, the option is invalid
+    //                     option_a_valid = option_a.iter().unique().count() == option_a.len();
+    //                     option_b_valid = option_b.iter().unique().count() == option_b.len();
+
+    //                     // If path has less than 5 edges, the option is invalid
+    //                     option_a_valid = option_a.len() >= 5;
+    //                     option_b_valid = option_b.len() >= 5;
+
+    //                     if !option_a_valid && !option_b_valid {
+    //                         return None;
+    //                     }
+
+    //                     if option_a_valid && !option_b_valid {
+    //                         return Some(option_a);
+    //                     }
+
+    //                     if !option_a_valid && option_b_valid {
+    //                         return Some(option_b);
+    //                     }
+
+    //                     Some(option_a)
+    //                 })
+    //                 .collect_vec();
+    //         }
+    //     }
+
+    //     println!("paths: {:?}", candidate_paths);
+
+    //     println!("Found {} candidate paths", candidate_paths.len());
+
+    //     candidate_paths
+    // }
+
+    pub fn optimize(&mut self, iterations: usize) {
+        // for i in 0..iterations {
+        //     let cur_quality = self.get_quality();
+        //     let mut sol_copy = self.clone();
+        //     let lay_copy = sol_copy.layout.as_mut().unwrap();
+        //     // TODO: select a bad corner based on alignment
+        //     let corner = lay_copy.vert_to_corner.left_values().choose(&mut thread_rng()).unwrap().to_owned();
+        //     if lay_copy.improve(corner).is_ok() {
+        //         sol_copy.compute_quality();
+        //         let new_quality = sol_copy.get_quality();
+        //         let improvement = (new_quality - cur_quality) / cur_quality;
+        //         // Print the improvement, color green if positive, red if negative
+        //         if improvement > 0.0 {
+        //             println!("{i} : {:.3} to {:.3} \x1b[32m({:+.2}%)\x1b[0m", cur_quality, new_quality, improvement * 100.);
+        //         } else {
+        //             println!("{i} : {:.3} to {:.3} \x1b[31m({:+.2}%)\x1b[0m", cur_quality, new_quality, improvement * 100.);
+        //         }
+
+        //         if new_quality > cur_quality {
+        //             *self = sol_copy;
+        //         }
+        //     }
+        // }
     }
 
     pub fn write_to_flag(&self, path: &PathBuf) -> std::io::Result<()> {
         let mut file = std::fs::File::create(path)?;
 
-        if let Some(Ok(layout)) = &self.layout {
+        if let Ok(layout) = &self.layout {
             let map = layout
                 .granulated_mesh
                 .face_ids()
@@ -984,7 +1430,7 @@ impl Solution {
     }
 
     pub fn write_to_obj(&self, path: &PathBuf) -> std::io::Result<()> {
-        if let Some(Ok(layout)) = &self.layout {
+        if let Ok(layout) = &self.layout {
             layout.granulated_mesh.write_to_obj(path)?;
             return Ok(());
         }

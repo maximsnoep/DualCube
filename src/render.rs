@@ -10,15 +10,12 @@ use bevy::render::render_resource::{Extent3d, TextureDescriptor, TextureDimensio
 use douconel::douconel::Douconel;
 use douconel::douconel_embedded::HasPosition;
 use enum_iterator::{all, Sequence};
-use hutspot::consts::PI;
 use hutspot::draw::DrawableLine;
 use hutspot::geom::Vector3D;
 use itertools::Itertools;
-use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
 use slotmap::Key;
 use smooth_bevy_cameras::controllers::orbit::{OrbitCameraBundle, OrbitCameraController};
-use std::cmp::Reverse;
 use std::collections::HashMap;
 
 const DEFAULT_CAMERA_EYE: Vec3 = Vec3::new(25.0, 25.0, 35.0);
@@ -53,8 +50,8 @@ impl From<Objects> for String {
             Objects::MeshOrthogonalityScore => "orthogonality (score)",
             Objects::MeshPolycubeLabeling => "polycube labeling",
             Objects::PolycubePrimalPolyhedron => "polycube polyhedron",
-            Objects::Debug => "DEBUG!!!",
-            Objects::Debug2 => "DEBUG2!!!",
+            Objects::Debug => "debug #1",
+            Objects::Debug2 => "debug #2",
         }
         .to_owned()
     }
@@ -131,7 +128,6 @@ pub fn reset(commands: &mut Commands, cameras: &Query<Entity, With<Camera>>, ima
                         ..Default::default()
                     },
                     projection: bevy::prelude::Projection::Orthographic(OrthographicProjection {
-                        // 6 world units per window height.
                         scaling_mode: ScalingMode::FixedVertical(30.0),
                         ..default()
                     }),
@@ -213,6 +209,7 @@ pub fn update(
     mut gizmos_cache: ResMut<GizmosCache>,
     mut cameras: Query<(&mut Transform, &mut Projection, &CameraFor)>,
 ) {
+    let flat_edges = false;
     let main_transform = cameras.iter().find(|(_, _, camera_for)| camera_for.0 == Objects::MeshDualLoops).unwrap().0;
     let normalized_translation = main_transform.translation - Vec3::from(Objects::MeshDualLoops);
     let normalized_rotation = main_transform.rotation;
@@ -459,6 +456,11 @@ pub fn update(
                         let endpoints = polycube.structure.endpoints(edge_id);
                         let u = polycube.structure.position(endpoints.0);
                         let v = polycube.structure.position(endpoints.1);
+                        let f1 = polycube.structure.normal(polycube.structure.face(edge_id));
+                        let f2 = polycube.structure.normal(polycube.structure.face(polycube.structure.twin(edge_id)));
+                        if (f1 == f2) && !flat_edges {
+                            continue;
+                        }
                         let line = DrawableLine::from_line(
                             u,
                             v,
@@ -473,7 +475,7 @@ pub fn update(
             }
             Objects::MeshPolycubeLayout => {
                 if let Some(polycube) = &solution.current_solution.polycube {
-                    if let Some(Ok(lay)) = &solution.current_solution.layout {
+                    if let Ok(lay) = &solution.current_solution.layout {
                         let mut layout_color_map = HashMap::new();
 
                         for &face_id in &polycube.structure.face_ids() {
@@ -492,7 +494,13 @@ pub fn update(
                             RenderedMesh,
                         ));
 
-                        for path in lay.edge_to_path.values() {
+                        for (&pedge_id, path) in &lay.edge_to_path {
+                            let f1 = polycube.structure.normal(polycube.structure.face(pedge_id));
+                            let f2 = polycube.structure.normal(polycube.structure.face(polycube.structure.twin(pedge_id)));
+                            if (f1 == f2) && !flat_edges {
+                                continue;
+                            }
+
                             for vertexpair in path.windows(2) {
                                 if lay.granulated_mesh.edge_between_verts(vertexpair[0], vertexpair[1]).is_none() {
                                     println!("Edge between {:?} and {:?} does not exist", vertexpair[0], vertexpair[1]);
@@ -541,7 +549,7 @@ pub fn update(
                 }
             }
             Objects::MeshAlignmentScore => {
-                if let Some(Ok(lay)) = &solution.current_solution.layout {
+                if let Ok(lay) = &solution.current_solution.layout {
                     let mut layout_color_map = HashMap::new();
 
                     for &triangle_id in &lay.granulated_mesh.face_ids() {
@@ -578,7 +586,7 @@ pub fn update(
             }
             Objects::MeshOrthogonalityScore => {
                 if let Some(polycube) = &solution.current_solution.polycube {
-                    if let Some(Ok(lay)) = &solution.current_solution.layout {
+                    if let Ok(lay) = &solution.current_solution.layout {
                         let mut layout_color_map = HashMap::new();
 
                         for &face_id in &polycube.structure.face_ids() {
@@ -620,7 +628,7 @@ pub fn update(
             Objects::Debug2 => {}
             Objects::MeshPolycubeLabeling => {
                 if let Some(polycube) = &solution.current_solution.polycube {
-                    if let Some(Ok(lay)) = &solution.current_solution.layout {
+                    if let Ok(lay) = &solution.current_solution.layout {
                         let mut layout_color_map = HashMap::new();
 
                         for &face_id in &polycube.structure.face_ids() {
