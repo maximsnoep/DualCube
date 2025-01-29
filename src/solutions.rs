@@ -2,9 +2,10 @@ use crate::{
     dual::{Dual, Orientation, PropertyViolationError, RegionID, SegmentID},
     graph::Graaf,
     layout::Layout,
-    polycube::{Polycube, PolycubeFaceID},
-    to_principal_direction, EdgeID, EmbeddedMesh, FaceID, PrincipalDirection,
+    polycube::{Polycube, PolycubeEdgeID, PolycubeFaceID, PolycubeVertID},
+    to_principal_direction, EdgeID, EmbeddedMesh, FaceID, PrincipalDirection, VertID,
 };
+use bimap::BiHashMap;
 use hutspot::geom::Vector3D;
 use itertools::Itertools;
 use log::{error, info};
@@ -1435,6 +1436,287 @@ impl Solution {
             return Ok(());
         }
         Err(std::io::Error::new(std::io::ErrorKind::Other, "No layout available"))
+    }
+
+    pub fn export_to_nlr(&self, path_topol: &PathBuf, path_geom: &PathBuf, path_cdim: &PathBuf) -> std::io::Result<()> {
+        if let (Ok(dual), Ok(layout), Some(polycube)) = (&self.dual, &self.layout, &self.polycube) {
+            assert!(polycube.structure.verts.len() < 10000);
+            let vert_to_id: BiHashMap<PolycubeVertID, usize> = polycube.structure.vert_ids().iter().enumerate().map(|(i, &id)| (id, 10001 + i)).collect();
+
+            assert!(polycube.structure.edges.len() < 10000);
+            let edge_to_id: BiHashMap<PolycubeEdgeID, usize> = polycube
+                .structure
+                .edge_ids()
+                .iter()
+                .filter(|&&edge_id| edge_id < polycube.structure.twin(edge_id))
+                .enumerate()
+                .map(|(i, &id)| (id, 20001 + i))
+                .collect();
+
+            assert!(polycube.structure.faces.len() < 10000);
+            let face_to_id: BiHashMap<PolycubeFaceID, usize> = polycube.structure.face_ids().iter().enumerate().map(|(i, &id)| (id, 30001 + i)).collect();
+
+            let mut file_topol = std::fs::File::create(path_topol)?;
+
+            write!(
+                file_topol,
+                "'topol file from bloopy'\n'MULTIVAC: THERE IS AS YET INSUFFICIENT DATA FOR A MEANINGFUL ANSWER'"
+            )?;
+
+            // Write all blocks
+            write!(file_topol, "\nnr of blocks\n0")?;
+
+            // Write all compound blocks
+            write!(file_topol, "\nnr of compound blocks\n0")?;
+
+            // Write all faces
+            write!(
+                file_topol,
+                "\nnr of faces\n{}\n    face,  edge1, edge2, edge3, edge4, 'FACE'\n",
+                polycube.structure.face_ids().len()
+            )?;
+            write!(
+                file_topol,
+                "{}",
+                polycube
+                    .structure
+                    .face_ids()
+                    .iter()
+                    .map(|face_id| {
+                        let face_int = face_to_id.get_by_left(face_id).unwrap();
+                        let edges = polycube.structure.edges(*face_id);
+                        let edge_int1 = edge_to_id
+                            .get_by_left(&edges[0])
+                            .or(edge_to_id.get_by_left(&polycube.structure.twin(edges[0])))
+                            .unwrap();
+                        let edge_int2 = edge_to_id
+                            .get_by_left(&edges[1])
+                            .or(edge_to_id.get_by_left(&polycube.structure.twin(edges[1])))
+                            .unwrap();
+                        let edge_int3 = edge_to_id
+                            .get_by_left(&edges[2])
+                            .or(edge_to_id.get_by_left(&polycube.structure.twin(edges[2])))
+                            .unwrap();
+                        let edge_int4 = edge_to_id
+                            .get_by_left(&edges[3])
+                            .or(edge_to_id.get_by_left(&polycube.structure.twin(edges[3])))
+                            .unwrap();
+                        format!("    {face_int}  {edge_int1}  {edge_int2}  {edge_int3}  {edge_int4}  'FACE'")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )?;
+
+            // Write all compound faces
+            write!(file_topol, "\nnr of compound faces\n0")?;
+
+            // Write all edges
+            write!(
+                file_topol,
+                "\nnr of edges\n{}\n    edge,  vert1, vert2, 'EDGE'\n",
+                polycube.structure.edge_ids().len()
+            )?;
+            write!(
+                file_topol,
+                "{}",
+                polycube
+                    .structure
+                    .edge_ids()
+                    .iter()
+                    .filter_map(|edge_id| {
+                        if let Some(edge_int) = edge_to_id.get_by_left(edge_id) {
+                            let verts = polycube.structure.endpoints(*edge_id);
+                            let vert_int1 = vert_to_id.get_by_left(&verts.0).unwrap();
+                            let vert_int2 = vert_to_id.get_by_left(&verts.1).unwrap();
+                            Some(format!("    {edge_int}  {vert_int1}  {vert_int2}  'EDGE'"))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )?;
+
+            // Write all compound edges
+            write!(file_topol, "\nnr of compound edges\n0")?;
+
+            let mut file_geom = std::fs::File::create(path_geom)?;
+
+            write!(
+                file_geom,
+                "'geom file from bloopy'\n'MULTIVAC: THERE IS AS YET INSUFFICIENT DATA FOR A MEANINGFUL ANSWER'"
+            )?;
+
+            // Write all verts
+            write!(file_geom, "\nnr of verts\n{}\n    vert, x y z, 'VERTEX'\n", polycube.structure.vert_ids().len())?;
+            write!(
+                file_geom,
+                "{}",
+                polycube
+                    .structure
+                    .vert_ids()
+                    .iter()
+                    .map(|vert_id| {
+                        let vert_int = vert_to_id.get_by_left(vert_id).unwrap();
+                        let pos = polycube.structure.position(*vert_id);
+                        format!("    {}  {}  {}  {}  'VERTEX'", vert_int, pos.x, pos.y, pos.z)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )?;
+
+            // Write all edges
+            write!(
+                file_geom,
+                "\nnr of edges\n{}\n    edge, number of points, x y z for each point\n",
+                polycube.structure.edge_ids().len()
+            )?;
+            write!(
+                file_geom,
+                "{}",
+                polycube
+                    .structure
+                    .edge_ids()
+                    .iter()
+                    .filter_map(|edge_id| {
+                        if let Some(edge_int) = edge_to_id.get_by_left(edge_id) {
+                            let path = layout.edge_to_path.get(edge_id).unwrap();
+                            Some(
+                                format!("    {}  {}\n", edge_int, path.len())
+                                    + &path
+                                        .iter()
+                                        .map(|&point| {
+                                            let pos = layout.granulated_mesh.position(point);
+                                            format!("  {}  {}  {}", pos.x, pos.y, pos.z)
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .join("\n"),
+                            )
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )?;
+
+            let mut file_cdim = std::fs::File::create(path_cdim)?;
+
+            write!(
+                file_cdim,
+                "'cdim file from bloopy'\n'MULTIVAC: THERE IS AS YET INSUFFICIENT DATA FOR A MEANINGFUL ANSWER'"
+            )?;
+
+            // Write all edge lengths
+            let loops = self.loops.keys();
+            let edge_per_loop = loops
+                .map(|loop_id| {
+                    dual.loop_structure
+                        .edge_ids()
+                        .into_iter()
+                        .find(|&segment_id| dual.segment_to_loop(segment_id) == loop_id)
+                        .unwrap()
+                })
+                .map(|segment_id| dual.loop_structure.faces(segment_id))
+                .map(|[region1, region2]| {
+                    (
+                        polycube.region_to_vertex.get_by_left(&region1).unwrap().to_owned(),
+                        polycube.region_to_vertex.get_by_left(&region2).unwrap().to_owned(),
+                    )
+                })
+                .map(|(vertex1, vertex2)| polycube.structure.edge_between_verts(vertex1, vertex2).unwrap().0);
+            write!(file_cdim, "\nnr of parent edges\n{}\n    edge, length\n", edge_per_loop.clone().count())?;
+            write!(
+                file_cdim,
+                "{}",
+                edge_per_loop
+                    .map(|edge_id| {
+                        let edge_int = edge_to_id
+                            .get_by_left(&edge_id)
+                            .or(edge_to_id.get_by_left(&polycube.structure.twin(edge_id)))
+                            .unwrap();
+                        let length = polycube.structure.length(edge_id) as usize;
+                        format!("    {edge_int}  {length}")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )?;
+
+            // Write grid levels
+            write!(file_cdim, "\nGRID LEVEL OF BASIC GRID AND COMPUTATIONAL GRID\n1 1")?;
+
+            // Write refinement
+            write!(file_cdim, "\nNUMBER OF BLOCKS WITH LOCAL GRID REFINEMENT\n0")?;
+
+            // Write edges in x (i) direction
+            let x_edges = polycube
+                .structure
+                .edge_ids()
+                .into_iter()
+                .filter(|&edge_id| edge_id < polycube.structure.twin(edge_id))
+                .filter(|&edge_id| to_principal_direction(polycube.structure.vector(edge_id)).0 == PrincipalDirection::X)
+                .collect_vec();
+            write!(file_cdim, "\nnr of edges in i/x direction\n{}\n    edge\n", x_edges.len())?;
+            write!(
+                file_cdim,
+                "{}",
+                x_edges
+                    .iter()
+                    .map(|edge_id| format!("    {}", edge_to_id.get_by_left(edge_id).unwrap()))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )?;
+
+            // Write edges in y (j) direction
+            let y_edges = polycube
+                .structure
+                .edge_ids()
+                .into_iter()
+                .filter(|&edge_id| edge_id < polycube.structure.twin(edge_id))
+                .filter(|&edge_id| to_principal_direction(polycube.structure.vector(edge_id)).0 == PrincipalDirection::Y)
+                .collect_vec();
+            write!(file_cdim, "\nnr of edges in j/y direction\n{}\n    edge\n", y_edges.len())?;
+            write!(
+                file_cdim,
+                "{}",
+                y_edges
+                    .iter()
+                    .map(|edge_id| format!("    {}", edge_to_id.get_by_left(edge_id).unwrap()))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )?;
+
+            // Write edges in z (k) direction
+            let z_edges = polycube
+                .structure
+                .edge_ids()
+                .into_iter()
+                .filter(|&edge_id| edge_id < polycube.structure.twin(edge_id))
+                .filter(|&edge_id| to_principal_direction(polycube.structure.vector(edge_id)).0 == PrincipalDirection::Z)
+                .collect_vec();
+            write!(file_cdim, "\nnr of edges in k/z direction\n{}\n    edge\n", z_edges.len())?;
+            write!(
+                file_cdim,
+                "{}",
+                z_edges
+                    .iter()
+                    .map(|edge_id| format!("    {}", edge_to_id.get_by_left(edge_id).unwrap()))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )?;
+
+            // TODO: What is this vertex?
+            // Write a specific vertex??? root???
+            write!(file_cdim, "\nvert i j k\n10001 0 0 0")?;
+
+            // Write symmetry
+            write!(file_cdim, "\nSYMMETRY\n2")?;
+
+            // Write orientation
+            write!(file_cdim, "\nORIENTATION\n0")?;
+        }
+
+        Ok(())
     }
 
     pub fn export(&self, path_obj: &PathBuf, path_flag: &PathBuf) -> std::io::Result<()> {

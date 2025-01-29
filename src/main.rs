@@ -265,6 +265,7 @@ pub enum ActionEvent {
     ExportAll,
     ExportState,
     ExportSolution,
+    ExportNLR,
     ToHexmesh,
     ResetCamera,
     Mutate,
@@ -617,6 +618,29 @@ pub fn handle_events(
                 }
 
                 solution.current_solution.reconstruct_solution();
+            }
+            ActionEvent::ExportNLR => {
+                let t = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards").as_secs();
+                let n = mesh_resmut
+                    .properties
+                    .source
+                    .split("\\")
+                    .last()
+                    .unwrap()
+                    .split('.')
+                    .next()
+                    .unwrap()
+                    .split(' ')
+                    .next()
+                    .unwrap();
+
+                let path_topol = format!("./out/{n}_{t}.topol");
+                let path_geom = format!("./out/{n}_{t}.geom",);
+                let path_cdim = format!("./out/{n}_{t}.cdim",);
+
+                solution
+                    .current_solution
+                    .export_to_nlr(&PathBuf::from(path_topol), &PathBuf::from(path_geom), &PathBuf::from(path_cdim));
             }
             ActionEvent::ExportAll => {
                 if mesh_resmut.mesh.vert_ids().is_empty() {

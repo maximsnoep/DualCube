@@ -1974,6 +1974,7 @@ dependencies = [
 [[package]]
 name = "douconel"
 version = "0.0.1"
+source = "git+https://github.com/maximsnoep/douconel#a900cd3affe4d0d19bba2e4c70e85dd9b2add446"
 dependencies = [
  "approx",
  "bevy",
@@ -2748,6 +2749,7 @@ dependencies = [
 [[package]]
 name = "hutspot"
 version = "0.0.1"
+source = "git+https://github.com/maximsnoep/hutspot#6ecae94948b18ab02f889d3134a1faa0da85ef7e"
 dependencies = [
  "approx",
  "bevy_render",

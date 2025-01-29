@@ -70,18 +70,18 @@ pub fn update(
                                     }
                                 }
                                 ui.add_space(5.);
-                                if ui.button("Export").clicked() {
-                                    ev_w.send(ActionEvent::ExportAll);
-                                }
-                                ui.add_space(5.);
                                 ui.separator();
                                 ui.add_space(5.);
-                                if ui.button("Export as .save").clicked() {
+                                if ui.button("Export SAVE").clicked() {
                                     ev_w.send(ActionEvent::ExportState);
                                 }
                                 ui.add_space(5.);
-                                if ui.button("Export as .obj+.flag").clicked() {
+                                if ui.button("Export FLAG").clicked() {
                                     ev_w.send(ActionEvent::ExportSolution);
+                                }
+                                ui.add_space(5.);
+                                if ui.button("Export NLR").clicked() {
+                                    ev_w.send(ActionEvent::ExportNLR);
                                 }
                                 ui.add_space(5.);
                                 ui.separator();

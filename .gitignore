@@ -3,3 +3,6 @@
 *.obj
 *.flag
 *.mesh
+*.cdim
+*.geom
+*.topol
