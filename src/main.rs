@@ -428,13 +428,10 @@ pub fn handle_solution_tasks(
             println!("Task {} is done!", id);
 
             if let Some(new_solution) = chunk_data {
-                if *id == 1
-                    && new_solution.orthogonality.unwrap() + new_solution.alignment.unwrap() * 10.
-                        >= solution.current_solution.orthogonality.unwrap() + solution.current_solution.alignment.unwrap() * 10.
-                {
+                if *id == 1 && new_solution.get_quality() * 0.98 > solution.current_solution.get_quality() {
                     println!("New solution is better than current solution. Updating...");
                     solution.current_solution = new_solution;
-                } else if *id == 0 {
+                } else if *id == 0 && new_solution.get_quality() * 1.01 > solution.current_solution.get_quality() {
                     println!("Solution overwritten.");
                     solution.current_solution = new_solution;
                 } else {
@@ -781,12 +778,30 @@ pub fn handle_events(
                 let cloned_solution = solution.current_solution.clone();
                 let cloned_flow_graphs = mesh_resmut.flow_graphs.clone();
 
-                let task = task_pool.spawn(async move {
-                    {
-                        cloned_solution.mutate_add_loop(10, &cloned_flow_graphs)
+                if (cloned_solution.loops.len() < 10) {
+                    let task = task_pool.spawn(async move {
+                        {
+                            cloned_solution.mutate_add_loop(10, &cloned_flow_graphs)
+                        }
+                    });
+                    tasks.generating_chunks.insert(0, task);
+                } else {
+                    if rand::random() {
+                        let task = task_pool.spawn(async move {
+                            {
+                                cloned_solution.mutate_add_loop(10, &cloned_flow_graphs)
+                            }
+                        });
+                        tasks.generating_chunks.insert(0, task);
+                    } else {
+                        let task = task_pool.spawn(async move {
+                            {
+                                cloned_solution.mutate_del_loop(10)
+                            }
+                        });
+                        tasks.generating_chunks.insert(1, task);
                     }
-                });
-                tasks.generating_chunks.insert(0, task);
+                }
             }
         }
     }

@@ -19,8 +19,12 @@ missing_panics_doc = "allow"
 missing_errors_doc = "allow"
 
 [dependencies]
-douconel = { path = "../douconel"}
-hutspot = { path = "../hutspot" }
+# for local development:
+# douconel = { path = "../douconel"}
+# hutspot = { path = "../hutspot" }
+# else:
+douconel = { git = "https://github.com/maximsnoep/douconel" }
+hutspot = { git = "https://github.com/maximsnoep/hutspot" }
 
 bevy = "0.14.2"
 bevy_egui = "0.30.1"
