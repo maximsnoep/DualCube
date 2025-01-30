@@ -35,7 +35,7 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::fs::{self, File};
 use std::io::BufReader;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -670,6 +670,8 @@ pub fn handle_events(
                     loops: solution.current_solution.loops.values().cloned().collect(),
                     configuration: configuration.clone(),
                 };
+
+                assert!(!fs::exists("./out").expect("./out"));
 
                 fs::write(&PathBuf::from(path_save), serde_json::to_string(&state).unwrap());
 
