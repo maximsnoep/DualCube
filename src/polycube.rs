@@ -129,7 +129,7 @@ impl Polycube {
                         (dependencies.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap() - smallest).min(coordinate),
                     );
                 } else {
-                    zone_to_coordinate.insert(zone, dependencies.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap() - smallest);
+                    zone_to_coordinate.insert(zone, dependencies.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).or(100000.) - smallest);
                 }
             }
         }
