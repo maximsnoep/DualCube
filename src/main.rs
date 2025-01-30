@@ -706,6 +706,8 @@ pub fn handle_events(
                 let path = env::current_dir().unwrap();
                 println!("The current directory is {}", path.display());
 
+                info!("!!!!!!!!!!!!!!!!!!!!! >>>>>>>>>> The current directory is {}", path.display());
+
                 assert!(!fs::exists("./out").expect("./out"));
 
                 let res = fs::write(PathBuf::from(path_save), serde_json::to_string(&state).unwrap());
