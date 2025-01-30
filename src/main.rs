@@ -1182,6 +1182,7 @@ fn raycast(
         println!("Option A: {:?}", cleaned_option_a);
         println!("Option B: {:?}", cleaned_option_b);
 
+        // TODO: check better whether solution exists.
         if cleaned_option_a.is_empty() || cleaned_option_b.is_empty() {
             return;
         }
