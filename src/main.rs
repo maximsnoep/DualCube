@@ -664,9 +664,11 @@ pub fn handle_events(
                     .next()
                     .unwrap();
 
-                let path_save = format!("./out/{n}_{t}.save");
-                let path_obj = format!("./out/{n}_{t}.obj",);
-                let path_flag = format!("./out/{n}_{t}.flag",);
+                // TODO: fix name
+
+                let path_save = format!("./out/{t}.save");
+                let path_obj = format!("./out/{t}.obj",);
+                let path_flag = format!("./out/{t}.flag",);
 
                 let state = SaveStateObject {
                     mesh: (*mesh_resmut.mesh).clone(),
@@ -699,7 +701,8 @@ pub fn handle_events(
                     .split(' ')
                     .next()
                     .unwrap();
-                let path_save = format!("{cur}/out/{n}_{t}.save",);
+
+                let path_save = format!("{cur}/out/{t}.save",);
 
                 let state = SaveStateObject {
                     mesh: (*mesh_resmut.mesh).clone(),
