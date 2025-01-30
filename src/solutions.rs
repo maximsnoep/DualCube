@@ -1553,8 +1553,11 @@ impl Solution {
                     .vert_ids()
                     .iter()
                     .map(|vert_id| {
+                        let edge_id = polycube.structure.outgoing(*vert_id)[0];
+                        let path = layout.edge_to_path.get(&edge_id).unwrap();
+                        let first_vertex = path[0];
                         let vert_int = vert_to_id.get_by_left(vert_id).unwrap();
-                        let pos = polycube.structure.position(*vert_id);
+                        let pos = layout.granulated_mesh.position(first_vertex);
                         format!(
                             "    {}  {}  {}  {}  'VERTEX'",
                             vert_int,
