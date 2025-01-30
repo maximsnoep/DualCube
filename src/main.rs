@@ -32,6 +32,7 @@ use smooth_bevy_cameras::controllers::orbit::OrbitCameraPlugin;
 use smooth_bevy_cameras::LookTransformPlugin;
 use solutions::{Loop, Solution};
 use std::collections::HashMap;
+use std::env;
 use std::fmt::Display;
 use std::fs::{self, File};
 use std::io::BufReader;
@@ -670,6 +671,9 @@ pub fn handle_events(
                     loops: solution.current_solution.loops.values().cloned().collect(),
                     configuration: configuration.clone(),
                 };
+
+                let path = env::current_dir().unwrap();
+                println!("The current directory is {}", path.display());
 
                 assert!(!fs::exists("./out").expect("./out"));
 
