@@ -90,7 +90,13 @@ pub fn reset(commands: &mut Commands, cameras: &Query<Entity, With<Camera>>, ima
             ..default()
         })
         .insert((OrbitCameraBundle::new(
-            OrbitCameraController::default(),
+            OrbitCameraController {
+                mouse_rotate_sensitivity: Vec2::splat(0.08),
+                mouse_translate_sensitivity: Vec2::splat(0.1),
+                mouse_wheel_zoom_sensitivity: 0.2,
+                smoothing_weight: 0.8,
+                ..Default::default()
+            },
             DEFAULT_CAMERA_EYE + Vec3::from(Objects::MeshDualLoops),
             DEFAULT_CAMERA_TARGET + Vec3::from(Objects::MeshDualLoops),
             Vec3::Y,

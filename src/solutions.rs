@@ -1458,10 +1458,7 @@ impl Solution {
 
             let mut file_topol = std::fs::File::create(path_topol)?;
 
-            write!(
-                file_topol,
-                "'topol file from bloopy'\n'MULTIVAC: THERE IS AS YET INSUFFICIENT DATA FOR A MEANINGFUL ANSWER'"
-            )?;
+            write!(file_topol, "'topol file from bloopy'\n'zzzzzz'")?;
 
             // Write all blocks
             write!(file_topol, "\nnr of blocks\n0")?;
@@ -1542,10 +1539,7 @@ impl Solution {
 
             let mut file_geom = std::fs::File::create(path_geom)?;
 
-            write!(
-                file_geom,
-                "'geom file from bloopy'\n'MULTIVAC: THERE IS AS YET INSUFFICIENT DATA FOR A MEANINGFUL ANSWER'"
-            )?;
+            write!(file_geom, "'geom file from bloopy'\n'zzzzzz'")?;
 
             // Write all verts
             write!(file_geom, "\nnr of verts\n{}\n    vert, x y z, 'VERTEX'\n", polycube.structure.vert_ids().len())?;
@@ -1602,10 +1596,7 @@ impl Solution {
 
             let mut file_cdim = std::fs::File::create(path_cdim)?;
 
-            write!(
-                file_cdim,
-                "'cdim file from bloopy'\n'MULTIVAC: THERE IS AS YET INSUFFICIENT DATA FOR A MEANINGFUL ANSWER'"
-            )?;
+            write!(file_cdim, "'cdim file from bloopy'\n'zzzzzz'")?;
 
             // Write all edge lengths
             let loops = self.loops.keys();
