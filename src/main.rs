@@ -637,9 +637,9 @@ pub fn handle_events(
                     .next()
                     .unwrap();
 
-                let path_topol = format!("{cur}/out/{n}_{t}.topol");
-                let path_geom = format!("{cur}/out/{n}_{t}.geom",);
-                let path_cdim = format!("{cur}/out/{n}_{t}.cdim",);
+                let path_topol = format!("{cur}/out/{t}.topol");
+                let path_geom = format!("{cur}/out/{t}.geom",);
+                let path_cdim = format!("{cur}/out/{t}.cdim",);
 
                 solution
                     .current_solution
