@@ -1487,12 +1487,12 @@ impl Solution {
                             .or(edge_to_id.get_by_left(&polycube.structure.twin(edges[0])))
                             .unwrap();
                         let edge_int2 = edge_to_id
-                            .get_by_left(&edges[1])
-                            .or(edge_to_id.get_by_left(&polycube.structure.twin(edges[1])))
-                            .unwrap();
-                        let edge_int3 = edge_to_id
                             .get_by_left(&edges[2])
                             .or(edge_to_id.get_by_left(&polycube.structure.twin(edges[2])))
+                            .unwrap();
+                        let edge_int3 = edge_to_id
+                            .get_by_left(&edges[1])
+                            .or(edge_to_id.get_by_left(&polycube.structure.twin(edges[1])))
                             .unwrap();
                         let edge_int4 = edge_to_id
                             .get_by_left(&edges[3])
@@ -1539,7 +1539,9 @@ impl Solution {
 
             let mut file_geom = std::fs::File::create(path_geom)?;
 
-            write!(file_geom, "'geom file from bloopy'\n'zzzzzz'")?;
+            write!(file_geom, "'geom file from bloopy'")?;
+
+            let mut buffer = ryu::Buffer::new();
 
             // Write all verts
             write!(file_geom, "\nnr of verts\n{}\n    vert, x y z, 'VERTEX'\n", polycube.structure.vert_ids().len())?;
@@ -1553,7 +1555,13 @@ impl Solution {
                     .map(|vert_id| {
                         let vert_int = vert_to_id.get_by_left(vert_id).unwrap();
                         let pos = polycube.structure.position(*vert_id);
-                        format!("    {}  {}  {}  {}  'VERTEX'", vert_int, pos.x, pos.y, pos.z)
+                        format!(
+                            "    {}  {}  {}  {}  'VERTEX'",
+                            vert_int,
+                            buffer.clone().format(pos.x),
+                            buffer.clone().format(pos.y),
+                            buffer.clone().format(pos.z)
+                        )
                     })
                     .collect::<Vec<_>>()
                     .join("\n")
@@ -1581,7 +1589,12 @@ impl Solution {
                                         .iter()
                                         .map(|&point| {
                                             let pos = layout.granulated_mesh.position(point);
-                                            format!("  {}  {}  {}", pos.x, pos.y, pos.z)
+                                            format!(
+                                                "  {}  {}  {}",
+                                                buffer.clone().format(pos.x),
+                                                buffer.clone().format(pos.y),
+                                                buffer.clone().format(pos.z)
+                                            )
                                         })
                                         .collect::<Vec<_>>()
                                         .join("\n"),
