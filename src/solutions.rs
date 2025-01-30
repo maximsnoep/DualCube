@@ -1511,7 +1511,7 @@ impl Solution {
             write!(
                 file_topol,
                 "\nnr of edges\n{}\n    edge,  vert1, vert2, 'EDGE'\n",
-                polycube.structure.edge_ids().len()
+                polycube.structure.edge_ids().len() / 2
             )?;
             write!(
                 file_topol,
