@@ -707,6 +707,11 @@ pub fn handle_events(
                     configuration: configuration.clone(),
                 };
 
+                info!("writing to {cur}/out/{n}_{t}.save");
+                info!("writing to {cur}/out/{n}_{t}.save");
+                info!("writing to {cur}/out/{n}_{t}.save");
+                info!("writing to {cur}/out/{n}_{t}.save");
+
                 let res = fs::write(PathBuf::from(path_save), serde_json::to_string(&state).unwrap());
                 info!("{:?}", res);
             }
