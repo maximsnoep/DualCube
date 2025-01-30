@@ -1458,7 +1458,7 @@ impl Solution {
 
             let mut file_topol = std::fs::File::create(path_topol)?;
 
-            write!(file_topol, "'topol file from bloopy'\n'zzzzzz'")?;
+            write!(file_topol, "'topol file from bloopy'\n'2nd line'\n'3rd line'\n'4th line'\n'5th line'")?;
 
             // Write all blocks
             write!(file_topol, "\nnr of blocks\n0")?;
@@ -1563,7 +1563,7 @@ impl Solution {
             write!(
                 file_geom,
                 "\nnr of edges\n{}\n    edge, number of points, x y z for each point\n",
-                polycube.structure.edge_ids().len()
+                polycube.structure.edge_ids().len() / 2
             )?;
             write!(
                 file_geom,
