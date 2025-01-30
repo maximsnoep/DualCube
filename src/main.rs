@@ -19,7 +19,7 @@ use douconel::douconel::Douconel;
 use douconel::{douconel::Empty, douconel_embedded::EmbeddedVertex};
 use dual::Orientation;
 use graph::Graaf;
-use hutspot::consts::PI;
+use hutspot::consts::{EPS, PI};
 use hutspot::geom::Vector3D;
 use itertools::Itertools;
 use kdtree::distance::squared_euclidean;
@@ -588,7 +588,7 @@ pub fn handle_events(
                                     // Whichever angle is shorter is the "real" angle
                                     let angle = f64::min(angle_around_m1, angle_around_m2);
 
-                                    if !(0. ..=PI).contains(&angle) {
+                                    if !(0. ..=PI + EPS).contains(&angle) {
                                         warn!("{angle} is degenerate!!!");
                                     }
 
