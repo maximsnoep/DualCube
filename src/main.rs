@@ -672,11 +672,6 @@ pub fn handle_events(
                     configuration: configuration.clone(),
                 };
 
-                let path = env::current_dir().unwrap();
-                println!("The current directory is {}", path.display());
-
-                assert!(!fs::exists("./out").expect("./out"));
-
                 fs::write(&PathBuf::from(path_save), serde_json::to_string(&state).unwrap());
 
                 solution.current_solution.export(&PathBuf::from(path_obj), &PathBuf::from(path_flag));
@@ -707,6 +702,11 @@ pub fn handle_events(
                     loops: solution.current_solution.loops.values().cloned().collect(),
                     configuration: configuration.clone(),
                 };
+
+                let path = env::current_dir().unwrap();
+                println!("The current directory is {}", path.display());
+
+                assert!(!fs::exists("./out").expect("./out"));
 
                 let res = fs::write(PathBuf::from(path_save), serde_json::to_string(&state).unwrap());
                 info!("{:?}", res);
