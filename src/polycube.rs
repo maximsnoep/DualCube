@@ -126,7 +126,7 @@ impl Polycube {
                 if let Some(coordinate) = zone_to_target.get(&zone).copied() {
                     zone_to_coordinate.insert(
                         zone,
-                        (dependencies.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap() - smallest).min(coordinate),
+                        (dependencies.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(&1000000.) - smallest).min(coordinate),
                     );
                 } else {
                     zone_to_coordinate.insert(
