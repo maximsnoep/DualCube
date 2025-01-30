@@ -1610,7 +1610,7 @@ impl Solution {
                     .join("\n")
             )?;
 
-            write!(file_geom, "nr of faces\n0");
+            write!(file_geom, "\nnr of faces\n0");
 
             let mut file_cdim = std::fs::File::create(path_cdim)?;
 
