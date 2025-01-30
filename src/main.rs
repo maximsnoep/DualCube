@@ -1182,6 +1182,10 @@ fn raycast(
         println!("Option A: {:?}", cleaned_option_a);
         println!("Option B: {:?}", cleaned_option_b);
 
+        if cleaned_option_a.is_empty() || cleaned_option_b.is_empty() {
+            return;
+        }
+
         let weight_option_a: f64 = cleaned_option_a
             .chunks(2)
             .map(|window| [window[0], window[1]])
