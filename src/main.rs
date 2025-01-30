@@ -588,7 +588,7 @@ pub fn handle_events(
                                     // Whichever angle is shorter is the "real" angle
                                     let angle = f64::min(angle_around_m1, angle_around_m2);
 
-                                    if !(0..=PI).contains(&angle) {
+                                    if !(0. ..=PI).contains(&angle) {
                                         warn!("{angle} is degenerate!!!");
                                     }
 
