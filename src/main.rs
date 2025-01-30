@@ -621,6 +621,8 @@ pub fn handle_events(
                 solution.current_solution.reconstruct_solution();
             }
             ActionEvent::ExportNLR => {
+                let cur = format!("{}", env::current_dir().unwrap().clone().display());
+
                 let t = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards").as_secs();
                 let n = mesh_resmut
                     .properties
@@ -635,9 +637,9 @@ pub fn handle_events(
                     .next()
                     .unwrap();
 
-                let path_topol = format!("./out/{n}_{t}.topol");
-                let path_geom = format!("./out/{n}_{t}.geom",);
-                let path_cdim = format!("./out/{n}_{t}.cdim",);
+                let path_topol = format!("{cur}/out/{n}_{t}.topol");
+                let path_geom = format!("{cur}/out/{n}_{t}.geom",);
+                let path_cdim = format!("{cur}/out/{n}_{t}.cdim",);
 
                 solution
                     .current_solution
@@ -682,6 +684,8 @@ pub fn handle_events(
                     return;
                 }
 
+                let cur = format!("{}", env::current_dir().unwrap().clone().display());
+
                 let t = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards").as_secs();
                 let n = mesh_resmut
                     .properties
@@ -695,20 +699,13 @@ pub fn handle_events(
                     .split(' ')
                     .next()
                     .unwrap();
-                let path_save = format!("./out/{n}_{t}.save",);
+                let path_save = format!("{cur}/out/{n}_{t}.save",);
 
                 let state = SaveStateObject {
                     mesh: (*mesh_resmut.mesh).clone(),
                     loops: solution.current_solution.loops.values().cloned().collect(),
                     configuration: configuration.clone(),
                 };
-
-                let path = env::current_dir().unwrap();
-                println!("The current directory is {}", path.display());
-
-                info!("!!!!!!!!!!!!!!!!!!!!! >>>>>>>>>> The current directory is {}", path.display());
-
-                assert!(!fs::exists("./out").expect("./out"));
 
                 let res = fs::write(PathBuf::from(path_save), serde_json::to_string(&state).unwrap());
                 info!("{:?}", res);
