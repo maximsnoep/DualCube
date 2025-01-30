@@ -1607,6 +1607,8 @@ impl Solution {
                     .join("\n")
             )?;
 
+            write!(file_geom, "nr of faces\n0");
+
             let mut file_cdim = std::fs::File::create(path_cdim)?;
 
             write!(file_cdim, "'cdim file from bloopy'\n'zzzzzz'")?;
