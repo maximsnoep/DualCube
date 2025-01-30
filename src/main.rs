@@ -702,7 +702,8 @@ pub fn handle_events(
                     configuration: configuration.clone(),
                 };
 
-                fs::write(PathBuf::from(path_save), serde_json::to_string(&state).unwrap());
+                let res = fs::write(PathBuf::from(path_save), serde_json::to_string(&state).unwrap());
+                info!("{}", res);
             }
 
             ActionEvent::ExportSolution => {
