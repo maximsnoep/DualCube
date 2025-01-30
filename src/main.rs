@@ -703,7 +703,7 @@ pub fn handle_events(
                 };
 
                 let res = fs::write(PathBuf::from(path_save), serde_json::to_string(&state).unwrap());
-                info!("{}", res);
+                info!("{:?}", res);
             }
 
             ActionEvent::ExportSolution => {
