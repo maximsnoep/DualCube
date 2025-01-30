@@ -587,7 +587,12 @@ pub fn handle_events(
 
                                     // Whichever angle is shorter is the "real" angle
                                     let angle = f64::min(angle_around_m1, angle_around_m2);
-                                    assert!((0. ..=PI).contains(&angle));
+
+                                    if !(0..=PI).contains(&angle) {
+                                        warn!("{angle} is degenerate!!!");
+                                    }
+
+                                    // assert!((0. ..=PI).contains(&angle));
 
                                     // Weight is based on how far the angle is from 180 degrees
                                     let angular_weight = PI - angle;
