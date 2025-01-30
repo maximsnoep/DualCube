@@ -1182,55 +1182,15 @@ fn raycast(
             cleaned_option_a = cleaned_option_b.clone();
         }
 
-        let measure2 = |(a, b, c): (f64, f64, f64)| b.powi(10);
-
-        println!("Option A: {:?}", cleaned_option_a);
-        println!("Option B: {:?}", cleaned_option_b);
-
-        // TODO: check better whether solution exists.
-        if cleaned_option_a.is_empty() || cleaned_option_b.is_empty() {
-            return;
-        }
-
-        let weight_option_a: f64 = cleaned_option_a
-            .chunks(2)
-            .map(|window| [window[0], window[1]])
-            .collect_vec()
-            .windows(2)
-            .map(|pairs| {
-                let pair1 = pairs[0];
-                let pair2 = pairs[1];
-
-                let pair1_node = g.node_to_index(&pair1).unwrap();
-                let pair2_node = g.node_to_index(&pair2).unwrap();
-
-                let weight = g.get_weight(pair1_node, pair2_node);
-                measure2(weight)
-            })
-            .sum();
-
-        let weight_option_b: f64 = cleaned_option_b
-            .chunks(2)
-            .map(|window| [window[0], window[1]])
-            .collect_vec()
-            .windows(2)
-            .map(|pairs| {
-                let pair1 = pairs[0];
-                let pair2 = pairs[1];
-
-                let pair1_node = g.node_to_index(&pair1).unwrap();
-                let pair2_node = g.node_to_index(&pair2).unwrap();
-
-                let weight = g.get_weight(pair1_node, pair2_node);
-                measure2(weight)
-            })
-            .sum();
-
-        let best_option = if weight_option_a > weight_option_b {
+        let best_option = if cleaned_option_b.len() > cleaned_option_a.len() {
             cleaned_option_b
         } else {
             cleaned_option_a
         };
+
+        if best_option.len() <= 5 {
+            return;
+        }
 
         timer.report("Path computation");
         timer.reset();
