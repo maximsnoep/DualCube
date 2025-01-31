@@ -1,5 +1,5 @@
 use crate::render::{CameraFor, Objects};
-use crate::{to_color, ActionEvent, CameraHandles, Configuration, InputResource, Perspective, SolutionResource};
+use crate::{dual, to_color, ActionEvent, CameraHandles, Configuration, InputResource, Perspective, SolutionResource};
 use crate::{HexMeshStatus, PrincipalDirection};
 use bevy::prelude::*;
 use bevy_egui::egui::{emath::Numeric, text::LayoutJob, Align, Color32, FontId, Frame, Layout, Slider, TextFormat, TopBottomPanel, Ui, Window};
@@ -40,11 +40,185 @@ pub fn setup(mut ui: bevy_egui::EguiContexts) {
     });
 }
 
+fn header(ui: &mut Ui, ev_w: &mut EventWriter<ActionEvent>, mesh: &Res<InputResource>, solution: &Res<SolutionResource>) {
+    ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
+        Frame {
+            outer_margin: bevy_egui::egui::epaint::Margin::symmetric(15., 0.),
+            shadow: bevy_egui::egui::epaint::Shadow::NONE,
+            ..default()
+        }
+        .show(ui, |ui| {
+            bevy_egui::egui::menu::bar(ui, |ui| {
+                bevy_egui::egui::menu::menu_button(ui, "File", |ui| {
+                    if ui.button("Load").clicked() {
+                        if let Some(path) = rfd::FileDialog::new().add_filter("triangulated geometry", &["obj", "stl", "save"]).pick_file() {
+                            ev_w.send(ActionEvent::LoadFile(path));
+                        }
+                    }
+                    ui.add_space(5.);
+                    ui.separator();
+                    ui.add_space(5.);
+                    if ui.button("Export SAVE").clicked() {
+                        ev_w.send(ActionEvent::ExportState);
+                    }
+                    ui.add_space(5.);
+                    if ui.button("Export FLAG").clicked() {
+                        ev_w.send(ActionEvent::ExportSolution);
+                    }
+                    ui.add_space(5.);
+                    if ui.button("Export NLR").clicked() {
+                        ev_w.send(ActionEvent::ExportNLR);
+                    }
+                    ui.add_space(5.);
+                    ui.separator();
+                    ui.add_space(5.);
+                    if ui.button("Quit").clicked() {
+                        std::process::exit(0);
+                    }
+                });
+
+                ui.separator();
+
+                bevy_egui::egui::menu::menu_button(ui, "Info", |ui| {
+                    if mesh.properties.source.is_empty() {
+                        ui.label("No file loaded.");
+                    } else {
+                        ui.label(tico(
+                            &mesh
+                                .properties
+                                .source
+                                .to_string()
+                                .chars()
+                                .map(|ch| if ch == '\\' { '/' } else { ch })
+                                .collect::<String>(),
+                            None,
+                        ));
+                        ui.add_space(5.);
+                        ui.label(format!(
+                            "|Vm|: {}\n|Em|: {}\n|Fm|: {}",
+                            mesh.mesh.nr_verts(),
+                            mesh.mesh.nr_edges() / 2,
+                            mesh.mesh.nr_faces()
+                        ));
+                    }
+
+                    if let Some(polycube) = &solution.current_solution.polycube {
+                        ui.add_space(5.);
+                        ui.label(format!(
+                            "|Vp|: {}\n|Ep|: {}\n|Fp|: {}",
+                            polycube.structure.nr_verts(),
+                            polycube.structure.nr_edges() / 2,
+                            polycube.structure.nr_faces()
+                        ));
+                    }
+                });
+
+                ui.separator();
+
+                bevy_egui::egui::menu::menu_button(ui, "Controls", |ui| {
+                    ui.label("CAMERA");
+                    ui.add_space(2.);
+                    ui.label("  Rotate: ctrl + right-mouse-drag");
+                    ui.add_space(1.);
+                    ui.label("  Pan: left-mouse-drag");
+                    ui.add_space(1.);
+                    ui.label("  Zoom: mouse-scroll");
+                    ui.add_space(2.);
+                    ui.separator();
+                    ui.add_space(2.);
+                    ui.label("MANUAL");
+                    ui.add_space(2.);
+                    ui.label("  Add loop: right-mouse-click");
+                    ui.add_space(1.);
+                    ui.label("  Delete loop: space + right-mouse-click");
+
+                    // Slider for sensitivity
+                    ui.add_space(5.);
+                    ui.horizontal(|ui| {
+                        ui.label("Sensitivity");
+                        ui.add_space(5.);
+                        // ui.add(Slider::new(&mut mesh.properties.sensitivity, 0.0..=1.0).text(text("")));
+                    });
+
+                    ui.add_space(5.);
+                    ui.horizontal(|ui| {
+                        ui.label("Sensitivity");
+                        ui.add_space(5.);
+                        // ui.add(Slider::new(&mut mesh.properties.sensitivity, 0.0..=1.0).text(text("")));
+                    });
+                });
+            });
+        });
+    });
+}
+
+fn footer(egui_ctx: &mut bevy_egui::EguiContexts, conf: &mut Configuration, solution: &SolutionResource, time: &Time) {
+    TopBottomPanel::bottom("footer").show_separator_line(false).show(egui_ctx.ctx_mut(), |ui| {
+        ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
+            // Left side: Display FPS and loading animation
+            ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
+                ui.add_space(15.);
+                display_fps_and_loading(ui, conf.fps, time);
+            });
+
+            // Center: Display status of dual, embd, alignment, and orthogonality
+            ui.vertical_centered(|ui| {
+                let mut job = LayoutJob::default();
+                append_status(&mut job, "dual", &solution.current_solution.dual);
+                display_label(&mut job, " | ");
+                append_status(&mut job, "primal", &solution.current_solution.layout);
+                display_label(&mut job, " | ");
+                display_label(&mut job, &format!("quality: {value:.3}", value = solution.current_solution.get_quality()));
+                ui.label(job);
+            });
+
+            // Right side: Display fixed label
+            ui.with_layout(Layout::right_to_left(Align::TOP), |ui| {
+                ui.add_space(15.);
+                let mut job = LayoutJob::default();
+                display_label(&mut job, "maxim snoep \\ tue \\ nlr");
+                ui.label(job);
+            });
+        });
+
+        conf.ui_is_hovered[1] = ui.ui_contains_pointer();
+    });
+}
+
+fn display_fps_and_loading(ui: &mut Ui, fps: f64, time: &Time) {
+    let mut job = LayoutJob::default();
+    job.append(&format!("{fps:.0}"), 0.0, text_format(9.0, Color32::WHITE));
+    ui.label(job);
+
+    let elapsed = (time.elapsed_seconds() / 4.) % 1.;
+    let label = match elapsed {
+        x if x < 0.25 => " . ",
+        x if x < 0.5 => ".. ",
+        x if x < 0.75 => "...",
+        _ => " ..",
+    };
+    job = LayoutJob::default();
+    job.append(label, 0.0, text_format(9.0, Color32::WHITE));
+    ui.label(job);
+}
+
+fn append_status<T>(job: &mut LayoutJob, label: &str, result: &Result<T, dual::PropertyViolationError>) {
+    job.append(&format!("{label}: "), 0.0, text_format(9.0, Color32::WHITE));
+    match result {
+        Ok(_) => job.append("Ok", 0.0, text_format(9.0, Color32::GREEN)),
+        Err(err) => job.append(&format!("{err:?}"), 0.0, text_format(9.0, Color32::RED)),
+    }
+}
+
+fn display_label(job: &mut LayoutJob, label: &str) {
+    job.append(label, 0.0, text_format(9.0, Color32::WHITE));
+}
+
 pub fn update(
     mut egui_ctx: bevy_egui::EguiContexts,
     mut ev_w: EventWriter<ActionEvent>,
     mut conf: ResMut<Configuration>,
-    mut mesh_resmut: ResMut<InputResource>,
+    mesh: Res<InputResource>,
     solution: Res<SolutionResource>,
     time: Res<Time>,
     image_handle: Res<CameraHandles>,
@@ -55,100 +229,7 @@ pub fn update(
         ui.horizontal(|ui| {
             ui.with_layout(Layout::top_down(Align::TOP), |ui| {
                 // FIRST ROW
-                ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
-                    Frame {
-                        outer_margin: bevy_egui::egui::epaint::Margin::symmetric(15., 0.),
-                        shadow: bevy_egui::egui::epaint::Shadow::NONE,
-                        ..default()
-                    }
-                    .show(ui, |ui| {
-                        bevy_egui::egui::menu::bar(ui, |ui| {
-                            bevy_egui::egui::menu::menu_button(ui, "File", |ui| {
-                                if ui.button("Load").clicked() {
-                                    if let Some(path) = rfd::FileDialog::new().add_filter("triangulated geometry", &["obj", "stl", "save"]).pick_file() {
-                                        ev_w.send(ActionEvent::LoadFile(path));
-                                    }
-                                }
-                                ui.add_space(5.);
-                                ui.separator();
-                                ui.add_space(5.);
-                                if ui.button("Export SAVE").clicked() {
-                                    ev_w.send(ActionEvent::ExportState);
-                                }
-                                ui.add_space(5.);
-                                if ui.button("Export FLAG").clicked() {
-                                    ev_w.send(ActionEvent::ExportSolution);
-                                }
-                                ui.add_space(5.);
-                                if ui.button("Export NLR").clicked() {
-                                    ev_w.send(ActionEvent::ExportNLR);
-                                }
-                                ui.add_space(5.);
-                                ui.separator();
-                                ui.add_space(5.);
-                                if ui.button("Quit").clicked() {
-                                    std::process::exit(0);
-                                }
-                            });
-
-                            ui.separator();
-
-                            bevy_egui::egui::menu::menu_button(ui, "Info", |ui| {
-                                if mesh_resmut.properties.source.is_empty() {
-                                    ui.label("No file loaded.");
-                                } else {
-                                    ui.label(tico(
-                                        &mesh_resmut
-                                            .properties
-                                            .source
-                                            .to_string()
-                                            .chars()
-                                            .map(|ch| if ch == '\\' { '/' } else { ch })
-                                            .collect::<String>(),
-                                        None,
-                                    ));
-                                    ui.add_space(5.);
-                                    ui.label(format!(
-                                        "|Vm|: {}\n|Em|: {}\n|Fm|: {}",
-                                        mesh_resmut.mesh.nr_verts(),
-                                        mesh_resmut.mesh.nr_edges() / 2,
-                                        mesh_resmut.mesh.nr_faces()
-                                    ));
-                                }
-
-                                if let Some(polycube) = &solution.current_solution.polycube {
-                                    ui.add_space(5.);
-                                    ui.label(format!(
-                                        "|Vp|: {}\n|Ep|: {}\n|Fp|: {}",
-                                        polycube.structure.nr_verts(),
-                                        polycube.structure.nr_edges() / 2,
-                                        polycube.structure.nr_faces()
-                                    ));
-                                }
-                            });
-
-                            ui.separator();
-
-                            bevy_egui::egui::menu::menu_button(ui, "Controls", |ui| {
-                                ui.label("CAMERA");
-                                ui.add_space(2.);
-                                ui.label("  Rotate: ctrl + right-mouse-drag");
-                                ui.add_space(1.);
-                                ui.label("  Pan: left-mouse-drag");
-                                ui.add_space(1.);
-                                ui.label("  Zoom: mouse-scroll");
-                                ui.add_space(2.);
-                                ui.separator();
-                                ui.add_space(2.);
-                                ui.label("MANUAL");
-                                ui.add_space(2.);
-                                ui.label("  Add loop: right-mouse-click");
-                                ui.add_space(1.);
-                                ui.label("  Delete loop: space + right-mouse-click");
-                            });
-                        });
-                    });
-                });
+                header(ui, &mut ev_w, &mesh, &solution);
 
                 ui.add_space(5.);
 
@@ -310,75 +391,7 @@ pub fn update(
         conf.ui_is_hovered[0] = ui.ui_contains_pointer();
     });
 
-    TopBottomPanel::bottom("footer").show_separator_line(false).show(egui_ctx.ctx_mut(), |ui| {
-        ui.horizontal(|ui| {
-            ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
-                // LEFT SIDE
-                ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
-                    ui.add_space(15.);
-
-                    let mut job = LayoutJob::default();
-                    job.append(&format!("{:.0}", conf.fps), 0.0, text_format(9.0, Color32::WHITE));
-                    ui.label(job);
-
-                    ui.add_space(5.);
-
-                    let mut job = LayoutJob::default();
-                    let elapsed = (time.elapsed_seconds() / 4.) % 1.;
-                    let label = if elapsed < 0.25 {
-                        " . "
-                    } else if elapsed < 0.5 {
-                        ".. "
-                    } else if elapsed < 0.75 {
-                        "..."
-                    } else {
-                        " .."
-                    };
-                    job.append(label, 0.0, text_format(9.0, Color32::WHITE));
-                    ui.label(job);
-                });
-
-                // CENTER
-                ui.vertical_centered(|ui| {
-                    let mut job = LayoutJob::default();
-                    job.append("dual", 0.0, text_format(9.0, Color32::WHITE));
-                    job.append("[", 0.0, text_format(9.0, Color32::WHITE));
-                    match &solution.current_solution.dual {
-                        Ok(_) => job.append("Ok", 0.0, text_format(9.0, Color32::GREEN)),
-                        Err(err) => job.append(&format!("{:?}", err), 0.0, text_format(9.0, Color32::RED)),
-                    }
-                    job.append("]", 0.0, text_format(9.0, Color32::WHITE));
-                    job.append("embd", 5.0, text_format(9.0, Color32::WHITE));
-                    job.append("[", 0.0, text_format(9.0, Color32::WHITE));
-                    match &solution.current_solution.layout {
-                        Ok(_) => job.append("Ok", 0.0, text_format(9.0, Color32::GREEN)),
-                        Err(err) => job.append(&format!("{:?}", err), 0.0, text_format(9.0, Color32::RED)),
-                    }
-                    job.append("]", 0.0, text_format(9.0, Color32::WHITE));
-                    if let Some(alignment) = solution.current_solution.alignment {
-                        job.append("align", 5.0, text_format(9.0, Color32::WHITE));
-                        job.append(&format!("[{alignment:.3}]"), 0.0, text_format(9.0, Color32::WHITE));
-                    }
-                    if let Some(orthogonality) = solution.current_solution.orthogonality {
-                        job.append("orth", 5.0, text_format(9.0, Color32::WHITE));
-                        job.append(&format!("[{orthogonality:.3}]"), 0.0, text_format(9.0, Color32::WHITE));
-                    }
-                    ui.label(job);
-                });
-
-                // RIGHT SIDE
-                ui.with_layout(Layout::right_to_left(Align::TOP), |ui| {
-                    ui.add_space(15.);
-
-                    let mut job = LayoutJob::default();
-                    job.append("maxim snoep", 0.0, text_format(9.0, Color32::WHITE));
-                    ui.label(job);
-                });
-            });
-        });
-
-        conf.ui_is_hovered[1] = ui.ui_contains_pointer();
-    });
+    footer(&mut egui_ctx, &mut conf, &solution, &time);
 
     bevy_egui::egui::CentralPanel::default()
         .frame(Frame {
