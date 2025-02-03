@@ -215,7 +215,7 @@ pub fn update(
     mut gizmos_cache: ResMut<GizmosCache>,
     mut cameras: Query<(&mut Transform, &mut Projection, &CameraFor)>,
 ) {
-    let flat_edges = false;
+    let flat_edges = true;
     let main_transform = cameras.iter().find(|(_, _, camera_for)| camera_for.0 == Objects::MeshDualLoops).unwrap().0;
     let normalized_translation = main_transform.translation - Vec3::from(Objects::MeshDualLoops);
     let normalized_rotation = main_transform.rotation;

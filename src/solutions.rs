@@ -388,7 +388,8 @@ impl Solution {
 
     pub fn resize_polycube(&mut self) {
         if let (Ok(dual), Some(polycube), Ok(layout)) = (&self.dual, &mut self.polycube, &self.layout) {
-            polycube.resize(dual, Some(layout));
+            // polycube.resize(dual, Some(layout), None);
+            polycube.find_intersectionfree_embedding(dual, Some(layout));
         }
     }
 

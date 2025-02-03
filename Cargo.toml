@@ -6,6 +6,8 @@ edition = "2021"
 [profile.release]
 lto = true
 codgen-units = 1
+opt-level = 3
+
 
 [profile.dev]
 opt-level = 3
@@ -53,3 +55,4 @@ enum-iterator = "2.1.0"
 graph-cycles = "0.1.0"
 ahash = "0.8.11"
 ryu = "1.0.19"
+microlp = "0.2.9"
