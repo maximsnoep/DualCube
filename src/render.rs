@@ -29,13 +29,7 @@ pub enum Objects {
     PolycubeDual,
     PolycubePrimal,
     MeshPolycubeLayout,
-    MeshInput,
     MeshAlignmentScore,
-    MeshOrthogonalityScore,
-    MeshPolycubeLabeling,
-    PolycubePrimalPolyhedron,
-    Debug,
-    Debug2,
 }
 
 impl From<Objects> for String {
@@ -44,14 +38,8 @@ impl From<Objects> for String {
             Objects::MeshDualLoops => "dual loops",
             Objects::PolycubeDual => "polycube (dual)",
             Objects::PolycubePrimal => "polycube (primal)",
-            Objects::MeshPolycubeLayout => "embedded layout",
-            Objects::MeshInput => "input mesh",
+            Objects::MeshPolycubeLayout => "polycube segmentation",
             Objects::MeshAlignmentScore => "alignment (score)",
-            Objects::MeshOrthogonalityScore => "orthogonality (score)",
-            Objects::MeshPolycubeLabeling => "polycube labeling",
-            Objects::PolycubePrimalPolyhedron => "polycube polyhedron",
-            Objects::Debug => "debug #1",
-            Objects::Debug2 => "debug #2",
         }
         .to_owned()
     }
@@ -64,13 +52,7 @@ impl From<Objects> for Vec3 {
             Objects::PolycubeDual => Self::new(1_000., 0., 0.),
             Objects::PolycubePrimal => Self::new(1_000., 1_000., 0.),
             Objects::MeshPolycubeLayout => Self::new(1_000., 1_000., 1_000.),
-            Objects::MeshInput => Self::new(1_000., 0., 1_000.),
             Objects::MeshAlignmentScore => Self::new(0., 1_000., 0.),
-            Objects::MeshOrthogonalityScore => Self::new(0., 1_000., 1_000.),
-            Objects::MeshPolycubeLabeling => Self::new(-1_000., 0., 0.),
-            Objects::PolycubePrimalPolyhedron => Self::new(-1_000., 1_000., 0.),
-            Objects::Debug => Self::new(0_000., 0_000., 1_000.),
-            Objects::Debug2 => Self::new(0_000., 0_000., -1_000.),
         }
     }
 }
@@ -215,7 +197,6 @@ pub fn update(
     mut gizmos_cache: ResMut<GizmosCache>,
     mut cameras: Query<(&mut Transform, &mut Projection, &CameraFor)>,
 ) {
-    let flat_edges = true;
     let main_transform = cameras.iter().find(|(_, _, camera_for)| camera_for.0 == Objects::MeshDualLoops).unwrap().0;
     let normalized_translation = main_transform.translation - Vec3::from(Objects::MeshDualLoops);
     let normalized_rotation = main_transform.rotation;
@@ -241,7 +222,11 @@ pub fn update(
     }
     info!("Objects despawned.");
 
-    gizmos_cache.lines.clear();
+    gizmos_cache.wireframe.clear();
+    gizmos_cache.wireframe_granulated.clear();
+    gizmos_cache.loops.clear();
+    gizmos_cache.paths.clear();
+    gizmos_cache.flat_edges.clear();
     info!("Gizmos cache cleared.");
 
     if mesh_resmut.mesh.faces.is_empty() {
@@ -255,6 +240,46 @@ pub fn update(
         unlit: true,
         ..default()
     });
+
+    for object in [Objects::MeshAlignmentScore, Objects::MeshDualLoops, Objects::MeshPolycubeLayout] {
+        let (_, translation, scale) = get_mesh(&(*mesh_resmut.mesh).clone(), &HashMap::new());
+        for edge_id in mesh_resmut.mesh.edge_ids() {
+            let (u_id, v_id) = mesh_resmut.mesh.endpoints(edge_id);
+            let u = mesh_resmut.mesh.position(u_id);
+            let v = mesh_resmut.mesh.position(v_id);
+            let n = mesh_resmut.mesh.edge_normal(edge_id);
+            add_line2(
+                &mut gizmos_cache.wireframe,
+                u,
+                v,
+                n * 0.005,
+                hutspot::color::GRAY,
+                translation + Vec3::from(object),
+                scale,
+            );
+        }
+    }
+
+    for object in [Objects::MeshAlignmentScore, Objects::MeshDualLoops, Objects::MeshPolycubeLayout] {
+        if let Ok(layout) = solution.current_solution.layout.as_ref() {
+            let (_, translation, scale) = get_mesh(&(layout.granulated_mesh).clone(), &HashMap::new());
+            for edge_id in layout.granulated_mesh.edge_ids() {
+                let (u_id, v_id) = layout.granulated_mesh.endpoints(edge_id);
+                let u = layout.granulated_mesh.position(u_id);
+                let v = layout.granulated_mesh.position(v_id);
+                let n = layout.granulated_mesh.edge_normal(edge_id);
+                add_line2(
+                    &mut gizmos_cache.wireframe_granulated,
+                    u,
+                    v,
+                    n * 0.005,
+                    hutspot::color::GRAY,
+                    translation + Vec3::from(object),
+                    scale,
+                );
+            }
+        }
+    }
 
     for object in all::<Objects>() {
         match object {
@@ -288,18 +313,12 @@ pub fn update(
                             },
                         };
                         let color = to_color(direction, Perspective::Dual, Some(orientation));
-                        for edgepair in solution.current_solution.get_pairs_of_sequence(&dual.segment_to_edges(segment_id)) {
-                            let u = mesh_resmut.mesh.midpoint(edgepair[0]);
-                            let v = mesh_resmut.mesh.midpoint(edgepair[1]);
-                            // let u = solution.current_solution.get_coordinates_of_loop_in_edge(loop_id, edgepair[0]);
-                            // let v = solution.current_solution.get_coordinates_of_loop_in_edge(loop_id, edgepair[1]);
-
-                            let n = mesh_resmut.mesh.edge_normal(edgepair[0]);
+                        for [u, v] in solution.current_solution.get_pairs_of_sequence(&dual.segment_to_edges(segment_id)) {
                             add_line2(
-                                &mut gizmos_cache.lines,
-                                u,
-                                v,
-                                offset + n * 0.01,
+                                &mut gizmos_cache.loops,
+                                mesh_resmut.mesh.midpoint(u),
+                                mesh_resmut.mesh.midpoint(v),
+                                mesh_resmut.mesh.edge_normal(u) * 0.01,
                                 color,
                                 translation + Vec3::from(Objects::MeshDualLoops),
                                 scale,
@@ -310,18 +329,12 @@ pub fn update(
                     for loop_id in solution.current_solution.loops.keys() {
                         let direction = solution.current_solution.loop_to_direction(loop_id);
                         let color = to_color(direction, Perspective::Dual, None);
-                        for edgepair in solution.current_solution.get_pairs_of_loop(loop_id) {
-                            // let u = mesh_resmut.mesh.midpoint(edgepair[0]);
-                            // let v = mesh_resmut.mesh.midpoint(edgepair[1]);
-                            let u = solution.current_solution.get_coordinates_of_loop_in_edge(loop_id, edgepair[0]);
-                            let v = solution.current_solution.get_coordinates_of_loop_in_edge(loop_id, edgepair[1]);
-
-                            let n = mesh_resmut.mesh.edge_normal(edgepair[0]);
+                        for [u, v] in solution.current_solution.get_pairs_of_loop(loop_id) {
                             add_line2(
-                                &mut gizmos_cache.lines,
-                                u,
-                                v,
-                                n * 0.01,
+                                &mut gizmos_cache.loops,
+                                mesh_resmut.mesh.midpoint(u),
+                                mesh_resmut.mesh.midpoint(v),
+                                mesh_resmut.mesh.edge_normal(u) * 0.01,
                                 color,
                                 translation + Vec3::from(Objects::MeshDualLoops),
                                 scale,
@@ -329,22 +342,6 @@ pub fn update(
                         }
                     }
                 }
-
-                // for edge_id in mesh_resmut.mesh.edge_ids() {
-                //     let (u_id, v_id) = mesh_resmut.mesh.endpoints(edge_id);
-                //     let u = mesh_resmut.mesh.position(u_id);
-                //     let v = mesh_resmut.mesh.position(v_id);
-                //     let n = mesh_resmut.mesh.edge_normal(edge_id);
-                //     add_line2(
-                //         &mut gizmos_cache.lines,
-                //         u,
-                //         v,
-                //         n * 0.005,
-                //         hutspot::color::GRAY,
-                //         translation + Vec3::from(object),
-                //         scale,
-                //     );
-                // }
             }
             Objects::PolycubeDual => {
                 // if let Some(polycube) = &solution.current_solution.polycube.clone() {
@@ -441,7 +438,7 @@ pub fn update(
                 // }
             }
             Objects::PolycubePrimal => {
-                if let Some(polycube) = &solution.current_solution.polycube.clone() {
+                if let Some(polycube) = &solution.current_solution.polycube {
                     let mut colormap = HashMap::new();
                     for &face_id in &polycube.structure.face_ids() {
                         let normal = (polycube.structure.normal(face_id) as Vector3D).normalize();
@@ -458,24 +455,26 @@ pub fn update(
                     ));
 
                     // Draw the edges of the polycube.
-                    for edge_id in polycube.structure.edge_ids() {
-                        let endpoints = polycube.structure.endpoints(edge_id);
-                        let u = polycube.structure.position(endpoints.0);
-                        let v = polycube.structure.position(endpoints.1);
-                        let f1 = polycube.structure.normal(polycube.structure.face(edge_id));
-                        let f2 = polycube.structure.normal(polycube.structure.face(polycube.structure.twin(edge_id)));
-                        if (f1 == f2) && !flat_edges {
-                            continue;
+                    if configuration.show_gizmos_paths {
+                        for edge_id in polycube.structure.edge_ids() {
+                            let endpoints = polycube.structure.endpoints(edge_id);
+                            let u = polycube.structure.position(endpoints.0);
+                            let v = polycube.structure.position(endpoints.1);
+                            let f1 = polycube.structure.normal(polycube.structure.face(edge_id));
+                            let f2 = polycube.structure.normal(polycube.structure.face(polycube.structure.twin(edge_id)));
+                            let line = DrawableLine::from_line(
+                                u,
+                                v,
+                                polycube.structure.normal(polycube.structure.face(edge_id)) * 0.005,
+                                vec3_to_vector3d(translation + Vec3::from(object)),
+                                scale,
+                            );
+                            if f1 == f2 {
+                                gizmos_cache.flat_edges.push((line.u, line.v, hutspot::color::BLACK));
+                            } else {
+                                gizmos_cache.paths.push((line.u, line.v, hutspot::color::BLACK));
+                            }
                         }
-                        let line = DrawableLine::from_line(
-                            u,
-                            v,
-                            polycube.structure.normal(polycube.structure.face(edge_id)) * 0.005,
-                            vec3_to_vector3d(translation + Vec3::from(object)),
-                            scale,
-                        );
-                        let c = hutspot::color::BLACK;
-                        gizmos_cache.lines.push((line.u, line.v, c));
                     }
                 }
             }
@@ -483,7 +482,6 @@ pub fn update(
                 if let Some(polycube) = &solution.current_solution.polycube {
                     if let Ok(lay) = &solution.current_solution.layout {
                         let mut layout_color_map = HashMap::new();
-
                         for &face_id in &polycube.structure.face_ids() {
                             let normal = (polycube.structure.normal(face_id) as Vector3D).normalize();
                             let (dir, side) = to_principal_direction(normal);
@@ -503,10 +501,6 @@ pub fn update(
                         for (&pedge_id, path) in &lay.edge_to_path {
                             let f1 = polycube.structure.normal(polycube.structure.face(pedge_id));
                             let f2 = polycube.structure.normal(polycube.structure.face(polycube.structure.twin(pedge_id)));
-                            if (f1 == f2) && !flat_edges {
-                                continue;
-                            }
-
                             for vertexpair in path.windows(2) {
                                 if lay.granulated_mesh.edge_between_verts(vertexpair[0], vertexpair[1]).is_none() {
                                     println!("Edge between {:?} and {:?} does not exist", vertexpair[0], vertexpair[1]);
@@ -517,175 +511,19 @@ pub fn update(
                                 let u = lay.granulated_mesh.position(u_id);
                                 let v = lay.granulated_mesh.position(v_id);
                                 let n = lay.granulated_mesh.edge_normal(edge_id);
-                                add_line2(
-                                    &mut gizmos_cache.lines,
-                                    u,
-                                    v,
-                                    n * 0.01,
-                                    hutspot::color::BLACK,
-                                    translation + Vec3::from(object),
-                                    scale,
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-            Objects::MeshInput => {
-                let (mesh, translation, scale) = get_mesh(&(*mesh_resmut.mesh).clone(), &HashMap::new());
-                commands.spawn((
-                    get_pbrbundle(meshes.add(mesh), translation + Vec3::from(object), scale, &standard_material),
-                    RenderedMesh,
-                ));
-
-                for edge_id in mesh_resmut.mesh.edge_ids() {
-                    let (u_id, v_id) = mesh_resmut.mesh.endpoints(edge_id);
-                    let u = mesh_resmut.mesh.position(u_id);
-                    let v = mesh_resmut.mesh.position(v_id);
-                    let n = mesh_resmut.mesh.edge_normal(edge_id);
-                    add_line2(
-                        &mut gizmos_cache.lines,
-                        u,
-                        v,
-                        n * 0.005,
-                        hutspot::color::WHITE,
-                        translation + Vec3::from(object),
-                        scale,
-                    );
-                }
-            }
-            Objects::MeshAlignmentScore => {
-                if let Ok(lay) = &solution.current_solution.layout {
-                    let mut layout_color_map = HashMap::new();
-
-                    for &triangle_id in &lay.granulated_mesh.face_ids() {
-                        let score = solution.current_solution.alignment_per_triangle[triangle_id];
-                        let color = hutspot::color::map(score as f32, &hutspot::color::SCALE_MAGMA);
-                        layout_color_map.insert(triangle_id, color);
-                    }
-
-                    let (mesh, translation, scale) = get_mesh(&lay.granulated_mesh, &layout_color_map);
-                    commands.spawn((
-                        get_pbrbundle(meshes.add(mesh), translation + Vec3::from(object), scale, &standard_material),
-                        RenderedMesh,
-                    ));
-
-                    for path in lay.edge_to_path.values() {
-                        for vertexpair in path.windows(2) {
-                            let edge_id = lay.granulated_mesh.edge_between_verts(vertexpair[0], vertexpair[1]).unwrap().0;
-                            let (u_id, v_id) = lay.granulated_mesh.endpoints(edge_id);
-                            let u = lay.granulated_mesh.position(u_id);
-                            let v = lay.granulated_mesh.position(v_id);
-                            let n = lay.granulated_mesh.edge_normal(edge_id);
-                            add_line2(
-                                &mut gizmos_cache.lines,
-                                u,
-                                v,
-                                n * 0.005,
-                                hutspot::color::BLACK,
-                                translation + Vec3::from(object),
-                                scale,
-                            );
-                        }
-                    }
-                }
-            }
-            Objects::MeshOrthogonalityScore => {
-                if let Some(polycube) = &solution.current_solution.polycube {
-                    if let Ok(lay) = &solution.current_solution.layout {
-                        let mut layout_color_map = HashMap::new();
-
-                        for &face_id in &polycube.structure.face_ids() {
-                            let score = solution.current_solution.orthogonality_per_patch[face_id];
-                            let color = hutspot::color::map(score as f32, &hutspot::color::SCALE_MAGMA);
-                            for &triangle_id in &lay.face_to_patch[&face_id].faces {
-                                layout_color_map.insert(triangle_id, color);
-                            }
-                        }
-
-                        let (mesh, translation, scale) = get_mesh(&lay.granulated_mesh, &layout_color_map);
-                        commands.spawn((
-                            get_pbrbundle(meshes.add(mesh), translation + Vec3::from(object), scale, &standard_material),
-                            RenderedMesh,
-                        ));
-
-                        for path in lay.edge_to_path.values() {
-                            for vertexpair in path.windows(2) {
-                                let edge_id = lay.granulated_mesh.edge_between_verts(vertexpair[0], vertexpair[1]).unwrap().0;
-                                let (u_id, v_id) = lay.granulated_mesh.endpoints(edge_id);
-                                let u = lay.granulated_mesh.position(u_id);
-                                let v = lay.granulated_mesh.position(v_id);
-                                let n = lay.granulated_mesh.edge_normal(edge_id);
-                                add_line2(
-                                    &mut gizmos_cache.lines,
-                                    u,
-                                    v,
-                                    n * 0.005,
-                                    hutspot::color::BLACK,
-                                    translation + Vec3::from(object),
-                                    scale,
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-            Objects::Debug => {}
-            Objects::Debug2 => {}
-            Objects::MeshPolycubeLabeling => {
-                if let Some(polycube) = &solution.current_solution.polycube {
-                    if let Ok(lay) = &solution.current_solution.layout {
-                        let mut layout_color_map = HashMap::new();
-
-                        for &face_id in &polycube.structure.face_ids() {
-                            let normal = (polycube.structure.normal(face_id) as Vector3D).normalize();
-                            let (dir, side) = to_principal_direction(normal);
-                            let color = to_color(dir, Perspective::Primal, Some(side));
-                            for &triangle_id in &lay.face_to_patch[&face_id].faces {
-                                layout_color_map.insert(triangle_id, color);
-                            }
-                        }
-
-                        let (mesh, translation, scale) = get_mesh(&lay.granulated_mesh, &layout_color_map);
-
-                        commands.spawn((
-                            get_pbrbundle(meshes.add(mesh), translation + Vec3::from(object), scale, &standard_material),
-                            RenderedMesh,
-                        ));
-
-                        let path_ids = lay
-                            .edge_to_path
-                            .keys()
-                            .filter(|&&path_id| {
-                                let twin_id = lay.polycube_ref.structure.twin(path_id).to_owned();
-                                path_id < twin_id
-                            })
-                            .copied()
-                            .collect_vec();
-
-                        for path_id in path_ids {
-                            let path = lay.edge_to_path.get(&path_id).unwrap();
-
-                            let face_id = lay.polycube_ref.structure.face(path_id);
-
-                            let twin_path_id = lay.polycube_ref.structure.twin(path_id).to_owned();
-                            let twin_face_id = lay.polycube_ref.structure.face(twin_path_id);
-
-                            let normal = lay.polycube_ref.structure.normal(face_id).normalize();
-                            let twin_normal = lay.polycube_ref.structure.normal(twin_face_id).normalize();
-                            if normal != twin_normal {
-                                for vertexpair in path.windows(2) {
-                                    if lay.granulated_mesh.edge_between_verts(vertexpair[0], vertexpair[1]).is_none() {
-                                        println!("Edge between {:?} and {:?} does not exist", vertexpair[0], vertexpair[1]);
-                                        continue;
-                                    }
-                                    let edge_id = lay.granulated_mesh.edge_between_verts(vertexpair[0], vertexpair[1]).unwrap().0;
-                                    let (u_id, v_id) = lay.granulated_mesh.endpoints(edge_id);
-                                    let u = lay.granulated_mesh.position(u_id);
-                                    let v = lay.granulated_mesh.position(v_id);
-                                    let n = lay.granulated_mesh.edge_normal(edge_id);
+                                if f1 == f2 {
                                     add_line2(
-                                        &mut gizmos_cache.lines,
+                                        &mut gizmos_cache.flat_edges,
+                                        u,
+                                        v,
+                                        n * 0.01,
+                                        hutspot::color::BLACK,
+                                        translation + Vec3::from(object),
+                                        scale,
+                                    );
+                                } else {
+                                    add_line2(
+                                        &mut gizmos_cache.paths,
                                         u,
                                         v,
                                         n * 0.01,
@@ -699,42 +537,58 @@ pub fn update(
                     }
                 }
             }
-            Objects::PolycubePrimalPolyhedron => {
-                if let Some(polycube) = &solution.current_solution.polycube.clone() {
-                    let mut colormap = HashMap::new();
-                    for &face_id in &polycube.structure.face_ids() {
-                        let normal = (polycube.structure.normal(face_id) as Vector3D).normalize();
-                        let (dir, side) = to_principal_direction(normal);
-                        let color = to_color(dir, Perspective::Primal, Some(side));
-                        colormap.insert(face_id, color);
-                    }
+            Objects::MeshAlignmentScore => {
+                if let Some(polycube) = &solution.current_solution.polycube {
+                    if let Ok(lay) = &solution.current_solution.layout {
+                        let mut layout_color_map = HashMap::new();
 
-                    let (mesh, translation, scale) = get_mesh(&polycube.structure, &colormap);
+                        for &triangle_id in &lay.granulated_mesh.face_ids() {
+                            let score = solution.current_solution.alignment_per_triangle[triangle_id];
+                            let color = hutspot::color::map(score as f32, &hutspot::color::SCALE_MAGMA);
+                            layout_color_map.insert(triangle_id, color);
+                        }
 
-                    commands.spawn((
-                        get_pbrbundle(meshes.add(mesh), translation + Vec3::from(object), scale, &standard_material),
-                        RenderedMesh,
-                    ));
+                        let (mesh, translation, scale) = get_mesh(&lay.granulated_mesh, &layout_color_map);
+                        commands.spawn((
+                            get_pbrbundle(meshes.add(mesh), translation + Vec3::from(object), scale, &standard_material),
+                            RenderedMesh,
+                        ));
 
-                    // Draw the edges of the polycube.
-                    for edge_id in polycube.structure.edge_ids() {
-                        let face1 = polycube.structure.face(edge_id);
-                        let face2 = polycube.structure.face(polycube.structure.twin(edge_id));
-                        let normal1 = polycube.structure.normal(face1);
-                        let normal2 = polycube.structure.normal(face2);
-                        if normal1 != normal2 {
-                            let endpoints = polycube.structure.endpoints(edge_id);
-                            let u = polycube.structure.position(endpoints.0);
-                            let v = polycube.structure.position(endpoints.1);
-                            let line = DrawableLine::from_line(
-                                u,
-                                v,
-                                polycube.structure.normal(polycube.structure.face(edge_id)) * 0.005,
-                                vec3_to_vector3d(translation + Vec3::from(object)),
-                                scale,
-                            );
-                            let c = hutspot::color::BLACK;
-                            gizmos_cache.lines.push((line.u, line.v, c));
+                        for (&pedge_id, path) in &lay.edge_to_path {
+                            let f1 = polycube.structure.normal(polycube.structure.face(pedge_id));
+                            let f2 = polycube.structure.normal(polycube.structure.face(polycube.structure.twin(pedge_id)));
+                            for vertexpair in path.windows(2) {
+                                if lay.granulated_mesh.edge_between_verts(vertexpair[0], vertexpair[1]).is_none() {
+                                    println!("Edge between {:?} and {:?} does not exist", vertexpair[0], vertexpair[1]);
+                                    continue;
+                                }
+                                let edge_id = lay.granulated_mesh.edge_between_verts(vertexpair[0], vertexpair[1]).unwrap().0;
+                                let (u_id, v_id) = lay.granulated_mesh.endpoints(edge_id);
+                                let u = lay.granulated_mesh.position(u_id);
+                                let v = lay.granulated_mesh.position(v_id);
+                                let n = lay.granulated_mesh.edge_normal(edge_id);
+                                if f1 == f2 {
+                                    add_line2(
+                                        &mut gizmos_cache.flat_edges,
+                                        u,
+                                        v,
+                                        n * 0.01,
+                                        hutspot::color::BLACK,
+                                        translation + Vec3::from(object),
+                                        scale,
+                                    );
+                                } else {
+                                    add_line2(
+                                        &mut gizmos_cache.paths,
+                                        u,
+                                        v,
+                                        n * 0.01,
+                                        hutspot::color::BLACK,
+                                        translation + Vec3::from(object),
+                                        scale,
+                                    );
+                                }
+                            }
                         }
                     }
                 }
@@ -759,7 +613,12 @@ pub fn update(
 
 #[derive(Default, Resource)]
 pub struct GizmosCache {
-    pub lines: Vec<Line>,
+    pub wireframe: Vec<Line>,
+    pub wireframe_granulated: Vec<Line>,
+    pub loops: Vec<Line>,
+    pub paths: Vec<Line>,
+    pub flat_edges: Vec<Line>,
+
     pub raycaster: Vec<Line>,
 }
 
@@ -767,8 +626,34 @@ type Line = (Vec3, Vec3, hutspot::color::Color);
 
 // Draws the gizmos. This includes all wireframes, vertices, normals, raycasts, etc.
 pub fn gizmos(mut gizmos: Gizmos, gizmos_cache: Res<GizmosCache>, configuration: Res<Configuration>) {
-    for &(u, v, c) in &gizmos_cache.lines {
-        gizmos.line(u, v, Color::srgb(c[0], c[1], c[2]));
+    if configuration.show_gizmos_mesh {
+        for &(u, v, c) in &gizmos_cache.wireframe {
+            gizmos.line(u, v, Color::srgb(c[0], c[1], c[2]));
+        }
+    }
+
+    if configuration.show_gizmos_mesh && configuration.show_gizmos_mesh_granulated {
+        for &(u, v, c) in &gizmos_cache.wireframe_granulated {
+            gizmos.line(u, v, Color::srgb(c[0], c[1], c[2]));
+        }
+    }
+
+    if configuration.show_gizmos_loops {
+        for &(u, v, c) in &gizmos_cache.loops {
+            gizmos.line(u, v, Color::srgb(c[0], c[1], c[2]));
+        }
+    }
+
+    if configuration.show_gizmos_paths {
+        for &(u, v, c) in &gizmos_cache.paths {
+            gizmos.line(u, v, Color::srgb(c[0], c[1], c[2]));
+        }
+    }
+
+    if configuration.show_gizmos_paths && configuration.show_gizmos_flat_edges {
+        for &(u, v, c) in &gizmos_cache.flat_edges {
+            gizmos.line(u, v, Color::srgb(c[0], c[1], c[2]));
+        }
     }
 
     if configuration.interactive {

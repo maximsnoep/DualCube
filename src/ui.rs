@@ -40,7 +40,13 @@ pub fn setup(mut ui: bevy_egui::EguiContexts) {
     });
 }
 
-fn header(ui: &mut Ui, ev_w: &mut EventWriter<ActionEvent>, mesh: &Res<InputResource>, solution: &Res<SolutionResource>) {
+fn header(
+    ui: &mut Ui,
+    ev_w: &mut EventWriter<ActionEvent>,
+    mesh: &Res<InputResource>,
+    solution: &Res<SolutionResource>,
+    configuration: &mut ResMut<Configuration>,
+) {
     ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
         Frame {
             outer_margin: bevy_egui::egui::epaint::Margin::symmetric(15., 0.),
@@ -147,6 +153,30 @@ fn header(ui: &mut Ui, ev_w: &mut EventWriter<ActionEvent>, mesh: &Res<InputReso
                         // ui.add(Slider::new(&mut mesh.properties.sensitivity, 0.0..=1.0).text(text("")));
                     });
                 });
+
+                ui.separator();
+
+                bevy_egui::egui::menu::menu_button(ui, "Rendering", |ui| {
+                    ui.checkbox(&mut configuration.show_gizmos_mesh, "Wireframe");
+                    ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
+                        ui.add_space(15.);
+                        if configuration.show_gizmos_mesh {
+                            ui.checkbox(&mut configuration.show_gizmos_mesh_granulated, "Wireframe granulated");
+                        } else {
+                            ui.checkbox(&mut false, "Wireframe granulated");
+                        }
+                    });
+                    ui.checkbox(&mut configuration.show_gizmos_loops, "Loops");
+                    ui.checkbox(&mut configuration.show_gizmos_paths, "Paths");
+                    ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
+                        ui.add_space(15.);
+                        if configuration.show_gizmos_paths {
+                            ui.checkbox(&mut configuration.show_gizmos_flat_edges, "Flat edges");
+                        } else {
+                            ui.checkbox(&mut false, "Flat edges");
+                        }
+                    });
+                });
             });
         });
     });
@@ -229,7 +259,7 @@ pub fn update(
         ui.horizontal(|ui| {
             ui.with_layout(Layout::top_down(Align::TOP), |ui| {
                 // FIRST ROW
-                header(ui, &mut ev_w, &mesh, &solution);
+                header(ui, &mut ev_w, &mesh, &solution, &mut conf);
 
                 ui.add_space(5.);
 

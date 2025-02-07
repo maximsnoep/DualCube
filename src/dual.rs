@@ -499,6 +499,8 @@ impl Dual {
                     direction,
                     regions: zone_regions,
                 });
+
+                println!("added a {:?} zone", direction);
             }
         }
     }

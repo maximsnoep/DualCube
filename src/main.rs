@@ -36,7 +36,7 @@ use std::env;
 use std::fmt::Display;
 use std::fs::{self, File};
 use std::io::BufReader;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -154,8 +154,6 @@ pub struct Configuration {
 
     pub should_continue: bool,
 
-    pub sides_mask: [u32; 3],
-
     pub fps: f64,
     pub raycasted: Option<[EdgeID; 2]>,
     pub selected: Option<[EdgeID; 2]>,
@@ -170,6 +168,12 @@ pub struct Configuration {
     pub window_has_position: [(f32, f32); 4],
 
     pub hex_mesh_status: HexMeshStatus,
+
+    pub show_gizmos_mesh: bool,
+    pub show_gizmos_mesh_granulated: bool,
+    pub show_gizmos_loops: bool,
+    pub show_gizmos_paths: bool,
+    pub show_gizmos_flat_edges: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -194,7 +198,6 @@ impl Default for Configuration {
             direction: PrincipalDirection::X,
             alpha: 0.5,
             should_continue: false,
-            sides_mask: [0, 0, 0],
             fps: -1.,
             raycasted: None,
             selected: None,
@@ -206,11 +209,16 @@ impl Default for Configuration {
                 Objects::MeshPolycubeLayout,
                 Objects::PolycubePrimal,
                 Objects::MeshAlignmentScore,
-                Objects::MeshInput,
+                Objects::PolycubeDual,
             ],
             window_has_size: [256., 256., 256., 0.],
             window_has_position: [(0., 0.); 4],
             hex_mesh_status: HexMeshStatus::None,
+            show_gizmos_mesh: true,
+            show_gizmos_mesh_granulated: true,
+            show_gizmos_loops: true,
+            show_gizmos_paths: true,
+            show_gizmos_flat_edges: true,
         }
     }
 }

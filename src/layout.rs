@@ -9,6 +9,7 @@ use itertools::Itertools;
 use ordered_float::OrderedFloat;
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Copy)]
@@ -135,8 +136,12 @@ impl Layout {
         }
     }
 
+    pub fn reset_paths(&mut self) {
+        self.edge_to_path.clear();
+    }
+
     // TODO: Make this robust
-    fn place_paths(&mut self) -> Result<(), PropertyViolationError> {
+    pub fn place_paths(&mut self) -> Result<(), PropertyViolationError> {
         let primal = &self.polycube_ref;
 
         let primal_vertices = primal
@@ -145,10 +150,21 @@ impl Layout {
             .iter()
             .map(|&x| self.vert_to_corner.get_by_left(&x).unwrap().to_owned())
             .collect_vec();
+
         let mut occupied_vertices = HashSet::new();
         let mut occupied_edges = HashSet::new();
 
-        self.edge_to_path = HashMap::new();
+        for path in self.edge_to_path.values() {
+            for &v_id in path {
+                occupied_vertices.insert(v_id);
+            }
+
+            for edgepair in path.windows(2) {
+                let (u, v) = (edgepair[0], edgepair[1]);
+                occupied_edges.insert((u, v));
+                occupied_edges.insert((v, u));
+            }
+        }
 
         let mut edge_queue = primal.structure.edges.keys().collect_vec();
 
@@ -578,11 +594,87 @@ impl Layout {
             self.face_to_patch.remove(&face);
         }
 
-        // TODO: actually recompute only for changed paths..
         self.place_paths()?;
 
         self.assign_patches();
 
         Ok(())
+    }
+
+    pub fn smoothening(&mut self) {
+        // We smoothen each path until path is geodesic
+        // https://dl.acm.org/doi/pdf/10.1145/3414685.3417839
+
+        let keys = self.edge_to_path.keys().copied().collect_vec();
+        'o: loop {
+            for &path_id in &keys {
+                // Calculate \alpha for each vertex in the path.
+                // A path is locally geodesic if \alpha is > 180 degrees (pi) for each vertex
+                // Any vertex with \alpha < 180 degrees is a candidate for smoothing
+                // Every vertex is defined as a wedge, consisting of the vertex and its two neighbors.
+                let mut wedges = priority_queue::PriorityQueue::new();
+                let path = self.edge_to_path.get(&path_id).unwrap();
+                for pair in path.windows(3) {
+                    // Find the shortest (angle) wedge of a,b,c.
+                    let (a, b, c) = (pair[0], pair[1], pair[2]);
+
+                    if self.granulated_mesh.distance(a, b) < 1e-3 || self.granulated_mesh.distance(b, c) < 1e-3 {
+                        continue;
+                    }
+
+                    let (w, alpha) = self.granulated_mesh.shortest_wedge(a, b, c);
+                    wedges.push((w, b), Reverse(OrderedFloat(alpha)));
+                }
+
+                if wedges.is_empty() {
+                    println!("Path {path_id:?} is empty");
+                    continue;
+                }
+
+                let ((mut wedge, b), alpha) = wedges.pop().unwrap().clone();
+                if alpha.0 .0 > 3.05 {
+                    println!("Path {path_id:?} is already geodesic");
+                    continue;
+                }
+                println!("Path {path_id:?} is not geodesic, smoothening wedge {b:?}");
+
+                let path = self.edge_to_path.get(&path_id).unwrap();
+                assert!(path.contains(&wedge[0]) && path.contains(&wedge[wedge.len() - 1]));
+
+                // Now we apply flips on the wedge
+                'l: loop {
+                    for i in 1..wedge.len() - 1 {
+                        let (n_im1, n_i, n_ip1) = (wedge[i - 1], wedge[i], wedge[i + 1]);
+                        let beta_i = self.granulated_mesh.vertex_angle(n_im1, n_i, b) + self.granulated_mesh.vertex_angle(b, n_i, n_ip1);
+                        // println!("beta_{i}: {beta_i:?}");
+                        if beta_i < 3.12 {
+                            // We flip the triangle
+                            if let Some(new_v) = self.granulated_mesh.splip_edge(n_i, b) {
+                                wedge[i] = new_v;
+                                continue 'l;
+                            }
+                        }
+                    }
+                    break;
+                }
+
+                // Now we update the path
+                for pair in path.windows(2) {
+                    // does the edge exist?
+                    let edgepair = self.granulated_mesh.edge_between_verts(pair[0], pair[1]);
+                    assert!(edgepair.is_some(), "Edge not found: {:?} {:?} path id: {:?}", pair[0], pair[1], path_id);
+                }
+
+                let path_before_wedge = path.iter().take_while(|&&v| v != *wedge.first().unwrap()).copied().collect_vec();
+                let path_after_wedge = path.iter().skip_while(|&&v| v != *wedge.last().unwrap()).skip(1).copied().collect_vec();
+                let new_path = path_before_wedge.into_iter().chain(wedge).chain(path_after_wedge.into_iter()).collect_vec();
+
+                self.edge_to_path.insert(path_id, new_path.clone());
+                self.edge_to_path
+                    .insert(self.polycube_ref.structure.twin(path_id), new_path.iter().rev().copied().collect_vec());
+                continue 'o;
+            }
+            return;
+        }
     }
 }
