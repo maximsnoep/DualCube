@@ -1,8 +1,10 @@
 use crate::{
+    layout::Layout,
     solutions::{Loop, LoopID},
     EdgeID, EmbeddedMesh, PrincipalDirection, VertID,
 };
 use douconel::douconel::Douconel;
+use hutspot::geom::Vector3D;
 use itertools::Itertools;
 use slotmap::SlotMap;
 use std::{
@@ -58,7 +60,10 @@ pub struct Dual {
 
     pub loop_structure: LoopStructure,
     pub zones: SlotMap<ZoneID, Zone>,
-    pub level_graphs: [HashMap<ZoneID, Vec<ZoneID>>; 3],
+    pub level_graphs: [HashMap<ZoneID, Vec<(ZoneID, Orientation)>>; 3],
+
+    pub levels: [Vec<HashSet<ZoneID>>; 3],
+    pub level_to_value: [Vec<f64>; 3],
 }
 
 #[derive(Default, Debug, Clone)]
@@ -81,6 +86,8 @@ impl Dual {
             loop_structure: Douconel::default(),
             zones: SlotMap::with_key(),
             level_graphs: [HashMap::new(), HashMap::new(), HashMap::new()],
+            levels: [vec![], vec![], vec![]],
+            level_to_value: [vec![], vec![], vec![]],
         };
 
         // Find all intersections and loop regions induced by the loops, and compute the loop structure
@@ -499,8 +506,6 @@ impl Dual {
                     direction,
                     regions: zone_regions,
                 });
-
-                println!("added a {:?} zone", direction);
             }
         }
     }
@@ -526,16 +531,14 @@ impl Dual {
                 let segments = regions
                     .iter()
                     .flat_map(|&region_id| self.loop_structure.edges(region_id))
-                    .filter(|&segment_id| {
-                        self.segment_to_direction(segment_id) == direction && self.segment_to_orientation(segment_id) == Orientation::Forwards
-                    });
+                    .filter(|&segment_id| self.segment_to_direction(segment_id) == direction);
 
                 // Grab all adjacent zones (through these segments)
                 let adjacent_zones = segments
                     .map(|segment_id| {
                         let twin_segment = self.loop_structure.twin(segment_id);
                         let adjacent_region_id = self.loop_structure.face(twin_segment);
-                        region_to_zone[&adjacent_region_id]
+                        (region_to_zone[&adjacent_region_id], self.segment_to_orientation(segment_id))
                     })
                     .collect::<HashSet<_>>();
 
@@ -547,6 +550,101 @@ impl Dual {
             }
 
             self.level_graphs[direction as usize] = adjacency;
+        }
+
+        self.compute_level_values(None);
+    }
+
+    pub fn compute_level_values(&mut self, layout: Option<&Layout>) {
+        // Find all levels
+
+        println!("computing levels");
+        self.levels = [vec![], vec![], vec![]];
+        self.level_to_value = [vec![], vec![], vec![]];
+
+        for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
+            let mut level_to_zone = HashMap::new();
+
+            let mut visited = HashSet::new();
+            let mut queue = vec![];
+
+            for (zone_id, _) in self.zones.iter().filter(|(_, zone)| zone.direction == direction) {
+                queue.push(zone_id);
+            }
+
+            while let Some(zone_id) = queue.pop() {
+                if level_to_zone.is_empty() {
+                    level_to_zone.insert(zone_id, 0i32);
+                }
+                assert!(level_to_zone.contains_key(&zone_id));
+                let level = level_to_zone[&zone_id];
+
+                if visited.contains(&zone_id) {
+                    continue;
+                }
+                visited.insert(zone_id);
+
+                let adjacent_zones = self.level_graphs[direction as usize][&zone_id].clone();
+                for &(n_zone, orientation) in &adjacent_zones {
+                    if let Some(&n_level) = level_to_zone.get(&n_zone) {
+                        match orientation {
+                            Orientation::Forwards => {
+                                assert!(n_level >= level);
+                            }
+                            Orientation::Backwards => {
+                                assert!(n_level <= level);
+                            }
+                        }
+                    } else {
+                        let n_level = level + if orientation == Orientation::Forwards { 1 } else { -1 };
+                        level_to_zone.insert(n_zone, n_level);
+                    }
+                }
+
+                for (adjacent_zone, _) in adjacent_zones {
+                    queue.push(adjacent_zone);
+                }
+            }
+
+            // get the lowest level value
+            let min_level = *level_to_zone.values().min().unwrap();
+            // normalize the levels
+            let mut level_to_zone_usize = HashMap::new();
+            for (zone_id, level) in level_to_zone {
+                level_to_zone_usize.insert(zone_id, (level - min_level) as usize);
+            }
+            // get the highest level value
+            let max_level = *level_to_zone_usize.values().max().unwrap();
+            // form a vector of that length + 1
+            let mut level_values = vec![HashSet::new(); max_level + 1];
+            // fill the vector with the zones
+            for (zone_id, level) in level_to_zone_usize {
+                level_values[level].insert(zone_id);
+            }
+            println!("level_values: {:?}", level_values);
+            self.levels[direction as usize] = level_values;
+
+            self.level_to_value[direction as usize] = vec![0.0; self.levels[direction as usize].len()];
+
+            // for each level, find the average coordinate
+            if let Some(layout) = layout {
+                for (level, zones) in self.levels[direction as usize].iter().enumerate() {
+                    let mut coordinates = vec![];
+                    for &zone_id in zones {
+                        for &region_id in &self.zones[zone_id].regions {
+                            let polycube_vert = layout.polycube_ref.region_to_vertex.get_by_left(&region_id).unwrap();
+                            let corner = *layout.vert_to_corner.get_by_left(polycube_vert).unwrap();
+                            coordinates.push(layout.granulated_mesh.position(corner)[direction as usize]);
+                        }
+                    }
+                    let average = hutspot::math::calculate_average_f64(coordinates.into_iter());
+                    self.level_to_value[direction as usize][level] = average;
+                }
+            } else {
+                for (level, _) in self.levels[direction as usize].iter().enumerate() {
+                    self.level_to_value[direction as usize][level] = level as f64;
+                }
+            }
         }
     }
 
@@ -592,7 +690,14 @@ impl Dual {
 
         // Verify 5.
         for level_graph in &self.level_graphs {
-            let topological_sort = hutspot::graph::topological_sort::<ZoneID>(&level_graph.keys().copied().collect_vec(), |z| level_graph[&z].clone());
+            let topological_sort = hutspot::graph::topological_sort::<ZoneID>(&level_graph.keys().copied().collect_vec(), |z| {
+                level_graph[&z]
+                    .clone()
+                    .into_iter()
+                    .filter(|&(_, orientation)| orientation == Orientation::Forwards)
+                    .map(|(z, _)| z)
+                    .collect()
+            });
             if topological_sort.is_none() {
                 return Err(PropertyViolationError::CyclicDependency);
             }

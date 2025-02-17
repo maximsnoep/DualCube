@@ -1,7 +1,5 @@
 use crate::dual::Orientation;
-use crate::{
-    to_color, to_principal_direction, vec3_to_vector3d, Configuration, InputResource, MainMesh, Perspective, RenderedMesh, SolutionResource, BACKGROUND_COLOR,
-};
+use crate::{to_color, to_principal_direction, vec3_to_vector3d, Configuration, InputResource, MainMesh, Perspective, RenderedMesh, SolutionResource};
 use crate::{CameraHandles, PrincipalDirection};
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::prelude::*;
@@ -12,12 +10,13 @@ use douconel::douconel_embedded::HasPosition;
 use enum_iterator::{all, Sequence};
 use hutspot::draw::DrawableLine;
 use hutspot::geom::Vector3D;
-use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use slotmap::Key;
 use smooth_bevy_cameras::controllers::orbit::{OrbitCameraBundle, OrbitCameraController};
 use std::collections::HashMap;
 
+const BACKGROUND_COLOR_SCREENSHOT_MODE: bevy::prelude::Color = bevy::prelude::Color::srgb(255. / 255., 255. / 255., 255. / 255.);
+const BACKGROUND_COLOR: bevy::prelude::Color = bevy::prelude::Color::srgb(27. / 255., 27. / 255., 27. / 255.);
 const DEFAULT_CAMERA_EYE: Vec3 = Vec3::new(25.0, 25.0, 35.0);
 const DEFAULT_CAMERA_TARGET: Vec3 = Vec3::new(0., 0., 0.);
 const DEFAULT_CAMERA_TEXTURE_SIZE: u32 = 640;
@@ -60,7 +59,13 @@ impl From<Objects> for Vec3 {
 #[derive(Component, PartialEq, Eq, Hash, Debug, Copy, Clone, Default, Serialize, Deserialize)]
 pub struct CameraFor(pub Objects);
 
-pub fn reset(commands: &mut Commands, cameras: &Query<Entity, With<Camera>>, images: &mut ResMut<Assets<Image>>, handles: &mut ResMut<CameraHandles>) {
+pub fn reset(
+    commands: &mut Commands,
+    cameras: &Query<Entity, With<Camera>>,
+    images: &mut ResMut<Assets<Image>>,
+    handles: &mut ResMut<CameraHandles>,
+    configuration: &ResMut<Configuration>,
+) {
     for camera in cameras.iter() {
         commands.entity(camera).despawn();
     }
@@ -68,6 +73,14 @@ pub fn reset(commands: &mut Commands, cameras: &Query<Entity, With<Camera>>, ima
     // Main camera. This is the camera that the user can control.
     commands
         .spawn(Camera3dBundle {
+            camera: Camera {
+                clear_color: ClearColorConfig::Custom(bevy::prelude::Color::srgb(
+                    configuration.clear_color[0] as f32 / 255.,
+                    configuration.clear_color[1] as f32 / 255.,
+                    configuration.clear_color[2] as f32 / 255.,
+                )),
+                ..Default::default()
+            },
             tonemapping: Tonemapping::None,
             ..default()
         })
@@ -108,35 +121,32 @@ pub fn reset(commands: &mut Commands, cameras: &Query<Entity, With<Camera>>, ima
     for object in all::<Objects>() {
         let handle = images.add(image.clone());
         handles.map.insert(CameraFor(object), handle.clone());
-        if object == Objects::PolycubeDual || object == Objects::PolycubePrimal {
-            commands.spawn((
-                Camera3dBundle {
-                    camera: Camera {
-                        target: handle.into(),
-                        ..Default::default()
-                    },
-                    projection: bevy::prelude::Projection::Orthographic(OrthographicProjection {
-                        scaling_mode: ScalingMode::FixedVertical(30.0),
-                        ..default()
-                    }),
-                    tonemapping: Tonemapping::None,
-                    ..default()
-                },
-                CameraFor(object),
-            ));
+        let projection = if object == Objects::PolycubeDual || object == Objects::PolycubePrimal {
+            bevy::prelude::Projection::Orthographic(OrthographicProjection {
+                scaling_mode: ScalingMode::FixedVertical(30.0),
+                ..default()
+            })
         } else {
-            commands.spawn((
-                Camera3dBundle {
-                    camera: Camera {
-                        target: handle.into(),
-                        ..Default::default()
-                    },
-                    tonemapping: Tonemapping::None,
-                    ..default()
+            bevy::prelude::Projection::default()
+        };
+
+        commands.spawn((
+            Camera3dBundle {
+                camera: Camera {
+                    target: handle.into(),
+                    clear_color: ClearColorConfig::Custom(bevy::prelude::Color::srgb(
+                        configuration.clear_color[0] as f32 / 255.,
+                        configuration.clear_color[1] as f32 / 255.,
+                        configuration.clear_color[2] as f32 / 255.,
+                    )),
+                    ..Default::default()
                 },
-                CameraFor(object),
-            ));
-        }
+                projection,
+                tonemapping: Tonemapping::None,
+                ..default()
+            },
+            CameraFor(object),
+        ));
     }
 }
 
@@ -146,11 +156,12 @@ pub fn setup(
     mut handles: ResMut<CameraHandles>,
     mut config_store: ResMut<GizmoConfigStore>,
     cameras: Query<Entity, With<Camera>>,
+    configuration: ResMut<Configuration>,
 ) {
     let (config, _) = config_store.config_mut::<DefaultGizmoConfigGroup>();
     config.line_width = 2.;
 
-    self::reset(&mut commands, &cameras, &mut images, &mut handles);
+    self::reset(&mut commands, &cameras, &mut images, &mut handles, &configuration);
 }
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
@@ -236,7 +247,11 @@ pub fn update(
 
     let standard_material = materials.add(StandardMaterial { unlit: true, ..default() });
     let background_material = materials.add(StandardMaterial {
-        base_color: BACKGROUND_COLOR,
+        base_color: bevy::prelude::Color::srgb(
+            configuration.clear_color[0] as f32 / 255.,
+            configuration.clear_color[1] as f32 / 255.,
+            configuration.clear_color[2] as f32 / 255.,
+        ),
         unlit: true,
         ..default()
     });
@@ -318,7 +333,7 @@ pub fn update(
                                 &mut gizmos_cache.loops,
                                 mesh_resmut.mesh.midpoint(u),
                                 mesh_resmut.mesh.midpoint(v),
-                                mesh_resmut.mesh.edge_normal(u) * 0.01,
+                                mesh_resmut.mesh.edge_normal(u) * 0.01 + offset,
                                 color,
                                 translation + Vec3::from(Objects::MeshDualLoops),
                                 scale,
@@ -344,6 +359,86 @@ pub fn update(
                 }
             }
             Objects::PolycubeDual => {
+                if let Some(polycube) = &solution.current_solution.polycube {
+                    let colormap = HashMap::new();
+                    let (mesh, translation, scale) = get_mesh(&polycube.structure, &colormap);
+
+                    commands.spawn((
+                        get_pbrbundle(meshes.add(mesh), translation + Vec3::from(object), scale, &standard_material),
+                        RenderedMesh,
+                    ));
+
+                    // Draw all loop segments per face.
+                    for &face_id in &polycube.structure.face_ids() {
+                        let this_centroid = polycube.structure.centroid(face_id);
+                        let normal = (polycube.structure.normal(face_id) as Vector3D).normalize();
+                        let direction = to_principal_direction(normal).0;
+
+                        for &neighbor_id in &polycube.structure.fneighbors(face_id) {
+                            let edge_between = polycube.structure.edge_between_faces(face_id, neighbor_id).unwrap().0;
+                            let root = polycube.structure.root(edge_between);
+                            let root_pos = polycube.structure.position(root);
+
+                            let edge_between = polycube.structure.edge_between_faces(face_id, neighbor_id).unwrap().0;
+                            let (vertex_start, vertex_end) = polycube.structure.endpoints(edge_between);
+                            let (intersection_start, intersection_end) = (
+                                polycube.region_to_vertex.get_by_right(&vertex_start).unwrap(),
+                                polycube.region_to_vertex.get_by_right(&vertex_end).unwrap(),
+                            );
+                            let corresponding_segment = solution
+                                .current_solution
+                                .dual
+                                .as_ref()
+                                .unwrap()
+                                .loop_structure
+                                .edge_between_faces(*intersection_start, *intersection_end)
+                                .unwrap()
+                                .0;
+
+                            let assigned_label = solution.current_solution.dual.as_ref().unwrap().segment_to_direction(corresponding_segment);
+
+                            for orientation in [Orientation::Forwards, Orientation::Backwards] {
+                                let segment_direction = match (direction, assigned_label) {
+                                    (PrincipalDirection::X, PrincipalDirection::Y) | (PrincipalDirection::Y, PrincipalDirection::X) => PrincipalDirection::Z,
+                                    (PrincipalDirection::X, PrincipalDirection::Z) | (PrincipalDirection::Z, PrincipalDirection::X) => PrincipalDirection::Y,
+                                    (PrincipalDirection::Y, PrincipalDirection::Z) | (PrincipalDirection::Z, PrincipalDirection::Y) => PrincipalDirection::X,
+                                    _ => unreachable!(),
+                                };
+
+                                let mut direction_vector = this_centroid;
+                                direction_vector[segment_direction as usize] = root_pos[segment_direction as usize];
+
+                                let mut offset = Vector3D::new(0., 0., 0.);
+
+                                let dist = 0.01 * f64::from(scale);
+
+                                match orientation {
+                                    Orientation::Forwards => match assigned_label {
+                                        PrincipalDirection::X => offset[0] += dist,
+                                        PrincipalDirection::Y => offset[1] += dist,
+                                        PrincipalDirection::Z => offset[2] += dist,
+                                    },
+                                    Orientation::Backwards => match assigned_label {
+                                        PrincipalDirection::X => offset[0] -= dist,
+                                        PrincipalDirection::Y => offset[1] -= dist,
+                                        PrincipalDirection::Z => offset[2] -= dist,
+                                    },
+                                };
+
+                                let line = DrawableLine::from_line(
+                                    this_centroid,
+                                    direction_vector,
+                                    offset + normal * 0.01,
+                                    vec3_to_vector3d(translation + Vec3::from(object)),
+                                    scale,
+                                );
+                                let c = to_color(assigned_label, Perspective::Dual, Some(orientation));
+                                gizmos_cache.loops.push((line.u, line.v, c));
+                            }
+                        }
+                    }
+                }
+
                 // if let Some(polycube) = &solution.current_solution.polycube.clone() {
                 //     let (mesh, translation, scale) = get_mesh(&polycube.structure.clone(), &HashMap::new());
 

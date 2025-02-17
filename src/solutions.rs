@@ -333,7 +333,7 @@ impl Solution {
                         edges: z_loop.clone(),
                         direction: PrincipalDirection::Z,
                     });
-                    if solution.reconstruct_solution().is_ok() {
+                    if solution.reconstruct_solution(false).is_ok() {
                         candidate_solutions.push(solution);
                     }
                 }
@@ -346,7 +346,7 @@ impl Solution {
         }
     }
 
-    pub fn reconstruct_solution(&mut self) -> Result<(), PropertyViolationError> {
+    pub fn reconstruct_solution(&mut self, unit: bool) -> Result<(), PropertyViolationError> {
         self.clear();
 
         if let Err(err) = self.validate_loops() {
@@ -375,20 +375,18 @@ impl Solution {
             return Err(e.clone());
         }
 
-        info!("Resizing POLYCUBE...");
-        self.resize_polycube();
-
         info!("Computing QUALITY...");
         self.compute_quality();
 
-        self.layout.as_mut().unwrap().smoothening();
-        self.layout.as_mut().unwrap().assign_patches();
-
-        self.compute_quality();
-
-        // self.optimize(5000);
-
         Ok(())
+    }
+
+    pub fn smoothen(&mut self) {
+        if let Ok(layout) = &mut self.layout {
+            layout.smoothening();
+            layout.assign_patches();
+            self.compute_quality();
+        }
     }
 
     pub fn resize_polycube(&mut self) {
@@ -565,7 +563,7 @@ impl Solution {
                     // Add guaranteed loop
                     if let Some(new_loop) = self.construct_unbounded_loop([e1, e2], direction, &flow_graphs[direction as usize], measure) {
                         new_solution.add_loop(Loop { edges: new_loop, direction });
-                        if new_solution.reconstruct_solution().is_err() {
+                        if new_solution.reconstruct_solution(false).is_err() {
                             return None;
                         }
                     }
@@ -585,7 +583,7 @@ impl Solution {
                 let mut real_solution = self.clone();
                 let cur_quality = real_solution.get_quality();
                 real_solution.del_loop(loop_id);
-                if real_solution.reconstruct_solution().is_ok() {
+                if real_solution.reconstruct_solution(false).is_ok() {
                     let new_quality = real_solution.get_quality();
                     if new_quality > cur_quality {
                         return Some(real_solution);

@@ -1,4 +1,4 @@
-use crate::dual::{Dual, Orientation, RegionID, ZoneID};
+use crate::dual::{Dual, Orientation, RegionID, SegmentID, ZoneID};
 use crate::layout::Layout;
 use crate::PrincipalDirection;
 use bevy::log::{debug, info};
@@ -9,7 +9,7 @@ use douconel::douconel_embedded::{EmbeddedVertex, HasPosition};
 use hutspot::geom::Vector3D;
 use itertools::Itertools;
 use microlp::{ComparisonOp, OptimizationDirection, Problem};
-use nalgebra::{DMatrix, DVector};
+use nalgebra::{DMatrix, DVector, Vector};
 use nalgebra_sparse::factorization::{CholeskyError, CscCholesky};
 use ordered_float::OrderedFloat;
 use std::collections::HashMap;
@@ -107,299 +107,49 @@ impl Polycube {
     }
 
     pub fn resize(&mut self, dual: &Dual, layout: Option<&Layout>, constraints: Option<HashSet<(PolycubeFaceID, PolycubeFaceID)>>) {
-        // We choose to minimize the overall volume (height + width + depth) of the polycube.
-        let mut problem = Problem::new(OptimizationDirection::Minimize);
-
-        // Define variables for all vertices (x, y, and z)
-        let mut vert_to_var = HashMap::new();
+        let mut vert_to_coord = HashMap::new();
         for vert_id in self.structure.vert_ids() {
-            let x = problem.add_integer_var(0.0, (0, 100));
-            let y = problem.add_integer_var(0.0, (0, 100));
-            let z = problem.add_integer_var(0.0, (0, 100));
-            vert_to_var.insert(vert_id, (x, y, z));
+            vert_to_coord.insert(vert_id, [0., 0., 0.]);
         }
 
-        // Fix the positions of the vertices that are in the same zone
-        for zone_id in dual.zones.keys() {
-            let verts_in_zone = dual.zones[zone_id]
-                .regions
-                .iter()
-                .map(|&region_id| self.region_to_vertex.get_by_left(&region_id).unwrap().to_owned())
-                .collect_vec();
-            let direction = dual.zones[zone_id].direction;
-
-            let anchor_vert = verts_in_zone[0];
-            for vert_id in verts_in_zone.iter().skip(1) {
-                let (x, y, z) = vert_to_var[vert_id];
-                let (x_anchor, y_anchor, z_anchor) = vert_to_var[&anchor_vert];
-                match direction {
-                    PrincipalDirection::X => {
-                        problem.add_constraint([(x, 1.0), (x_anchor, -1.0)], ComparisonOp::Eq, 0.0);
-                    }
-                    PrincipalDirection::Y => {
-                        problem.add_constraint([(y, 1.0), (y_anchor, -1.0)], ComparisonOp::Eq, 0.0);
-                    }
-                    PrincipalDirection::Z => {
-                        problem.add_constraint([(z, 1.0), (z_anchor, -1.0)], ComparisonOp::Eq, 0.0);
-                    }
-                }
-            }
-        }
-
-        // Subsequent zones in the level graph should be at least 1 unit away from each other
+        // Fix the positions of the vertices that are in the same level
         for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
-            let level_graph = &dual.level_graphs[direction as usize];
-            for &zone_id in level_graph.keys() {
-                for &child in &level_graph[&zone_id] {
-                    let verts_in_zone = dual.zones[zone_id]
-                        .regions
-                        .iter()
-                        .map(|&region_id| self.region_to_vertex.get_by_left(&region_id).unwrap().to_owned())
-                        .collect_vec();
-                    let verts_in_child = dual.zones[child]
-                        .regions
-                        .iter()
-                        .map(|&region_id| self.region_to_vertex.get_by_left(&region_id).unwrap().to_owned())
-                        .collect_vec();
+            for (level, zones) in dual.levels[direction as usize].iter().enumerate() {
+                let verts_in_level = zones
+                    .iter()
+                    .flat_map(|&zone_id| {
+                        dual.zones[zone_id]
+                            .regions
+                            .iter()
+                            .map(|&region_id| self.region_to_vertex.get_by_left(&region_id).unwrap().to_owned())
+                    })
+                    .collect_vec();
 
-                    let (x, y, z) = vert_to_var[&verts_in_zone[0]];
-                    let (x_child, y_child, z_child) = vert_to_var[&verts_in_child[0]];
-
-                    match direction {
-                        PrincipalDirection::X => {
-                            problem.add_constraint([(x, 1.0), (x_child, -1.0)], ComparisonOp::Le, -1.0);
-                        }
-                        PrincipalDirection::Y => {
-                            problem.add_constraint([(y, 1.0), (y_child, -1.0)], ComparisonOp::Le, -1.0);
-                        }
-                        PrincipalDirection::Z => {
-                            problem.add_constraint([(z, 1.0), (z_child, -1.0)], ComparisonOp::Le, -1.0);
-                        }
-                    }
+                let value = dual.level_to_value[direction as usize][level];
+                println!("Level {} in direction {:?} should be {}", level, direction, value);
+                for vert in verts_in_level {
+                    vert_to_coord.get_mut(&vert).unwrap()[direction as usize] = value;
                 }
             }
         }
-
-        // For every pair of faces add constraints s.t. they do not intersect (by adding some seperation criteria)
-        // Do not add this constraint for any pair of faces that is directly adjacent to eachother.
-        if let Some(faces) = constraints {
-            for (f_i, f_j) in faces {
-                let [(x_i_min, x_i_max), (y_i_min, y_i_max), (z_i_min, z_i_max)] = self.face_box(f_i, dual);
-                let [(x_j_min, x_j_max), (y_j_min, y_j_max), (z_j_min, z_j_max)] = self.face_box(f_j, dual);
-                let x_i_min = vert_to_var[&x_i_min].0;
-                let x_i_max = vert_to_var[&x_i_max].0;
-                let y_i_min = vert_to_var[&y_i_min].1;
-                let y_i_max = vert_to_var[&y_i_max].1;
-                let z_i_min = vert_to_var[&z_i_min].2;
-                let z_i_max = vert_to_var[&z_i_max].2;
-                let x_j_min = vert_to_var[&x_j_min].0;
-                let x_j_max = vert_to_var[&x_j_max].0;
-                let y_j_min = vert_to_var[&y_j_min].1;
-                let y_j_max = vert_to_var[&y_j_max].1;
-                let z_j_min = vert_to_var[&z_j_min].2;
-                let z_j_max = vert_to_var[&z_j_max].2;
-
-                // Add the constraints
-                // Big-M: choose a number large enough so that when a constraint is “turned off” it is inactive.
-                let M = 500.0;
-                // Gap required between faces.
-                let delta = 1.0;
-
-                // Create binary variables for each separation disjunct.
-                let b_x_left = problem.add_binary_var(0.0); // f_i is to the left of f_j (x-axis).
-                let b_x_right = problem.add_binary_var(0.0); // f_i is to the right of f_j (x-axis).
-                let b_y_below = problem.add_binary_var(0.0); // f_i is below f_j (y-axis).
-                let b_y_above = problem.add_binary_var(0.0); // f_i is above f_j (y-axis).
-                let b_z_front = problem.add_binary_var(0.0); // f_i is in front of f_j (z-axis).
-                let b_z_back = problem.add_binary_var(0.0); // f_i is behind f_j (z-axis).
-
-                // 1. b_x_left = 1 => x_i_max + delta < x_j_min,
-                //    simulated as: x_i_max - x_j_min + M * b_x_left <= M - delta - epsilon
-                problem.add_constraint([(x_i_max, 1.0), (x_j_min, -1.0), (b_x_left, M)], ComparisonOp::Le, M - delta);
-
-                // 2. b_x_right = 1 => x_j_max + delta < x_i_min,
-                //    simulated as: x_j_max - x_i_min + M * b_x_right <= M - delta - epsilon
-                problem.add_constraint([(x_j_max, 1.0), (x_i_min, -1.0), (b_x_right, M)], ComparisonOp::Le, M - delta);
-
-                // 3. b_y_below = 1 => y_i_max + delta < y_j_min,
-                problem.add_constraint([(y_i_max, 1.0), (y_j_min, -1.0), (b_y_below, M)], ComparisonOp::Le, M - delta);
-
-                // 4. b_y_above = 1 => y_j_max + delta < y_i_min,
-                problem.add_constraint([(y_j_max, 1.0), (y_i_min, -1.0), (b_y_above, M)], ComparisonOp::Le, M - delta);
-
-                // 5. b_z_front = 1 => z_i_max + delta < z_j_min,
-                problem.add_constraint([(z_i_max, 1.0), (z_j_min, -1.0), (b_z_front, M)], ComparisonOp::Le, M - delta);
-
-                // 6. b_z_back = 1 => z_j_max + delta < z_i_min,
-                problem.add_constraint([(z_j_max, 1.0), (z_i_min, -1.0), (b_z_back, M)], ComparisonOp::Le, M - delta);
-
-                // Force at least one of the disjuncts to be active
-                // That is: b_x_left + b_x_right + b_y_below + b_y_above + b_z_front + b_z_back >= 1.
-                problem.add_constraint(
-                    [
-                        (b_x_left, 1.0),
-                        (b_x_right, 1.0),
-                        (b_y_below, 1.0),
-                        (b_y_above, 1.0),
-                        (b_z_front, 1.0),
-                        (b_z_back, 1.0),
-                    ],
-                    ComparisonOp::Ge,
-                    1.0,
-                );
-            }
-        }
-
-        for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
-            let edges_in_direction = self
-                .structure
-                .edge_ids()
-                .into_iter()
-                .map(|e| {
-                    let endpoints = self.structure.endpoints(e);
-                    (
-                        e,
-                        self.region_to_vertex.get_by_right(&endpoints.0).unwrap().to_owned(),
-                        self.region_to_vertex.get_by_right(&endpoints.1).unwrap().to_owned(),
-                    )
-                })
-                .map(|(e, r1, r2)| (e, dual.loop_structure.edge_between_faces(r1, r2).unwrap().0))
-                .filter(|&(_, s)| dual.segment_to_direction(s) == direction)
-                .filter(|&(_, s)| dual.segment_to_orientation(s) == Orientation::Forwards);
-
-            for (edge_id, _) in edges_in_direction {
-                let (x1, y1, z1) = vert_to_var[&self.structure.endpoints(edge_id).0];
-                let (x2, y2, z2) = vert_to_var[&self.structure.endpoints(edge_id).1];
-                // Add the variable for this edge
-                let edge_length = problem.add_var(1., (0.0, 100.0));
-
-                // for x-direction: edge_length = x2 - x1, etc.
-                match direction {
-                    PrincipalDirection::X => {
-                        problem.add_constraint([(x1, 1.0), (x2, -1.0), (edge_length, 1.0)], ComparisonOp::Eq, 0.0);
-                    }
-                    PrincipalDirection::Y => {
-                        problem.add_constraint([(y1, 1.0), (y2, -1.0), (edge_length, 1.0)], ComparisonOp::Eq, 0.0);
-                    }
-                    PrincipalDirection::Z => {
-                        problem.add_constraint([(z1, 1.0), (z2, -1.0), (edge_length, 1.0)], ComparisonOp::Eq, 0.0);
-                    }
-                }
-            }
-        }
-        // Add all forward edges as extra variable, their value should be minimized
-        for edge_id in self.structure.edge_ids() {
-            let endpoints = self.structure.endpoints(edge_id);
-            let (x1, y1, z1) = vert_to_var[&endpoints.0];
-            let (x2, y2, z2) = vert_to_var[&endpoints.1];
-            let extra_var = problem.add_integer_var(0.0, (0, 100));
-            problem.add_constraint([(x1, 1.0), (x2, -1.0), (extra_var, 1.0)], ComparisonOp::Ge, 0.0);
-            problem.add_constraint([(x1, 1.0), (x2, -1.0), (extra_var, 1.0)], ComparisonOp::Le, 100.0);
-            problem.add_constraint([(y1, 1.0), (y2, -1.0), (extra_var, 1.0)], ComparisonOp::Ge, 0.0);
-            problem.add_constraint([(y1, 1.0), (y2, -1.0), (extra_var, 1.0)], ComparisonOp::Le, 100.0);
-            problem.add_constraint([(z1, 1.0), (z2, -1.0), (extra_var, 1.0)], ComparisonOp::Ge, 0.0);
-            problem.add_constraint([(z1, 1.0), (z2, -1.0), (extra_var, 1.0)], ComparisonOp::Le, 100.0);
-        }
-
-        // Print info about the problem
-        // println!("Solving {problem:?}");
-
-        // --- Solve the LP ---
-        let solution = problem.solve().unwrap();
-
-        // Print the results.
-        // println!("Optimal objective (volume): {}", solution.objective());
 
         // Assign the positions to the vertices
         for vert_id in self.structure.vert_ids() {
-            let (x, y, z) = vert_to_var[&vert_id];
-            let position = Vector3D::new(solution[x], solution[y], solution[z]);
+            let [x, y, z] = vert_to_coord[&vert_id];
+            let position = Vector3D::new(x, y, z);
             // println!("Vertex {vert_id:?} at {position:?}");
             self.structure.verts[vert_id].set_position(position);
         }
+    }
 
-        // let mut zone_to_target = HashMap::new();
-        // let mut smallest = 0.1;
+    pub fn edge_to_segment(&self, edge_id: PolycubeEdgeID, dual: &Dual) -> SegmentID {
+        let (vertex_start, vertex_end) = self.structure.endpoints(edge_id);
+        let (intersection_start, intersection_end) = (
+            self.region_to_vertex.get_by_right(&vertex_start).unwrap(),
+            self.region_to_vertex.get_by_right(&vertex_end).unwrap(),
+        );
 
-        // if let Some(layout) = layout {
-        //     for zone_id in dual.zones.keys() {
-        //         let direction = dual.zones[zone_id].direction;
-        //         let regions = &dual.zones[zone_id].regions;
-        //         let average_coord = hutspot::math::calculate_average_f64(
-        //             regions
-        //                 .iter()
-        //                 .filter_map(|&r| self.region_to_vertex.get_by_left(&r))
-        //                 .filter_map(|&v| layout.vert_to_corner.get_by_left(&v))
-        //                 .map(|&c| layout.granulated_mesh.position(c)[direction as usize]),
-        //         );
-
-        //         zone_to_target.insert(zone_id, average_coord * 1000.);
-        //     }
-
-        //     let min = zone_to_target.values().min_by_key(|&&a| OrderedFloat(a)).unwrap().to_owned();
-        //     let max = zone_to_target.values().max_by_key(|&&a| OrderedFloat(a)).unwrap().to_owned();
-        //     let max_dist = max - min;
-        //     smallest = max_dist * 0.001;
-        // }
-
-        // let mut zone_to_dependencies: HashMap<_, Vec<f64>> = HashMap::new();
-        // let mut zone_to_coordinate = HashMap::new();
-        // for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
-        //     let mut root_is_set = false;
-        //     // Get topological sort of the zones
-        //     let level_graph = &dual.level_graphs[direction as usize];
-        //     let mut topological_sort =
-        //         hutspot::graph::topological_sort::<ZoneID>(&level_graph.keys().copied().collect_vec(), |z| level_graph[&z].clone()).unwrap();
-        //     for zone in topological_sort.clone() {
-        //         let mut coordinate = zone_to_target.get(&zone).copied().unwrap_or(0.0);
-        //         // Get the dependencies of the zone
-        //         if let Some(dependencies) = zone_to_dependencies.get(&zone) {
-        //             // Assign value as the maximum of the dependencies + 1
-        //             coordinate = (dependencies.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap() + smallest).max(coordinate);
-        //         } else {
-        //             if root_is_set {
-        //                 continue;
-        //             }
-        //             root_is_set = true;
-        //         }
-        //         // Assign this coordinate as a dependency to all the children
-        //         for child in &level_graph[&zone] {
-        //             zone_to_dependencies.entry(child).or_insert(vec![]).push(coordinate);
-        //         }
-        //         // Assign the coordinate to the zone
-        //         zone_to_coordinate.insert(zone, coordinate);
-        //     }
-        //     topological_sort.reverse();
-        //     for zone in topological_sort {
-        //         if zone_to_coordinate.contains_key(&zone) {
-        //             continue;
-        //         }
-        //         // Get the dependencies of the zone
-        //         let dependencies = level_graph[&zone].iter().map(|z| zone_to_coordinate[z]).collect_vec();
-
-        //         // Assign the coordinate to the zone
-        //         if let Some(coordinate) = zone_to_target.get(&zone).copied() {
-        //             zone_to_coordinate.insert(
-        //                 zone,
-        //                 (dependencies.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(&1000000.) - smallest).min(coordinate),
-        //             );
-        //         } else {
-        //             zone_to_coordinate.insert(
-        //                 zone,
-        //                 dependencies.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(&1000000.) - smallest,
-        //             );
-        //         }
-        //     }
-        // }
-
-        // for vertex_id in self.structure.vert_ids() {
-        //     let region_id = self.region_to_vertex.get_by_right(&vertex_id).unwrap().to_owned();
-        //     let coordinates = [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z].map(|d| {
-        //         let zone = dual.region_to_zone(region_id, d);
-        //         zone_to_coordinate[&zone]
-        //     });
-        //     self.structure.verts[vertex_id].set_position(Vector3D::new(coordinates[0], coordinates[1], coordinates[2]));
-        // }
+        dual.loop_structure.edge_between_faces(*intersection_start, *intersection_end).unwrap().0
     }
 
     fn label(&self, face_id: PolycubeFaceID, dual: &Dual) -> PrincipalDirection {

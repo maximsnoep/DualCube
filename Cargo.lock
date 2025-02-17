@@ -1974,7 +1974,7 @@ dependencies = [
 [[package]]
 name = "douconel"
 version = "0.0.1"
-source = "git+https://github.com/maximsnoep/douconel#a900cd3affe4d0d19bba2e4c70e85dd9b2add446"
+source = "git+https://github.com/maximsnoep/douconel#d283bb9a4ec2bcb1a601d5ecb74e926388f45a97"
 dependencies = [
  "approx",
  "bevy",
@@ -2011,6 +2011,8 @@ dependencies = [
  "kdtree",
  "log",
  "microlp",
+ "nalgebra",
+ "nalgebra-sparse",
  "ordered-float",
  "petgraph 0.7.1",
  "priority-queue",
@@ -2751,7 +2753,7 @@ dependencies = [
 [[package]]
 name = "hutspot"
 version = "0.0.1"
-source = "git+https://github.com/maximsnoep/hutspot#6ecae94948b18ab02f889d3134a1faa0da85ef7e"
+source = "git+https://github.com/maximsnoep/hutspot#b505f98322766f1dd9b6b6bf2b1a4003fe160272"
 dependencies = [
  "approx",
  "bevy_render",
@@ -3228,9 +3230,9 @@ dependencies = [
 
 [[package]]
 name = "microlp"
-version = "0.2.9"
+version = "0.2.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "54df3293c9060b47f9953c8785e5c96e3d3c29e48afaf215f3f335ffc7007304"
+checksum = "edaa5264bc1f7668bc12e10757f8f529a526656c796cc2106cf2be10c5b8d483"
 dependencies = [
  "log",
  "sprs",
@@ -3329,6 +3331,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.89",
+]
+
+[[package]]
+name = "nalgebra-sparse"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1107e2587bc373090389bd5b54e05ac3184fd02d7c102decf5d76b8feb84b2d0"
+dependencies = [
+ "nalgebra",
+ "num-traits",
 ]
 
 [[package]]
@@ -4517,9 +4529,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.138"
+version = "1.0.137"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d434192e7da787e94a6ea7e9670b26a036d0ca41e0b7efb2676dd32bae872949"
+checksum = "930cfb6e6abf99298aaad7d29abbef7a9999a9a8806a40088f55f0dcec03146b"
 dependencies = [
  "itoa",
  "memchr",

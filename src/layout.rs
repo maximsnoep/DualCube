@@ -604,77 +604,124 @@ impl Layout {
     pub fn smoothening(&mut self) {
         // We smoothen each path until path is geodesic
         // https://dl.acm.org/doi/pdf/10.1145/3414685.3417839
+        let paths = self.edge_to_path.keys().copied().collect_vec();
 
-        let keys = self.edge_to_path.keys().copied().collect_vec();
+        // 'o: loop {
+        for (i, &path_id) in paths.iter().enumerate() {
+            println!("Smoothening path {}/{}", i + 1, paths.len());
+            // We make each path geodesic by doing the following:
+            //   While the path is not geodesic (i.e. there is a wedge with an angle < 180 degrees):
+            //     Find the wedge with the smallest angle
+            //     Flip out the wedge
+            //     Update the path
+
+            self.smoothen_path(path_id);
+
+            break;
+        }
+
+        println!("Smoothening done");
+    }
+
+    fn smoothen_path(&mut self, path_id: PolycubeEdgeID) {
+        let max_x = self
+            .granulated_mesh
+            .vert_ids()
+            .iter()
+            .map(|&v| self.granulated_mesh.position(v)[0])
+            .max_by_key(|&x| OrderedFloat(x))
+            .unwrap();
+        let min_x = self
+            .granulated_mesh
+            .vert_ids()
+            .iter()
+            .map(|&v| self.granulated_mesh.position(v)[0])
+            .min_by_key(|&x| OrderedFloat(x))
+            .unwrap();
+        let width = max_x - min_x;
+        let threshold = 0.001 * width;
+
         'o: loop {
-            for &path_id in &keys {
-                // Calculate \alpha for each vertex in the path.
-                // A path is locally geodesic if \alpha is > 180 degrees (pi) for each vertex
-                // Any vertex with \alpha < 180 degrees is a candidate for smoothing
-                // Every vertex is defined as a wedge, consisting of the vertex and its two neighbors.
-                let mut wedges = priority_queue::PriorityQueue::new();
-                let path = self.edge_to_path.get(&path_id).unwrap();
-                for pair in path.windows(3) {
-                    // Find the shortest (angle) wedge of a,b,c.
-                    let (a, b, c) = (pair[0], pair[1], pair[2]);
-
-                    if self.granulated_mesh.distance(a, b) < 1e-3 || self.granulated_mesh.distance(b, c) < 1e-3 {
-                        continue;
+            // Calculate all wedges:
+            let mut wedges = priority_queue::PriorityQueue::new();
+            let path = self.edge_to_path.get(&path_id).unwrap();
+            for pair in path.windows(3) {
+                println!("path: {:?}", path_id);
+                println!("pair: {:?}", pair);
+                // Find the shortest (angle) wedge of a,b,c.
+                let (a, b, c) = (pair[0], pair[1], pair[2]);
+                println!("computing shortest wedge");
+                assert!(self.granulated_mesh.edge_between_verts(a, b).is_some());
+                assert!(self.granulated_mesh.edge_between_verts(b, c).is_some());
+                let (w, alpha) = self.granulated_mesh.shortest_wedge(a, b, c);
+                println!("shortest wedge: {:?}", alpha);
+                let length = self.granulated_mesh.distance(a, b) + self.granulated_mesh.distance(b, c);
+                println!("length: {:?}", length);
+                if length < threshold {
+                    continue;
+                }
+                // if parts of the wedge are OCCUPIED, we also skip it
+                for path in self.edge_to_path.values() {
+                    for (u, v) in path.iter().tuple_windows() {
+                        if w.iter().tuple_windows().any(|(u2, v2)| (u == u2 && v == v2) || (u == v2 && v == u2)) {
+                            continue;
+                        }
                     }
-
-                    let (w, alpha) = self.granulated_mesh.shortest_wedge(a, b, c);
-                    wedges.push((w, b), Reverse(OrderedFloat(alpha)));
                 }
 
-                if wedges.is_empty() {
-                    println!("Path {path_id:?} is empty");
-                    continue;
+                println!("pushing wedge");
+                wedges.push((w, b), Reverse(OrderedFloat(alpha)));
+                println!("pushed wedge");
+            }
+
+            println!("nubmer of wedges: {}", wedges.len());
+
+            // While the path is not geodesic, grab the smallest wedge:
+            if let Some(((wedge, b), alpha)) = wedges.pop() {
+                println!("Worst wedge: {:?}", alpha.0 .0);
+                if alpha.0 .0 > 3.0 {
+                    println!("Path {path_id:?} is geodesic");
+                    break 'o;
                 }
 
-                let ((mut wedge, b), alpha) = wedges.pop().unwrap().clone();
-                if alpha.0 .0 > 3.05 {
-                    println!("Path {path_id:?} is already geodesic");
-                    continue;
-                }
-                println!("Path {path_id:?} is not geodesic, smoothening wedge {b:?}");
-
-                let path = self.edge_to_path.get(&path_id).unwrap();
-                assert!(path.contains(&wedge[0]) && path.contains(&wedge[wedge.len() - 1]));
-
-                // Now we apply flips on the wedge
+                // Flip out the wedge.
+                let mut wedge_copy = wedge.clone();
                 'l: loop {
-                    for i in 1..wedge.len() - 1 {
-                        let (n_im1, n_i, n_ip1) = (wedge[i - 1], wedge[i], wedge[i + 1]);
+                    for i in 1..wedge_copy.len() - 1 {
+                        let (n_im1, n_i, n_ip1) = (wedge_copy[i - 1], wedge_copy[i], wedge_copy[i + 1]);
                         let beta_i = self.granulated_mesh.vertex_angle(n_im1, n_i, b) + self.granulated_mesh.vertex_angle(b, n_i, n_ip1);
-                        // println!("beta_{i}: {beta_i:?}");
-                        if beta_i < 3.12 {
-                            // We flip the triangle
+                        if beta_i < 3.1 {
+                            // We flip the two triangles
                             if let Some(new_v) = self.granulated_mesh.splip_edge(n_i, b) {
-                                wedge[i] = new_v;
+                                wedge_copy[i] = new_v;
                                 continue 'l;
                             }
                         }
                     }
-                    break;
+                    // If we reach this point, the wedge is flipped out as much as possible.
+                    break 'l;
                 }
 
-                // Now we update the path
-                for pair in path.windows(2) {
-                    // does the edge exist?
-                    let edgepair = self.granulated_mesh.edge_between_verts(pair[0], pair[1]);
-                    assert!(edgepair.is_some(), "Edge not found: {:?} {:?} path id: {:?}", pair[0], pair[1], path_id);
-                }
+                assert!(wedge_copy.len() == wedge.len());
 
+                // Update the path
+                let path = self.edge_to_path.get(&path_id).unwrap();
                 let path_before_wedge = path.iter().take_while(|&&v| v != *wedge.first().unwrap()).copied().collect_vec();
                 let path_after_wedge = path.iter().skip_while(|&&v| v != *wedge.last().unwrap()).skip(1).copied().collect_vec();
-                let new_path = path_before_wedge.into_iter().chain(wedge).chain(path_after_wedge.into_iter()).collect_vec();
-
+                let new_path = path_before_wedge
+                    .into_iter()
+                    .chain(wedge_copy)
+                    .chain(path_after_wedge.into_iter())
+                    .collect_vec();
                 self.edge_to_path.insert(path_id, new_path.clone());
-                self.edge_to_path
-                    .insert(self.polycube_ref.structure.twin(path_id), new_path.iter().rev().copied().collect_vec());
                 continue 'o;
             }
-            return;
+            break 'o;
         }
+    }
+
+    pub fn get_length_of_path(&self, path_id: PolycubeEdgeID) -> f64 {
+        let path = self.edge_to_path.get(&path_id).unwrap();
+        path.windows(2).map(|verts| self.granulated_mesh.distance(verts[0], verts[1])).sum()
     }
 }

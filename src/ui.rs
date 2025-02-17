@@ -1,5 +1,5 @@
 use crate::render::{CameraFor, Objects};
-use crate::{dual, to_color, ActionEvent, CameraHandles, Configuration, InputResource, Perspective, SolutionResource};
+use crate::{dual, to_color, ActionEvent, ActionEventStatus, CameraHandles, Configuration, InputResource, Perspective, SolutionResource};
 use crate::{HexMeshStatus, PrincipalDirection};
 use bevy::prelude::*;
 use bevy_egui::egui::{emath::Numeric, text::LayoutJob, Align, Color32, FontId, Frame, Layout, Slider, TextFormat, TopBottomPanel, Ui, Window};
@@ -43,9 +43,10 @@ pub fn setup(mut ui: bevy_egui::EguiContexts) {
 fn header(
     ui: &mut Ui,
     ev_w: &mut EventWriter<ActionEvent>,
-    mesh: &Res<InputResource>,
+    mesh: &mut ResMut<InputResource>,
     solution: &Res<SolutionResource>,
     configuration: &mut ResMut<Configuration>,
+    time: &Res<Time>,
 ) {
     ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
         Frame {
@@ -55,8 +56,8 @@ fn header(
         }
         .show(ui, |ui| {
             bevy_egui::egui::menu::bar(ui, |ui| {
-                bevy_egui::egui::menu::menu_button(ui, "File", |ui| {
-                    if ui.button("Load").clicked() {
+                menu_button(ui, "File", |ui| {
+                    if sleek_button(ui, "Load") {
                         if let Some(path) = rfd::FileDialog::new().add_filter("triangulated geometry", &["obj", "stl", "save"]).pick_file() {
                             ev_w.send(ActionEvent::LoadFile(path));
                         }
@@ -64,28 +65,28 @@ fn header(
                     ui.add_space(5.);
                     ui.separator();
                     ui.add_space(5.);
-                    if ui.button("Export SAVE").clicked() {
+                    if sleek_button(ui, "Export SAVE") {
                         ev_w.send(ActionEvent::ExportState);
                     }
                     ui.add_space(5.);
-                    if ui.button("Export FLAG").clicked() {
+                    if sleek_button(ui, "Export FLAG") {
                         ev_w.send(ActionEvent::ExportSolution);
                     }
                     ui.add_space(5.);
-                    if ui.button("Export NLR").clicked() {
+                    if sleek_button(ui, "Export NLR") {
                         ev_w.send(ActionEvent::ExportNLR);
                     }
                     ui.add_space(5.);
                     ui.separator();
                     ui.add_space(5.);
-                    if ui.button("Quit").clicked() {
+                    if sleek_button(ui, "Quit") {
                         std::process::exit(0);
                     }
                 });
 
                 ui.separator();
 
-                bevy_egui::egui::menu::menu_button(ui, "Info", |ui| {
+                menu_button(ui, "Info", |ui| {
                     if mesh.properties.source.is_empty() {
                         ui.label("No file loaded.");
                     } else {
@@ -121,7 +122,7 @@ fn header(
 
                 ui.separator();
 
-                bevy_egui::egui::menu::menu_button(ui, "Controls", |ui| {
+                menu_button(ui, "Controls", |ui| {
                     ui.label("CAMERA");
                     ui.add_space(2.);
                     ui.label("  Rotate: ctrl + right-mouse-drag");
@@ -156,7 +157,7 @@ fn header(
 
                 ui.separator();
 
-                bevy_egui::egui::menu::menu_button(ui, "Rendering", |ui| {
+                menu_button(ui, "Rendering", |ui| {
                     ui.checkbox(&mut configuration.show_gizmos_mesh, "Wireframe");
                     ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
                         ui.add_space(15.);
@@ -176,6 +177,76 @@ fn header(
                             ui.checkbox(&mut false, "Flat edges");
                         }
                     });
+                    ui.add_space(5.);
+
+                    ui.label("Background color (BUGGY: USE RIGHT or MIDDLE MOUSE BUTTON)");
+                    // stupid bug: https://github.com/emilk/egui/issues/3718
+                    ui.color_edit_button_srgb(&mut configuration.clear_color);
+
+                    if sleek_button(ui, "Confirm") {
+                        ev_w.send(ActionEvent::ResetCamera);
+                        mesh.as_mut();
+                    }
+                });
+
+                ui.separator();
+
+                menu_button(ui, "Solution", |ui| {
+                    ui.checkbox(&mut configuration.unit_cubes, "Unit lengths");
+
+                    if sleek_button(ui, "Recompute") {
+                        ev_w.send(ActionEvent::Recompute);
+                    }
+                });
+
+                ui.separator();
+
+                menu_button_unfocused(ui, "WIP: Hex-meshing", |ui| {
+                    ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
+                        if sleek_button_unfocused(ui, "Run hex-mesh pipeline") && !matches!(&configuration.hex_mesh_status, HexMeshStatus::Loading) {
+                            ev_w.send(ActionEvent::ToHexmesh);
+                        };
+                        if matches!(configuration.hex_mesh_status, HexMeshStatus::Loading) {
+                            ui.add_space(5.);
+                            ui.label(text(&timer_animation(time)));
+                        }
+                    });
+
+                    if let HexMeshStatus::Done(score) = &configuration.hex_mesh_status {
+                        ui.add_space(5.);
+                        ui.label("Hex-meshing results:");
+                        ui.add_space(5.);
+                        ui.label(format!(
+                            "hd: {hd:.3}\nsJ: {sj:.3} ({sjmin:.3}-{sjmax:.3})\nirr: {irr:.3}",
+                            hd = score.hausdorff,
+                            sj = score.avg_jacob,
+                            sjmin = score.min_jacob,
+                            sjmax = score.max_jacob,
+                            irr = score.irregular,
+                        ));
+                    }
+                });
+
+                ui.separator();
+
+                menu_button_unfocused(ui, "WIP: Smoothening", |ui| {
+                    ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
+                        if sleek_button_unfocused(ui, "Run smoothening algorithm") && !matches!(&configuration.smoothen_status, ActionEventStatus::Loading) {
+                            ev_w.send(ActionEvent::Smoothen);
+                        };
+
+                        if matches!(configuration.smoothen_status, ActionEventStatus::Loading) {
+                            ui.add_space(5.);
+                            ui.label(text(&timer_animation(time)));
+                        }
+                    });
+
+                    if let ActionEventStatus::Done(score) = &configuration.smoothen_status {
+                        ui.add_space(5.);
+                        ui.label("Smoothening results:");
+                        ui.add_space(5.);
+                        ui.label(score);
+                    }
                 });
             });
         });
@@ -206,7 +277,7 @@ fn footer(egui_ctx: &mut bevy_egui::EguiContexts, conf: &mut Configuration, solu
             ui.with_layout(Layout::right_to_left(Align::TOP), |ui| {
                 ui.add_space(15.);
                 let mut job = LayoutJob::default();
-                display_label(&mut job, "maxim snoep \\ tue \\ nlr");
+                display_label(&mut job, "bloopy - maxim snoep");
                 ui.label(job);
             });
         });
@@ -218,17 +289,6 @@ fn footer(egui_ctx: &mut bevy_egui::EguiContexts, conf: &mut Configuration, solu
 fn display_fps_and_loading(ui: &mut Ui, fps: f64, time: &Time) {
     let mut job = LayoutJob::default();
     job.append(&format!("{fps:.0}"), 0.0, text_format(9.0, Color32::WHITE));
-    ui.label(job);
-
-    let elapsed = (time.elapsed_seconds() / 4.) % 1.;
-    let label = match elapsed {
-        x if x < 0.25 => " . ",
-        x if x < 0.5 => ".. ",
-        x if x < 0.75 => "...",
-        _ => " ..",
-    };
-    job = LayoutJob::default();
-    job.append(label, 0.0, text_format(9.0, Color32::WHITE));
     ui.label(job);
 }
 
@@ -248,7 +308,7 @@ pub fn update(
     mut egui_ctx: bevy_egui::EguiContexts,
     mut ev_w: EventWriter<ActionEvent>,
     mut conf: ResMut<Configuration>,
-    mesh: Res<InputResource>,
+    mut mesh: ResMut<InputResource>,
     solution: Res<SolutionResource>,
     time: Res<Time>,
     image_handle: Res<CameraHandles>,
@@ -259,7 +319,7 @@ pub fn update(
         ui.horizontal(|ui| {
             ui.with_layout(Layout::top_down(Align::TOP), |ui| {
                 // FIRST ROW
-                header(ui, &mut ev_w, &mesh, &solution, &mut conf);
+                header(ui, &mut ev_w, &mut mesh, &solution, &mut conf, &time);
 
                 ui.add_space(5.);
 
@@ -279,8 +339,11 @@ pub fn update(
                     ui.add_space(15.);
 
                     bevy_egui::egui::menu::bar(ui, |ui| {
-                        let rt = RichText::new("AUTO").color(if conf.automatic { Color32::WHITE } else { Color32::GRAY });
-                        if sleek_button(ui, rt) {
+                        if if conf.automatic {
+                            sleek_button(ui, "AUTO")
+                        } else {
+                            sleek_button_unfocused(ui, "AUTO")
+                        } {
                             if conf.automatic {
                                 conf.automatic = false;
                             } else {
@@ -293,8 +356,11 @@ pub fn update(
                         let rt: RichText = RichText::new("|").color(Color32::GRAY);
                         ui.label(rt);
 
-                        let rt = RichText::new("MANUAL").color(if conf.interactive { Color32::WHITE } else { Color32::GRAY });
-                        if sleek_button(ui, rt) {
+                        if if conf.interactive {
+                            sleek_button(ui, "MANUAL")
+                        } else {
+                            sleek_button_unfocused(ui, "MANUAL")
+                        } {
                             if conf.interactive {
                                 conf.interactive = false;
                             } else {
@@ -366,55 +432,6 @@ pub fn update(
                 });
 
                 ui.add_space(5.);
-
-                // NEXT ROW
-                ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
-                    ui.add_space(15.);
-
-                    bevy_egui::egui::menu::bar(ui, |ui| {
-                        let rt = RichText::new("HEXMESH").color(Color32::WHITE);
-                        if sleek_button(ui, rt) {
-                            ev_w.send(ActionEvent::ToHexmesh);
-                        };
-
-                        ui.add_space(15.);
-
-                        match &conf.hex_mesh_status {
-                            HexMeshStatus::None => {}
-                            HexMeshStatus::Loading => {
-                                let mut job = LayoutJob::default();
-                                let elapsed = (time.elapsed_seconds() / 4.) % 1.;
-                                let label = if elapsed < 0.25 {
-                                    " . "
-                                } else if elapsed < 0.5 {
-                                    ".. "
-                                } else if elapsed < 0.75 {
-                                    "..."
-                                } else {
-                                    " .."
-                                };
-                                job.append(label, 0.0, text_format(12.0, Color32::WHITE));
-                                ui.label(job);
-                            }
-                            HexMeshStatus::Done(score) => {
-                                let mut job = LayoutJob::default();
-                                job.append(
-                                    &format!(
-                                        "Hd: {hd}, sJ: {sj} ({sjmin}-{sjmax}), irr: {irr}",
-                                        hd = score.hausdorff,
-                                        sj = score.avg_jacob,
-                                        sjmin = score.min_jacob,
-                                        sjmax = score.max_jacob,
-                                        irr = score.irregular,
-                                    ),
-                                    0.0,
-                                    text_format(9.0, Color32::WHITE),
-                                );
-                                ui.label(job);
-                            }
-                        }
-                    })
-                });
             });
         });
 
@@ -473,7 +490,7 @@ pub fn update(
                 }
                 .show(ui, |ui| {
                     bevy_egui::egui::menu::bar(ui, |ui| {
-                        bevy_egui::egui::menu::menu_button(ui, String::from(conf.window_shows_object[i]), |ui| {
+                        menu_button(ui, &String::from(conf.window_shows_object[i]), |ui| {
                             for object in all::<Objects>() {
                                 if ui.button(String::from(object)).clicked() {
                                     conf.window_shows_object[i] = object;
@@ -481,9 +498,9 @@ pub fn update(
                             }
                         });
 
-                        if ui.button("+").clicked() {
+                        if sleek_button(ui, "+") {
                             if conf.window_has_size[i] > 0. {
-                                conf.window_has_size[i] += 64.;
+                                conf.window_has_size[i] += 128.;
                                 if conf.window_has_size[i] > 640. {
                                     conf.window_has_size[i] = 640.;
                                 }
@@ -491,8 +508,8 @@ pub fn update(
                                 conf.window_has_size[i] = 256.;
                             }
                         }
-                        if ui.button("-").clicked() {
-                            conf.window_has_size[i] -= 64.;
+                        if sleek_button(ui, "-") {
+                            conf.window_has_size[i] -= 128.;
                             if conf.window_has_size[i] < 256. {
                                 conf.window_has_size[i] = 0.;
                             }
@@ -570,13 +587,33 @@ pub fn text_format(size: f32, color: Color32) -> TextFormat {
     }
 }
 
-pub fn sleek_button<T>(ui: &mut Ui, label: T) -> bool
-where
-    T: Into<WidgetText>,
-{
-    bevy_egui::egui::menu::menu_button(ui, label, |ui| {
+pub fn menu_button(ui: &mut Ui, label: &str, f: impl FnOnce(&mut Ui)) {
+    bevy_egui::egui::menu::menu_button(ui, RichText::new(label).color(Color32::WHITE), f);
+}
+
+pub fn menu_button_unfocused(ui: &mut Ui, label: &str, f: impl FnOnce(&mut Ui)) {
+    bevy_egui::egui::menu::menu_button(ui, RichText::new(label).color(Color32::GRAY), f);
+}
+
+pub fn sleek_button(ui: &mut Ui, label: &str) -> bool {
+    bevy_egui::egui::menu::menu_button(ui, RichText::new(label).color(Color32::WHITE), |ui| {
         ui.close_menu();
     })
     .response
     .clicked()
+}
+
+pub fn sleek_button_unfocused(ui: &mut Ui, label: &str) -> bool {
+    bevy_egui::egui::menu::menu_button(ui, RichText::new(label).color(Color32::GRAY), |ui| {
+        ui.close_menu();
+    })
+    .response
+    .clicked()
+}
+
+pub fn timer_animation(time: &Time) -> String {
+    let frequency = 5.;
+    let animation = ["◐", "◓", "◑", "◒"];
+    let index = (time.elapsed_seconds() * frequency) as usize % animation.len();
+    animation[index].to_string()
 }

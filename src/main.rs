@@ -42,9 +42,6 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use winit::window::Icon;
 
-// pub const BACKGROUND_COLOR: bevy::prelude::Color = bevy::prelude::Color::srgb(255. / 255., 255. / 255., 255. / 255.);
-pub const BACKGROUND_COLOR: bevy::prelude::Color = bevy::prelude::Color::srgb(27. / 255., 27. / 255., 27. / 255.);
-
 slotmap::new_key_type! {
     pub struct VertID;
     pub struct EdgeID;
@@ -168,12 +165,17 @@ pub struct Configuration {
     pub window_has_position: [(f32, f32); 4],
 
     pub hex_mesh_status: HexMeshStatus,
+    pub smoothen_status: ActionEventStatus,
 
     pub show_gizmos_mesh: bool,
     pub show_gizmos_mesh_granulated: bool,
     pub show_gizmos_loops: bool,
     pub show_gizmos_paths: bool,
     pub show_gizmos_flat_edges: bool,
+
+    pub clear_color: [u8; 3],
+
+    pub unit_cubes: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -214,11 +216,14 @@ impl Default for Configuration {
             window_has_size: [256., 256., 256., 0.],
             window_has_position: [(0., 0.); 4],
             hex_mesh_status: HexMeshStatus::None,
-            show_gizmos_mesh: true,
-            show_gizmos_mesh_granulated: true,
+            smoothen_status: ActionEventStatus::None,
+            show_gizmos_mesh: false,
+            show_gizmos_mesh_granulated: false,
             show_gizmos_loops: true,
             show_gizmos_paths: true,
-            show_gizmos_flat_edges: true,
+            show_gizmos_flat_edges: false,
+            clear_color: [27, 27, 27],
+            unit_cubes: true,
         }
     }
 }
@@ -236,7 +241,7 @@ pub fn fps(diagnostics: Res<DiagnosticsStore>, mut configuration: ResMut<Configu
 
 #[derive(Resource, Default)]
 struct Tasks {
-    generating_chunks: HashMap<usize, Task<Option<Solution>>>,
+    generating_chunks: HashMap<ActionEvent, Task<Option<Solution>>>,
 }
 
 #[derive(Resource, Default)]
@@ -268,7 +273,7 @@ pub struct RenderedMesh;
 #[derive(Component)]
 pub struct MainMesh;
 
-#[derive(Event, Debug)]
+#[derive(Event, Debug, Eq, Hash, PartialEq)]
 pub enum ActionEvent {
     LoadFile(PathBuf),
     ExportAll,
@@ -278,6 +283,15 @@ pub enum ActionEvent {
     ToHexmesh,
     ResetCamera,
     Mutate,
+    Smoothen,
+    Recompute,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub enum ActionEventStatus {
+    None,
+    Loading,
+    Done(String),
 }
 
 // implement default for KdTree using the New Type Idiom
@@ -339,7 +353,6 @@ fn main() {
         .init_resource::<Tasks>()
         .init_resource::<HexTasks>()
         .init_resource::<CameraHandles>()
-        .insert_resource(ClearColor(BACKGROUND_COLOR))
         .insert_resource(AmbientLight {
             color: Color::WHITE,
             brightness: 1.0,
@@ -424,37 +437,50 @@ pub fn handle_solution_tasks(
     mut tasks: ResMut<Tasks>,
     mut solution: ResMut<SolutionResource>,
     mut ev_writer: EventWriter<ActionEvent>,
-    configuration: Res<Configuration>,
+    mut configuration: ResMut<Configuration>,
 ) {
     tasks.generating_chunks.retain(|id, task| {
         // check on our task to see how it's doing :)
         let status = block_on(future::poll_once(task));
 
-        // keep the entry in our HashMap only if the task is not done yet
-        let retain = status.is_none();
-
         // if this task is done, handle the data it returned!
         if let Some(chunk_data) = status {
-            println!("Task {} is done!", id);
+            match &id {
+                ActionEvent::Mutate => {
+                    if let Some(new_solution) = chunk_data {
+                        if new_solution.get_quality() * 0.98 > solution.current_solution.get_quality() {
+                            println!("New solution is better than current solution. Updating...");
+                            solution.current_solution = new_solution;
+                        } else {
+                            println!("New solution is worse than current solution. Discarding...");
+                        }
+                    }
 
-            if let Some(new_solution) = chunk_data {
-                if *id == 1 && new_solution.get_quality() * 0.98 > solution.current_solution.get_quality() {
-                    println!("New solution is better than current solution. Updating...");
-                    solution.current_solution = new_solution;
-                } else if *id == 0 && new_solution.get_quality() * 1.01 > solution.current_solution.get_quality() {
-                    println!("Solution overwritten.");
-                    solution.current_solution = new_solution;
-                } else {
-                    println!("New solution is worse than current solution. Discarding...");
+                    if configuration.should_continue {
+                        ev_writer.send(ActionEvent::Mutate);
+                    }
                 }
+                ActionEvent::Smoothen => {
+                    if let Some(new_solution) = chunk_data {
+                        println!("Smoothened solution. Updating...");
+                        solution.current_solution = new_solution;
+                    }
+
+                    configuration.smoothen_status = ActionEventStatus::Done("Smoothening done.".to_string());
+                }
+                ActionEvent::Recompute => {
+                    if let Some(new_solution) = chunk_data {
+                        println!("Recomputed solution. Updating...");
+                        solution.current_solution = new_solution;
+                    }
+                }
+                _ => {}
             }
 
-            if configuration.should_continue {
-                ev_writer.send(ActionEvent::Mutate);
-            }
+            false
+        } else {
+            true
         }
-
-        retain
     });
 }
 
@@ -631,7 +657,7 @@ pub fn handle_events(
                     // solution.current_solution.initialize(&mesh_resmut.flow_graphs);
                 }
 
-                solution.current_solution.reconstruct_solution();
+                solution.current_solution.reconstruct_solution(configuration.unit_cubes);
             }
             ActionEvent::ExportNLR => {
                 let cur = format!("{}", env::current_dir().unwrap().clone().display());
@@ -821,7 +847,7 @@ pub fn handle_events(
                 hextasks.generating_chunks.insert(999, task);
             }
             ActionEvent::ResetCamera => {
-                render::reset(&mut commands, &cameras, &mut images, &mut camera_handles);
+                render::reset(&mut commands, &cameras, &mut images, &mut camera_handles, &configuration);
             }
             ActionEvent::Mutate => {
                 let task_pool = AsyncComputeTaskPool::get();
@@ -835,24 +861,58 @@ pub fn handle_events(
                             cloned_solution.mutate_add_loop(10, &cloned_flow_graphs)
                         }
                     });
-                    tasks.generating_chunks.insert(0, task);
+                    tasks.generating_chunks.insert(ActionEvent::Mutate, task);
+                } else if rand::random() {
+                    let task = task_pool.spawn(async move {
+                        {
+                            cloned_solution.mutate_add_loop(10, &cloned_flow_graphs)
+                        }
+                    });
+                    tasks.generating_chunks.insert(ActionEvent::Mutate, task);
                 } else {
-                    if rand::random() {
-                        let task = task_pool.spawn(async move {
-                            {
-                                cloned_solution.mutate_add_loop(10, &cloned_flow_graphs)
-                            }
-                        });
-                        tasks.generating_chunks.insert(0, task);
-                    } else {
-                        let task = task_pool.spawn(async move {
-                            {
-                                cloned_solution.mutate_del_loop(10)
-                            }
-                        });
-                        tasks.generating_chunks.insert(1, task);
-                    }
+                    let task = task_pool.spawn(async move {
+                        {
+                            cloned_solution.mutate_del_loop(10)
+                        }
+                    });
+                    tasks.generating_chunks.insert(ActionEvent::Mutate, task);
                 }
+            }
+            ActionEvent::Smoothen => {
+                let mut cloned_solution = solution.current_solution.clone();
+                configuration.smoothen_status = ActionEventStatus::Loading;
+                tasks.generating_chunks.insert(
+                    ActionEvent::Smoothen,
+                    AsyncComputeTaskPool::get().spawn(async move {
+                        {
+                            cloned_solution.smoothen();
+                            Some(cloned_solution)
+                        }
+                    }),
+                );
+            }
+            ActionEvent::Recompute => {
+                println!("Once");
+                let mut cloned_solution = solution.current_solution.clone();
+                let unit = configuration.unit_cubes;
+                tasks.generating_chunks.insert(
+                    ActionEvent::Recompute,
+                    AsyncComputeTaskPool::get().spawn(async move {
+                        {
+                            // dual.compute_level_values(Some(layout));
+                            // self.resize_polycube();
+                            if let Ok(dual) = cloned_solution.dual.as_mut() {
+                                if let (Ok(layout), false) = (&cloned_solution.layout, unit) {
+                                    dual.compute_level_values(Some(layout));
+                                } else {
+                                    dual.compute_level_values(None);
+                                }
+                                cloned_solution.resize_polycube();
+                            }
+                            Some(cloned_solution)
+                        }
+                    }),
+                );
             }
         }
     }
@@ -1011,7 +1071,7 @@ fn raycast(
 
                 let mut new_sol = solution.current_solution.clone();
                 new_sol.del_loop(loop_id);
-                if new_sol.reconstruct_solution().is_ok() {
+                if new_sol.reconstruct_solution(configuration.unit_cubes).is_ok() {
                     solution.current_solution = new_sol;
                     solution.next[0].clear();
                     solution.next[1].clear();
@@ -1111,7 +1171,7 @@ fn raycast(
                     edges: candidate_loop,
                     direction: configuration.direction,
                 });
-                if candidate_solution.reconstruct_solution().is_ok() {
+                if candidate_solution.reconstruct_solution(configuration.unit_cubes).is_ok() {
                     solution.next[configuration.direction as usize].insert([selected_edges[0], selected_edges[1]], Some(candidate_solution));
                 }
             }
@@ -1209,7 +1269,7 @@ fn raycast(
             edges: best_option,
             direction: configuration.direction,
         });
-        real_solution.reconstruct_solution();
+        real_solution.reconstruct_solution(configuration.unit_cubes);
 
         solution.next[configuration.direction as usize].insert(edgepair, Some(real_solution));
     }
