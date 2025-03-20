@@ -3,7 +3,7 @@ use crate::{dual, to_color, ActionEvent, ActionEventStatus, CameraHandles, Confi
 use crate::{HexMeshStatus, PrincipalDirection};
 use bevy::prelude::*;
 use bevy_egui::egui::{emath::Numeric, text::LayoutJob, Align, Color32, FontId, Frame, Layout, Slider, TextFormat, TopBottomPanel, Ui, Window};
-use bevy_egui::egui::{RichText, Rounding, WidgetText};
+use bevy_egui::egui::{RichText, Rounding};
 
 use enum_iterator::all;
 use tico::tico;
@@ -167,14 +167,22 @@ fn header(
                             ui.checkbox(&mut false, "Wireframe granulated");
                         }
                     });
-                    ui.checkbox(&mut configuration.show_gizmos_loops, "Loops");
-                    ui.checkbox(&mut configuration.show_gizmos_paths, "Paths");
+
+                    ui.add_space(5.);
+
+                    ui.checkbox(&mut configuration.show_gizmos_loops[0], "x-loops");
+                    ui.checkbox(&mut configuration.show_gizmos_loops[1], "y-loops");
+                    ui.checkbox(&mut configuration.show_gizmos_loops[2], "z-loops");
+
+                    ui.add_space(5.);
+
+                    ui.checkbox(&mut configuration.show_gizmos_paths, "paths");
                     ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
                         ui.add_space(15.);
                         if configuration.show_gizmos_paths {
-                            ui.checkbox(&mut configuration.show_gizmos_flat_edges, "Flat edges");
+                            ui.checkbox(&mut configuration.show_gizmos_flat_edges, "flat edges");
                         } else {
-                            ui.checkbox(&mut false, "Flat edges");
+                            ui.checkbox(&mut false, "flat edges");
                         }
                     });
                     ui.add_space(5.);
@@ -269,7 +277,7 @@ fn footer(egui_ctx: &mut bevy_egui::EguiContexts, conf: &mut Configuration, solu
                 display_label(&mut job, " | ");
                 append_status(&mut job, "primal", &solution.current_solution.layout);
                 display_label(&mut job, " | ");
-                display_label(&mut job, &format!("quality: {value:.3}", value = solution.current_solution.get_quality()));
+                display_label(&mut job, &format!("quality: {value:?}", value = solution.current_solution.get_quality()));
                 ui.label(job);
             });
 

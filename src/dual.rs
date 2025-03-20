@@ -1,32 +1,15 @@
 use crate::{
-    layout::Layout,
+    graph::Graaf,
     solutions::{Loop, LoopID},
     EdgeID, EmbeddedMesh, PrincipalDirection, VertID,
 };
 use douconel::douconel::Douconel;
-use hutspot::geom::Vector3D;
 use itertools::Itertools;
-use slotmap::SlotMap;
+use slotmap::{SecondaryMap, SlotMap};
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
 };
-
-// A collection of loops forms a loop structure; a graph. Vertices are loop intersections. Edges are loop segments. And faces are loop regions.
-slotmap::new_key_type! {
-    pub struct IntersectionID;
-    pub struct SegmentID;
-    pub struct RegionID;
-    pub struct ZoneID;
-}
-
-#[derive(Default, Copy, Clone, Debug)]
-pub struct Segment {
-    // A loop segment is defined by a reference to a loop (id)
-    pub loop_id: LoopID,
-    // And the direction of the loop segment (either following the loop, or opposite direction of the loop)
-    pub orientation: Orientation,
-}
 
 #[derive(Default, Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Orientation {
@@ -35,9 +18,28 @@ pub enum Orientation {
     Backwards,
 }
 
+// A collection of loops forms a loop structure; a graph, where
+// the vertices correspond to loop intersections,
+// the edges correspond to loop segments,
+// and the faces correspond to loop regions.
+slotmap::new_key_type! {
+    pub struct LoopIntersectionID;
+    pub struct LoopSegmentID;
+    pub struct LoopRegionID;
+    pub struct ZoneID;
+}
+
+#[derive(Default, Copy, Clone, Debug)]
+pub struct LoopSegment {
+    // A loop segment has a corresponding loop (id) and an orientation (either following the direction of the loop, or opposite direction of the loop)
+    pub loop_id: LoopID,
+    // TODO: make a function that reads the orientation by checking the corresponding loop..
+    pub orientation: Orientation,
+}
+
 #[derive(Default, Clone, Debug)]
-pub struct Region {
-    // A region is defined by a set of vertices
+pub struct LoopRegion {
+    // A loop region has a corresponding surface, in this implementation, the surface is defined by a set of mesh vertices
     pub verts: HashSet<VertID>,
 }
 
@@ -46,10 +48,22 @@ pub struct Zone {
     // A zone is defined by a direction
     pub direction: PrincipalDirection,
     // All regions that are part of the zone
-    pub regions: HashSet<RegionID>,
+    pub regions: HashSet<LoopRegionID>,
 }
 
-pub type LoopStructure = Douconel<IntersectionID, EdgeID, SegmentID, Segment, RegionID, Region>;
+#[derive(Default, Clone, Debug)]
+pub struct LevelGraphs {
+    //
+    pub zones: SlotMap<ZoneID, Zone>,
+    //
+    pub graphs: [Graaf<ZoneID, LoopID>; 3],
+    //
+    pub region_to_zones: [SecondaryMap<LoopRegionID, ZoneID>; 3],
+    //
+    pub levels: [Vec<HashSet<ZoneID>>; 3],
+}
+
+pub type LoopStructure = Douconel<LoopIntersectionID, EdgeID, LoopSegmentID, LoopSegment, LoopRegionID, LoopRegion>;
 
 // Dual structure (of a polycube)
 #[derive(Debug, Clone)]
@@ -59,11 +73,7 @@ pub struct Dual {
     pub loops_ref: SlotMap<LoopID, Loop>,
 
     pub loop_structure: LoopStructure,
-    pub zones: SlotMap<ZoneID, Zone>,
-    pub level_graphs: [HashMap<ZoneID, Vec<(ZoneID, Orientation)>>; 3],
-
-    pub levels: [Vec<HashSet<ZoneID>>; 3],
-    pub level_to_value: [Vec<f64>; 3],
+    pub level_graphs: LevelGraphs,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -84,10 +94,7 @@ impl Dual {
             mesh_ref,
             loops_ref: loops_ref.clone(),
             loop_structure: Douconel::default(),
-            zones: SlotMap::with_key(),
-            level_graphs: [HashMap::new(), HashMap::new(), HashMap::new()],
-            levels: [vec![], vec![], vec![]],
-            level_to_value: [vec![], vec![], vec![]],
+            level_graphs: LevelGraphs::default(),
         };
 
         // Find all intersections and loop regions induced by the loops, and compute the loop structure
@@ -96,50 +103,45 @@ impl Dual {
         // For each loop region, find its actual subsurface (on the mesh)
         dual.assign_subsurfaces()?;
 
-        // Find the zones
-        dual.assign_zones();
-
-        // Construct the level graphs
+        // Find the zones and construct the level graphs
         dual.assign_level_graphs();
 
         // Verify properties
         dual.verify_properties()?;
 
+        // Assign levels to the loop structure
+        dual.assign_levels();
+
         Ok(dual)
     }
 
-    pub fn intersection_to_edge(&self, intersection: IntersectionID) -> EdgeID {
+    pub fn intersection_to_edge(&self, intersection: LoopIntersectionID) -> EdgeID {
         self.loop_structure.verts[intersection]
     }
 
-    pub fn segment_to_loop(&self, segment: SegmentID) -> LoopID {
+    pub fn segment_to_loop(&self, segment: LoopSegmentID) -> LoopID {
         self.loop_structure.edges[segment].loop_id
     }
 
-    pub fn segment_to_orientation(&self, segment: SegmentID) -> Orientation {
+    pub fn segment_to_orientation(&self, segment: LoopSegmentID) -> Orientation {
         self.loop_structure.edges[segment].orientation
     }
 
-    pub fn segment_to_endpoints(&self, segment: SegmentID) -> (EdgeID, EdgeID) {
+    pub fn segment_to_endpoints(&self, segment: LoopSegmentID) -> (EdgeID, EdgeID) {
         let endpoints = &self.loop_structure.endpoints(segment);
         (self.intersection_to_edge(endpoints.0), self.intersection_to_edge(endpoints.1))
     }
 
-    pub fn region_to_zone(&self, region: RegionID, direction: PrincipalDirection) -> ZoneID {
-        self.zones
-            .iter()
-            .filter(|(_, zone)| zone.direction == direction)
-            .find(|(_, zone)| zone.regions.contains(&region))
-            .unwrap()
-            .0
+    pub fn region_to_zone(&self, region: LoopRegionID, direction: PrincipalDirection) -> ZoneID {
+        self.level_graphs.region_to_zones[direction as usize][region]
     }
 
-    pub fn segment_to_edges_excl(&self, segment: SegmentID) -> Vec<EdgeID> {
+    pub fn segment_to_edges_excl(&self, segment: LoopSegmentID) -> Vec<EdgeID> {
         let inclusive_edges = self.segment_to_edges_incl(segment);
         inclusive_edges[2..inclusive_edges.len() - 2].to_vec()
     }
 
-    pub fn segment_to_edges_incl(&self, segment: SegmentID) -> Vec<EdgeID> {
+    pub fn segment_to_edges_incl(&self, segment: LoopSegmentID) -> Vec<EdgeID> {
         let (start, end) = self.segment_to_endpoints(segment);
         let (start_twin, end_twin) = (self.mesh_ref.twin(start), self.mesh_ref.twin(end));
         let loop_id = self.segment_to_loop(segment);
@@ -164,7 +166,7 @@ impl Dual {
         }
     }
 
-    pub fn segment_to_edges(&self, segment: SegmentID) -> Vec<EdgeID> {
+    pub fn segment_to_edges(&self, segment: LoopSegmentID) -> Vec<EdgeID> {
         let edges = self.segment_to_edges_incl(segment);
 
         let mut fixed_edges = vec![];
@@ -200,7 +202,7 @@ impl Dual {
         fixed_edges
     }
 
-    pub fn segment_to_direction(&self, segment: SegmentID) -> PrincipalDirection {
+    pub fn segment_to_direction(&self, segment: LoopSegmentID) -> PrincipalDirection {
         let loop_id = self.segment_to_loop(segment);
         self.loops_ref[loop_id].direction
     }
@@ -393,7 +395,7 @@ impl Dual {
                 let this = douconel.verts[douconel.root(edge_id)];
                 let next = douconel.verts[douconel.toor(edge_id)];
                 let (loop_id, _, orientation) = intersections[&this].iter().find(|&(_, x, _)| *x == next).unwrap().to_owned();
-                douconel.edges[edge_id] = Segment { loop_id, orientation }
+                douconel.edges[edge_id] = LoopSegment { loop_id, orientation }
             }
 
             self.loop_structure = douconel;
@@ -405,245 +407,161 @@ impl Dual {
     }
 
     fn assign_subsurfaces(&mut self) -> Result<(), PropertyViolationError> {
-        // Get all blocked edges (ALL LOOPS)
+        // All edges contained in loops can be considered blocked
         let blocked = self.loops_ref.values().flat_map(|lewp| lewp.edges.iter().copied()).collect::<HashSet<_>>();
-
-        let vertex_to_neighbors: HashMap<VertID, Vec<VertID>> = self
-            .mesh_ref
-            .verts
-            .keys()
-            .map(|vertex| {
-                (
-                    vertex,
-                    self.mesh_ref.neighbor_function_primal()(vertex)
-                        .into_iter()
-                        .filter(|&neighbor| !blocked.contains(&self.mesh_ref.edge_between_verts(vertex, neighbor).unwrap().0))
-                        .collect_vec(),
-                )
-            })
-            .collect();
-
-        // Find all loop regions (on the mesh, should be equal to the number of faces in the loop structure)
-        let loop_regions = hutspot::graph::find_ccs(&self.mesh_ref.verts.keys().collect_vec(), |vertex| vertex_to_neighbors[&vertex].clone());
+        // Then all connected components of the mesh that are not blocked are loop regions
+        let loop_regions = hutspot::graph::find_ccs(&self.mesh_ref.verts.keys().collect_vec(), |vertex| {
+            let mut neighbors = self.mesh_ref.vneighbors(vertex);
+            neighbors.retain(|&neighbor| !blocked.contains(&self.mesh_ref.edge_between_verts(vertex, neighbor).unwrap().0));
+            neighbors
+        });
+        // This number should be equal to the number of faces in the loop structure
         if loop_regions.len() != self.loop_structure.face_ids().len() {
             return Err(PropertyViolationError::UnknownError);
         }
-        assert!(loop_regions.len() == self.loop_structure.face_ids().len());
 
         // Every loop segment should be part of exactly TWO connected components (on both sides)
-        let mut segment_to_ccs: HashMap<SegmentID, [usize; 2]> = HashMap::new();
+        let mut segment_to_components: HashMap<LoopSegmentID, [usize; 2]> = HashMap::new();
         for &segment_id in &self.loop_structure.edge_ids() {
             // Loop segment should simply have only two connected components (one for each side)
             // We do not check all its edges, but only the first one (since they should all be the same)
-            let edges_between = self.segment_to_edges_excl(segment_id);
-            let arbitrary_edge = edges_between[0];
+            let arbitrary_edge = self.segment_to_edges_excl(segment_id)[0];
             let (vert1, vert2) = self.mesh_ref.endpoints(arbitrary_edge);
-            let cc1 = loop_regions.iter().position(|cc| cc.contains(&vert1)).unwrap();
-            let cc2 = loop_regions.iter().position(|cc| cc.contains(&vert2)).unwrap();
-            assert_ne!(cc1, cc2);
-            segment_to_ccs.insert(segment_id, (cc1, cc2).into());
+            let component1 = loop_regions.iter().position(|cc| cc.contains(&vert1)).unwrap();
+            let component2 = loop_regions.iter().position(|cc| cc.contains(&vert2)).unwrap();
+            segment_to_components.insert(segment_id, [component1, component2]);
         }
 
         // For every loop region, get the connected component that is shared among its loop segments
         for &face_id in &self.loop_structure.face_ids() {
             let loop_segments = self.loop_structure.edges(face_id);
-
             // Select an arbitrary loop segment
-            let arbitrary_segment = loop_segments[0];
-            let [cc1, cc2] = segment_to_ccs[&arbitrary_segment];
-
+            let [component1, component2] = segment_to_components[&loop_segments[0]];
             // Check whether all loop segments share the same connected component
-            let cc1_shared = loop_segments.iter().all(|&segment| segment_to_ccs[&segment].contains(&cc1));
-            let cc2_shared = loop_segments.iter().all(|&segment| segment_to_ccs[&segment].contains(&cc2));
-            assert!(cc1_shared ^ cc2_shared);
-
-            let verts = if cc1_shared { loop_regions[cc1].clone() } else { loop_regions[cc2].clone() };
-            self.loop_structure.faces[face_id] = Region { verts };
+            let component1_is_shared = loop_segments.iter().all(|&segment| segment_to_components[&segment].contains(&component1));
+            let component2_is_shared = loop_segments.iter().all(|&segment| segment_to_components[&segment].contains(&component2));
+            self.loop_structure.faces[face_id] = LoopRegion {
+                verts: match (component1_is_shared, component2_is_shared) {
+                    (true, false) => loop_regions[component1].clone(),
+                    (false, true) => loop_regions[component2].clone(),
+                    _ => panic!(),
+                },
+            };
         }
 
         Ok(())
     }
 
-    fn assign_zones(&mut self) {
+    fn assign_level_graphs(&mut self) {
         // A zone is a collection of loop regions that are connected, and are bounded by only one type of loop segment (either X, Y, or Z).
-        self.zones = SlotMap::with_key();
+        self.level_graphs.zones = SlotMap::with_key();
 
         for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
-            // Get all loop regions
-            let mut regions_queue = self.loop_structure.face_ids();
+            // All loop segments with the given direction are blocked
+            let blocked = self
+                .loop_structure
+                .edge_ids()
+                .into_iter()
+                .filter(|&segment| self.segment_to_direction(segment) == direction)
+                .collect::<HashSet<_>>();
 
-            // While there are loop regions left, grab a loop region, and find its corresponding zone
-            while let Some(region) = regions_queue.pop() {
-                // Traverse the adjacent regions until none are left
-                let mut zone_regions = HashSet::new();
-                let mut zone_queue = vec![region];
-                let mut visited = HashSet::new();
-                while let Some(region) = zone_queue.pop() {
-                    if visited.contains(&region) {
-                        continue;
-                    }
-                    visited.insert(region);
-
-                    // Get all adjacent regions, that are connected by a loop segment that is NOT equal to `direction`
-                    let adjacent_regions = self
-                        .loop_structure
-                        .edges(region)
-                        .into_iter()
-                        .filter(|&segment| self.segment_to_direction(segment) != direction)
-                        .map(|segment| self.loop_structure.twin(segment))
-                        .map(|segment| self.loop_structure.face(segment))
-                        .collect_vec();
-
-                    // Add the adjacent regions to the queue
-                    zone_queue.extend(adjacent_regions.clone());
-                    // Add the adjacent regions to the zone
-                    zone_regions.extend(adjacent_regions.clone());
-                }
-
-                // Create a zone from the adjacent regions
-                regions_queue.retain(|&region| !zone_regions.contains(&region));
-                self.zones.insert(Zone {
-                    direction,
-                    regions: zone_regions,
-                });
+            // Then all connected components of the loop structure that are not blocked are zones
+            let zones = hutspot::graph::find_ccs(&self.loop_structure.face_ids(), |loop_region_id| {
+                let mut neighbors = self.loop_structure.fneighbors(loop_region_id);
+                neighbors.retain(|&neighbor_id| !blocked.contains(&self.loop_structure.edge_between_faces(loop_region_id, neighbor_id).unwrap().0));
+                neighbors
+            });
+            for zone in zones {
+                self.level_graphs.zones.insert(Zone { direction, regions: zone });
             }
         }
-    }
 
-    fn assign_level_graphs(&mut self) {
         for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
-            let mut adjacency = HashMap::new();
-            let mut adjacency_backwards = HashMap::new();
+            // Add all the zones as nodes to the level graph
+            let mut edges = vec![];
 
-            let zones = self.zones.iter().filter(|(_, zone)| zone.direction == direction);
-
-            let region_to_zone = zones
-                .clone()
+            let zone_ids = self
+                .level_graphs
+                .zones
+                .iter()
                 .filter(|(_, zone)| zone.direction == direction)
-                .flat_map(|(zone_id, zone)| zone.regions.iter().map(move |&region_id| (region_id, zone_id)))
-                .collect::<HashMap<_, _>>();
+                .map(|(zone_id, _)| zone_id)
+                .collect_vec();
 
-            for (zone_id, zone) in zones {
-                // Get all the loop regions of this zone
-                let regions = &zone.regions;
+            // Create a mapping from loop regions to zones
+            let region_to_zone = zone_ids
+                .iter()
+                .flat_map(|&zone_id| self.level_graphs.zones[zone_id].regions.iter().map(move |&region_id| (region_id, zone_id)))
+                .collect::<SecondaryMap<_, _>>();
+            self.level_graphs.region_to_zones[direction as usize] = region_to_zone;
 
-                // Get all the loop segments (in direction) of this zone
-                let segments = regions
+            for &zone_id in &zone_ids {
+                // The loop segments (in direction) of this zone
+                let segments = self.level_graphs.zones[zone_id]
+                    .regions
                     .iter()
                     .flat_map(|&region_id| self.loop_structure.edges(region_id))
-                    .filter(|&segment_id| self.segment_to_direction(segment_id) == direction);
+                    .filter(|&segment_id| {
+                        self.segment_to_direction(segment_id) == direction && self.segment_to_orientation(segment_id) == Orientation::Forwards
+                    });
+                // The adjacent loop regions of this zone
+                let adjacent_regions = segments.map(|segment_id| {
+                    let corresponding_loop = self.segment_to_loop(segment_id);
+                    (self.loop_structure.face(self.loop_structure.twin(segment_id)), corresponding_loop)
+                });
+                // The adjacent zones of this zone
+                let adjacent_zones = adjacent_regions.map(|(region_id, corresponding_loop)| (self.region_to_zone(region_id, direction), corresponding_loop));
 
-                // Grab all adjacent zones (through these segments)
-                let adjacent_zones = segments
-                    .map(|segment_id| {
-                        let twin_segment = self.loop_structure.twin(segment_id);
-                        let adjacent_region_id = self.loop_structure.face(twin_segment);
-                        (region_to_zone[&adjacent_region_id], self.segment_to_orientation(segment_id))
-                    })
-                    .collect::<HashSet<_>>();
-
-                for &adjacent_zone in &adjacent_zones {
-                    let entry = adjacency_backwards.entry(adjacent_zone).or_insert_with(HashSet::new);
-                    entry.insert(zone_id);
+                for (adjacent_id, loop_id) in adjacent_zones {
+                    edges.push((zone_id, adjacent_id, loop_id));
                 }
-                adjacency.insert(zone_id, adjacent_zones.into_iter().collect_vec());
+
+                self.level_graphs.graphs[direction as usize] = Graaf::from(zone_ids.clone(), edges.clone());
             }
-
-            self.level_graphs[direction as usize] = adjacency;
         }
-
-        self.compute_level_values(None);
     }
 
-    pub fn compute_level_values(&mut self, layout: Option<&Layout>) {
-        // Find all levels
-
-        println!("computing levels");
-        self.levels = [vec![], vec![], vec![]];
-        self.level_to_value = [vec![], vec![], vec![]];
-
+    pub fn assign_levels(&mut self) {
         for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
+            let graph = &self.level_graphs.graphs[direction as usize];
+            let start = graph.nodes().first().unwrap().to_owned();
+
+            let mut queue = vec![start];
+            let mut visited: HashSet<ZoneID> = HashSet::default();
+            visited.insert(start);
+            let mut levels = HashMap::new();
+            levels.insert(start, 100_000usize);
+
+            while let Some(node) = queue.pop() {
+                let node_level = levels.get(&node).unwrap().to_owned();
+                for neighbor in graph.neighbors_undirected(node) {
+                    if visited.contains(&neighbor) {
+                        continue;
+                    }
+                    match (graph.directed_edge_exists(node, neighbor), graph.directed_edge_exists(neighbor, node)) {
+                        (true, false) => {
+                            levels.insert(neighbor, node_level + 1);
+                        }
+                        (false, true) => {
+                            levels.insert(neighbor, node_level - 1);
+                        }
+                        _ => {
+                            panic!();
+                        }
+                    }
+                    visited.insert(neighbor);
+                    queue.push(neighbor);
+                }
+            }
+
             let mut level_to_zone = HashMap::new();
-
-            let mut visited = HashSet::new();
-            let mut queue = vec![];
-
-            for (zone_id, _) in self.zones.iter().filter(|(_, zone)| zone.direction == direction) {
-                queue.push(zone_id);
+            let minimum = *levels.values().min().unwrap();
+            for (zone_id, level) in levels {
+                level_to_zone.insert(zone_id, level - minimum);
             }
-
-            while let Some(zone_id) = queue.pop() {
-                if level_to_zone.is_empty() {
-                    level_to_zone.insert(zone_id, 0i32);
-                }
-                assert!(level_to_zone.contains_key(&zone_id));
-                let level = level_to_zone[&zone_id];
-
-                if visited.contains(&zone_id) {
-                    continue;
-                }
-                visited.insert(zone_id);
-
-                let adjacent_zones = self.level_graphs[direction as usize][&zone_id].clone();
-                for &(n_zone, orientation) in &adjacent_zones {
-                    if let Some(&n_level) = level_to_zone.get(&n_zone) {
-                        match orientation {
-                            Orientation::Forwards => {
-                                assert!(n_level >= level);
-                            }
-                            Orientation::Backwards => {
-                                assert!(n_level <= level);
-                            }
-                        }
-                    } else {
-                        let n_level = level + if orientation == Orientation::Forwards { 1 } else { -1 };
-                        level_to_zone.insert(n_zone, n_level);
-                    }
-                }
-
-                for (adjacent_zone, _) in adjacent_zones {
-                    queue.push(adjacent_zone);
-                }
-            }
-
-            // get the lowest level value
-            let min_level = *level_to_zone.values().min().unwrap();
-            // normalize the levels
-            let mut level_to_zone_usize = HashMap::new();
+            self.level_graphs.levels[direction as usize] = vec![HashSet::new(); *level_to_zone.values().max().unwrap() + 1];
             for (zone_id, level) in level_to_zone {
-                level_to_zone_usize.insert(zone_id, (level - min_level) as usize);
-            }
-            // get the highest level value
-            let max_level = *level_to_zone_usize.values().max().unwrap();
-            // form a vector of that length + 1
-            let mut level_values = vec![HashSet::new(); max_level + 1];
-            // fill the vector with the zones
-            for (zone_id, level) in level_to_zone_usize {
-                level_values[level].insert(zone_id);
-            }
-            println!("level_values: {:?}", level_values);
-            self.levels[direction as usize] = level_values;
-
-            self.level_to_value[direction as usize] = vec![0.0; self.levels[direction as usize].len()];
-
-            // for each level, find the average coordinate
-            if let Some(layout) = layout {
-                for (level, zones) in self.levels[direction as usize].iter().enumerate() {
-                    let mut coordinates = vec![];
-                    for &zone_id in zones {
-                        for &region_id in &self.zones[zone_id].regions {
-                            let polycube_vert = layout.polycube_ref.region_to_vertex.get_by_left(&region_id).unwrap();
-                            let corner = *layout.vert_to_corner.get_by_left(polycube_vert).unwrap();
-                            coordinates.push(layout.granulated_mesh.position(corner)[direction as usize]);
-                        }
-                    }
-                    let average = hutspot::math::calculate_average_f64(coordinates.into_iter());
-                    self.level_to_value[direction as usize][level] = average;
-                }
-            } else {
-                for (level, _) in self.levels[direction as usize].iter().enumerate() {
-                    self.level_to_value[direction as usize][level] = level as f64;
-                }
+                self.level_graphs.levels[direction as usize][level].insert(zone_id);
             }
         }
     }
@@ -689,15 +607,8 @@ impl Dual {
         // 4. must be verified: TODO
 
         // Verify 5.
-        for level_graph in &self.level_graphs {
-            let topological_sort = hutspot::graph::topological_sort::<ZoneID>(&level_graph.keys().copied().collect_vec(), |z| {
-                level_graph[&z]
-                    .clone()
-                    .into_iter()
-                    .filter(|&(_, orientation)| orientation == Orientation::Forwards)
-                    .map(|(z, _)| z)
-                    .collect()
-            });
+        for graph in &self.level_graphs.graphs {
+            let topological_sort = hutspot::graph::topological_sort::<ZoneID>(&graph.nodes(), |z| graph.neighbors(z));
             if topological_sort.is_none() {
                 return Err(PropertyViolationError::CyclicDependency);
             }
@@ -705,114 +616,4 @@ impl Dual {
 
         Ok(())
     }
-
-    // TODO: function that re-orients loops such that acyclic level graphs may be possible (if it currently is not possible).
-    // // First we assign to each loop segment a direction
-    //     // We do this by first: building a bipartite graph of loop segment adjacency.
-    //     // Then we find a labeling that is consistent and acyclic, using loop adjacency.
-
-    //     // Create a bipartite graph of loop segment adjacency (for X/Y/Z)
-    //     // Create a graph with a vertex for each loop segment
-    //     // If the loop segments share a face (are adjacent), we add an edge between the two vertices
-    //     // Also add edge for: twin, loop segments of other side of this loop
-    //     for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
-    //         let mut sides_graph = HashMap::new();
-
-    //         for segment in self.segments_of_direction(direction) {
-    //             let next_of_same_color = |id: SegmentID| {
-    //                 let cand = self
-    //                     .loop_structure
-    //                     .outgoing(self.loop_structure.toor(id))
-    //                     .iter()
-    //                     .flat_map(|&x| {
-    //                         vec![
-    //                             (x, self.loops_ref[self.loop_structure.edges[x].loop_id].direction),
-    //                             (
-    //                                 self.loop_structure.twin(x),
-    //                                 self.loops_ref[self.loop_structure.edges[self.loop_structure.twin(x)].loop_id].direction,
-    //                             ),
-    //                         ]
-    //                     })
-    //                     .collect_vec();
-    //                 let cur_pos = cand.iter().position(|&(x, _)| x == id).unwrap();
-
-    //                 cand.iter().cycle().skip(cur_pos + 1).find(|&&(x, dir)| dir == direction).unwrap().to_owned().0
-    //             };
-
-    //             let mut this_side = vec![segment];
-    //             let mut next_seg = next_of_same_color(segment);
-    //             while next_seg != segment {
-    //                 this_side.push(next_seg);
-    //                 next_seg = next_of_same_color(next_seg);
-    //             }
-
-    //             let other_side = this_side.iter().map(|&x| self.loop_structure.twin(x)).collect_vec();
-    //             let neighbors_of_direction = self.filter_direction(&self.loop_structure.nexts(segment), direction);
-    //             sides_graph.insert(segment, [other_side, neighbors_of_direction].concat());
-    //         }
-
-    //         for segment in self.segments_of_direction(direction) {
-    //             for neighbor in sides_graph.get(&segment).unwrap().clone() {
-    //                 let entry = sides_graph.entry(neighbor).or_insert(vec![]);
-    //                 entry.push(segment);
-    //             }
-    //         }
-
-    //         self.side_ccs[direction as usize] = hutspot::graph::find_ccs(&sides_graph.keys().copied().collect_vec(), |e| sides_graph[&e].clone());
-
-    //         for component in &self.side_ccs[direction as usize] {
-    //             // Find a labeling that is consistent and acyclic
-    //             // We do this by finding a twocoloring of the bipartite graph
-    //             let two_coloring = hutspot::graph::two_color::<_>(&component.iter().copied().collect_vec(), |e| sides_graph[&e].clone());
-    //             if two_coloring.is_none() {
-    //                 return Err(PropertyViolationError::NonTwoColorable);
-    //             }
-    //             let (upper_segments, lower_segments) = two_coloring.unwrap();
-
-    //             let mut cur_score = 0.0;
-    //             let mut flip_score = 0.0;
-    //             for (&ls_id, s) in upper_segments
-    //                 .iter()
-    //                 .map(|ls_id| (ls_id, Vector3D::from(direction)))
-    //                 .chain(lower_segments.iter().map(|ls_id| (ls_id, -Vector3D::from(direction))))
-    //             {
-    //                 let ls = &self.loop_structure.edges[ls_id];
-    //                 let edges = vec![ls.between.clone()].into_iter().flatten();
-
-    //                 for (edge1, edge2) in edges.tuple_windows() {
-    //                     if self.mesh_ref.twin(edge1) == edge2 {
-    //                         continue;
-    //                     }
-    //                     let u = self.mesh_ref.midpoint(edge1);
-    //                     let v = self.mesh_ref.midpoint(edge2);
-    //                     let face = self.mesh_ref.face(edge1);
-    //                     assert!(face == self.mesh_ref.face(edge2));
-    //                     let edge_normal = self.mesh_ref.normal(face);
-    //                     let edge_direction = (v - u).normalize();
-    //                     let edge_length = (v - u).norm();
-    //                     let cross = edge_normal.cross(&edge_direction).normalize();
-    //                     cur_score += cross.dot(&s) * edge_length;
-    //                     flip_score += cross.dot(&-s) * edge_length;
-    //                 }
-    //             }
-
-    //             if cur_score > flip_score {
-    //                 for edge_id in upper_segments {
-    //                     self.loop_structure.edges[edge_id].side = Some(Side::Upper);
-    //                 }
-
-    //                 for edge_id in lower_segments {
-    //                     self.loop_structure.edges[edge_id].side = Some(Side::Lower);
-    //                 }
-    //             } else {
-    //                 for edge_id in upper_segments {
-    //                     self.loop_structure.edges[edge_id].side = Some(Side::Lower);
-    //                 }
-
-    //                 for edge_id in lower_segments {
-    //                     self.loop_structure.edges[edge_id].side = Some(Side::Upper);
-    //                 }
-    //             }
-    //         }
-    //     }
 }

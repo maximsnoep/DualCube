@@ -62,6 +62,14 @@ impl<V: Eq + PartialEq + Hash + Default + Copy, E: Copy> Graaf<V, E> {
         self.petgraph.node_weight(index)
     }
 
+    pub fn directed_edge_exists(&self, a: V, b: V) -> bool {
+        self.neighbors(a).iter().any(|n| n == &b)
+    }
+
+    pub fn edge_exists(&self, a: V, b: V) -> bool {
+        self.directed_edge_exists(a, b) || self.directed_edge_exists(b, a)
+    }
+
     pub fn shortest_path<W: Measure + Copy, F: Fn(E) -> W>(&self, a: NodeIndex, b: NodeIndex, measure: &F) -> Option<(W, Vec<NodeIndex>)> {
         astar(&self.petgraph, a, |finish| finish == b, |e| measure(e.weight().to_owned()), |_| W::default())
     }
@@ -85,6 +93,20 @@ impl<V: Eq + PartialEq + Hash + Default + Copy, E: Copy> Graaf<V, E> {
                 )
             },
         )
+    }
+
+    pub fn neighbors(&self, a: V) -> Vec<V> {
+        self.petgraph
+            .neighbors(self.node_to_index[&a])
+            .map(|index| self.index_to_node(index).unwrap().to_owned())
+            .collect()
+    }
+
+    pub fn neighbors_undirected(&self, a: V) -> Vec<V> {
+        self.petgraph
+            .neighbors_undirected(self.node_to_index[&a])
+            .map(|index| self.index_to_node(index).unwrap().to_owned())
+            .collect()
     }
 
     pub fn shortest_cycle<W: Measure + Copy + FloatCore, F: Fn(E) -> W>(&self, a: NodeIndex, measure: &F) -> Option<Vec<NodeIndex>> {

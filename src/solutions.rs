@@ -1,5 +1,5 @@
 use crate::{
-    dual::{Dual, Orientation, PropertyViolationError, RegionID, SegmentID},
+    dual::{Dual, LoopRegionID, LoopSegmentID, Orientation, PropertyViolationError},
     graph::Graaf,
     layout::Layout,
     polycube::{Polycube, PolycubeEdgeID, PolycubeFaceID, PolycubeVertID},
@@ -341,7 +341,10 @@ impl Solution {
         }
 
         // Get the best solution based on quality
-        if let Some(best_solution) = candidate_solutions.into_iter().max_by_key(|solution| OrderedFloat(solution.get_quality())) {
+        if let Some(best_solution) = candidate_solutions
+            .into_iter()
+            .max_by_key(|solution| OrderedFloat(solution.get_quality().unwrap()))
+        {
             *self = best_solution;
         }
     }
@@ -381,20 +384,9 @@ impl Solution {
         Ok(())
     }
 
-    pub fn smoothen(&mut self) {
-        if let Ok(layout) = &mut self.layout {
-            layout.smoothening();
-            layout.assign_patches();
-            self.compute_quality();
-        }
-    }
-
     pub fn resize_polycube(&mut self) {
         if let (Ok(dual), Some(polycube), Ok(layout)) = (&self.dual, &mut self.polycube, &mut self.layout) {
-            // polycube.resize(dual, Some(layout), None);
-            polycube.find_intersectionfree_embedding(dual, Some(layout));
-
-            polycube.polycuboid(dual, layout);
+            polycube.resize(dual, Some(layout), None);
         }
     }
 
@@ -448,12 +440,16 @@ impl Solution {
         }
     }
 
-    pub fn get_quality(&self) -> f64 {
+    pub fn get_quality(&self) -> Option<f64> {
         let w1 = 1e1;
         let w2 = 1e-1;
         let w3 = 1e-2;
 
-        w1 * self.alignment.unwrap_or_default() + w2 * self.orthogonality.unwrap_or_default() + w3 * self.loops.len() as f64
+        if let (Some(align), Some(ortho)) = (self.alignment, self.orthogonality) {
+            Some(w1 * align + w2 * ortho + w3 * self.loops.len() as f64)
+        } else {
+            None
+        }
     }
 
     pub fn construct_loop(start: &[EdgeID; 2], domain: &Graaf<[EdgeID; 2], (f64, f64, f64)>, measure: &impl Fn((f64, f64, f64)) -> f64) -> Vec<EdgeID> {
@@ -571,7 +567,10 @@ impl Solution {
 
                 Some(new_solution)
             })
-            .max_by_key(|solution| OrderedFloat(solution.get_quality()))
+            .map(|solution| (solution.clone(), solution.get_quality()))
+            .filter(|(_, quality)| quality.is_some())
+            .max_by_key(|(_, quality)| OrderedFloat(quality.unwrap()))
+            .map(|(solution, _)| solution)
     }
 
     pub fn mutate_del_loop(&self, nr_loops: usize) -> Option<Self> {
@@ -591,10 +590,13 @@ impl Solution {
                 }
                 None
             })
-            .max_by_key(|solution| OrderedFloat(solution.get_quality()))
+            .map(|solution| (solution.clone(), solution.get_quality()))
+            .filter(|(_, quality)| quality.is_some())
+            .max_by_key(|(_, quality)| OrderedFloat(quality.unwrap()))
+            .map(|(solution, _)| solution)
     }
 
-    pub fn construct_valid_loop_graph(&self, direction: PrincipalDirection) -> Option<Graaf<SegmentID, f64>> {
+    pub fn construct_valid_loop_graph(&self, direction: PrincipalDirection) -> Option<Graaf<LoopSegmentID, f64>> {
         if let Ok(dual) = &self.dual {
             let nodes = dual.loop_structure.edge_ids().into_iter().collect_vec();
             let edges = dual
@@ -735,7 +737,7 @@ impl Solution {
         None
     }
 
-    pub fn find_some_valid_loops_through_region(&self, region_id: RegionID, direction: PrincipalDirection) -> Option<Vec<Vec<SegmentID>>> {
+    pub fn find_some_valid_loops_through_region(&self, region_id: LoopRegionID, direction: PrincipalDirection) -> Option<Vec<Vec<LoopSegmentID>>> {
         if let Ok(dual) = &self.dual {
             let region_segments = dual.loop_structure.edges(region_id);
             let full_graph = self.construct_valid_loop_graph(direction)?;
@@ -1374,31 +1376,6 @@ impl Solution {
 
     //     candidate_paths
     // }
-
-    pub fn optimize(&mut self, iterations: usize) {
-        for i in 0..iterations {
-            let cur_quality = self.get_quality();
-            let mut sol_copy = self.clone();
-            let lay_copy = sol_copy.layout.as_mut().unwrap();
-            // TODO: select a bad corner based on alignment
-            let corner = lay_copy.vert_to_corner.left_values().choose(&mut thread_rng()).unwrap().to_owned();
-            if lay_copy.improve(corner).is_ok() {
-                sol_copy.compute_quality();
-                let new_quality: f64 = sol_copy.get_quality();
-                let improvement = (new_quality - cur_quality) / cur_quality;
-                // Print the improvement, color green if positive, red if negative
-                if improvement > 0.0 {
-                    println!("{i} : {:.3} to {:.3} \x1b[32m({:+.2}%)\x1b[0m", cur_quality, new_quality, improvement * 100.);
-                } else {
-                    println!("{i} : {:.3} to {:.3} \x1b[31m({:+.2}%)\x1b[0m", cur_quality, new_quality, improvement * 100.);
-                }
-
-                if new_quality > cur_quality {
-                    *self = sol_copy;
-                }
-            }
-        }
-    }
 
     pub fn write_to_flag(&self, path: &PathBuf) -> std::io::Result<()> {
         let mut file = std::fs::File::create(path)?;

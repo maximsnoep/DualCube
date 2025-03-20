@@ -235,7 +235,9 @@ pub fn update(
 
     gizmos_cache.wireframe.clear();
     gizmos_cache.wireframe_granulated.clear();
-    gizmos_cache.loops.clear();
+    gizmos_cache.loops[0].clear();
+    gizmos_cache.loops[1].clear();
+    gizmos_cache.loops[2].clear();
     gizmos_cache.paths.clear();
     gizmos_cache.flat_edges.clear();
     info!("Gizmos cache cleared.");
@@ -313,24 +315,30 @@ pub fn update(
                     for segment_id in dual.loop_structure.edge_ids() {
                         let direction = dual.segment_to_direction(segment_id);
                         let orientation = dual.segment_to_orientation(segment_id);
-                        let mut offset = Vector3D::new(0., 0., 0.);
-                        let dist = 0.001 * f64::from(scale);
-                        match orientation {
-                            Orientation::Forwards => match direction {
-                                PrincipalDirection::X => offset[0] += dist,
-                                PrincipalDirection::Y => offset[1] += dist,
-                                PrincipalDirection::Z => offset[2] += dist,
-                            },
-                            Orientation::Backwards => match direction {
-                                PrincipalDirection::X => offset[0] -= dist,
-                                PrincipalDirection::Y => offset[1] -= dist,
-                                PrincipalDirection::Z => offset[2] -= dist,
-                            },
-                        };
-                        let color = to_color(direction, Perspective::Dual, Some(orientation));
+                        if orientation == Orientation::Backwards {
+                            continue;
+                        }
+
+                        let color = to_color(direction, Perspective::Dual, Some(Orientation::Forwards));
                         for [u, v] in solution.current_solution.get_pairs_of_sequence(&dual.segment_to_edges(segment_id)) {
                             add_line2(
-                                &mut gizmos_cache.loops,
+                                &mut gizmos_cache.loops[direction as usize],
+                                mesh_resmut.mesh.midpoint(u),
+                                mesh_resmut.mesh.midpoint(v),
+                                mesh_resmut.mesh.edge_normal(u) * 0.01,
+                                color,
+                                translation + Vec3::from(Objects::MeshDualLoops),
+                                scale,
+                            );
+                        }
+
+                        let color = to_color(direction, Perspective::Dual, Some(Orientation::Backwards));
+                        for [u, v] in solution.current_solution.get_pairs_of_sequence(&dual.segment_to_edges(segment_id)) {
+                            let direction_vector = mesh_resmut.mesh.midpoint(v) - mesh_resmut.mesh.midpoint(u);
+                            let offset = mesh_resmut.mesh.edge_normal(u).cross(&direction_vector).normalize() * 0.05;
+
+                            add_line2(
+                                &mut gizmos_cache.loops[direction as usize],
                                 mesh_resmut.mesh.midpoint(u),
                                 mesh_resmut.mesh.midpoint(v),
                                 mesh_resmut.mesh.edge_normal(u) * 0.01 + offset,
@@ -346,7 +354,7 @@ pub fn update(
                         let color = to_color(direction, Perspective::Dual, None);
                         for [u, v] in solution.current_solution.get_pairs_of_loop(loop_id) {
                             add_line2(
-                                &mut gizmos_cache.loops,
+                                &mut gizmos_cache.loops[direction as usize],
                                 mesh_resmut.mesh.midpoint(u),
                                 mesh_resmut.mesh.midpoint(v),
                                 mesh_resmut.mesh.edge_normal(u) * 0.01,
@@ -410,20 +418,7 @@ pub fn update(
 
                                 let mut offset = Vector3D::new(0., 0., 0.);
 
-                                let dist = 0.01 * f64::from(scale);
-
-                                match orientation {
-                                    Orientation::Forwards => match assigned_label {
-                                        PrincipalDirection::X => offset[0] += dist,
-                                        PrincipalDirection::Y => offset[1] += dist,
-                                        PrincipalDirection::Z => offset[2] += dist,
-                                    },
-                                    Orientation::Backwards => match assigned_label {
-                                        PrincipalDirection::X => offset[0] -= dist,
-                                        PrincipalDirection::Y => offset[1] -= dist,
-                                        PrincipalDirection::Z => offset[2] -= dist,
-                                    },
-                                };
+                                let dist = 0.001 * f64::from(scale);
 
                                 let line = DrawableLine::from_line(
                                     this_centroid,
@@ -433,7 +428,30 @@ pub fn update(
                                     scale,
                                 );
                                 let c = to_color(assigned_label, Perspective::Dual, Some(orientation));
-                                gizmos_cache.loops.push((line.u, line.v, c));
+                                gizmos_cache.loops[assigned_label as usize].push((line.u, line.v, c));
+                            }
+                        }
+                    }
+
+                    // draw all edges of the polycube in white
+                    if configuration.show_gizmos_paths {
+                        for edge_id in polycube.structure.edge_ids() {
+                            let endpoints = polycube.structure.endpoints(edge_id);
+                            let u = polycube.structure.position(endpoints.0);
+                            let v = polycube.structure.position(endpoints.1);
+                            let f1 = polycube.structure.normal(polycube.structure.face(edge_id));
+                            let f2 = polycube.structure.normal(polycube.structure.face(polycube.structure.twin(edge_id)));
+                            let line = DrawableLine::from_line(
+                                u,
+                                v,
+                                polycube.structure.normal(polycube.structure.face(edge_id)) * 0.005,
+                                vec3_to_vector3d(translation + Vec3::from(object)),
+                                scale,
+                            );
+                            if f1 == f2 {
+                                gizmos_cache.flat_edges.push((line.u, line.v, hutspot::color::WHITE));
+                            } else {
+                                gizmos_cache.paths.push((line.u, line.v, hutspot::color::WHITE));
                             }
                         }
                     }
@@ -710,7 +728,7 @@ pub fn update(
 pub struct GizmosCache {
     pub wireframe: Vec<Line>,
     pub wireframe_granulated: Vec<Line>,
-    pub loops: Vec<Line>,
+    pub loops: [Vec<Line>; 3],
     pub paths: Vec<Line>,
     pub flat_edges: Vec<Line>,
 
@@ -733,8 +751,20 @@ pub fn gizmos(mut gizmos: Gizmos, gizmos_cache: Res<GizmosCache>, configuration:
         }
     }
 
-    if configuration.show_gizmos_loops {
-        for &(u, v, c) in &gizmos_cache.loops {
+    if configuration.show_gizmos_loops[0] {
+        for &(u, v, c) in &gizmos_cache.loops[0] {
+            gizmos.line(u, v, Color::srgb(c[0], c[1], c[2]));
+        }
+    }
+
+    if configuration.show_gizmos_loops[1] {
+        for &(u, v, c) in &gizmos_cache.loops[1] {
+            gizmos.line(u, v, Color::srgb(c[0], c[1], c[2]));
+        }
+    }
+
+    if configuration.show_gizmos_loops[2] {
+        for &(u, v, c) in &gizmos_cache.loops[2] {
             gizmos.line(u, v, Color::srgb(c[0], c[1], c[2]));
         }
     }

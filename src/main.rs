@@ -80,11 +80,11 @@ pub const fn to_color(direction: PrincipalDirection, perspective: Perspective, o
         (Perspective::Primal, PrincipalDirection::Y, None) => hutspot::color::BLUE,
         (Perspective::Primal, PrincipalDirection::Z, None) => hutspot::color::YELLOW,
         (Perspective::Primal, PrincipalDirection::X, Some(Orientation::Forwards)) => hutspot::color::RED,
-        (Perspective::Primal, PrincipalDirection::X, Some(Orientation::Backwards)) => hutspot::color::RED_LIGHT,
+        (Perspective::Primal, PrincipalDirection::X, Some(Orientation::Backwards)) => hutspot::color::RED,
         (Perspective::Primal, PrincipalDirection::Y, Some(Orientation::Forwards)) => hutspot::color::BLUE,
-        (Perspective::Primal, PrincipalDirection::Y, Some(Orientation::Backwards)) => hutspot::color::BLUE_LIGHT,
+        (Perspective::Primal, PrincipalDirection::Y, Some(Orientation::Backwards)) => hutspot::color::BLUE,
         (Perspective::Primal, PrincipalDirection::Z, Some(Orientation::Forwards)) => hutspot::color::YELLOW,
-        (Perspective::Primal, PrincipalDirection::Z, Some(Orientation::Backwards)) => hutspot::color::YELLOW_LIGHT,
+        (Perspective::Primal, PrincipalDirection::Z, Some(Orientation::Backwards)) => hutspot::color::YELLOW,
         (Perspective::Dual, PrincipalDirection::X, None) => hutspot::color::GREEN,
         (Perspective::Dual, PrincipalDirection::Y, None) => hutspot::color::ORANGE,
         (Perspective::Dual, PrincipalDirection::Z, None) => hutspot::color::PURPLE,
@@ -114,8 +114,8 @@ pub enum Side {
 }
 
 pub fn to_principal_direction(v: Vector3D) -> (PrincipalDirection, Orientation) {
-    let x_is_max = v.x.abs() > v.y.abs() && v.x.abs() > v.z.abs();
-    let y_is_max = v.y.abs() > v.x.abs() && v.y.abs() > v.z.abs();
+    let x_is_max = v.x.abs() >= v.y.abs() && v.x.abs() >= v.z.abs();
+    let y_is_max = v.y.abs() > v.x.abs() && v.y.abs() >= v.z.abs();
     let z_is_max = v.z.abs() > v.x.abs() && v.z.abs() > v.y.abs();
     assert!(x_is_max ^ y_is_max ^ z_is_max, "{v:?}");
 
@@ -169,7 +169,7 @@ pub struct Configuration {
 
     pub show_gizmos_mesh: bool,
     pub show_gizmos_mesh_granulated: bool,
-    pub show_gizmos_loops: bool,
+    pub show_gizmos_loops: [bool; 3],
     pub show_gizmos_paths: bool,
     pub show_gizmos_flat_edges: bool,
 
@@ -219,7 +219,7 @@ impl Default for Configuration {
             smoothen_status: ActionEventStatus::None,
             show_gizmos_mesh: false,
             show_gizmos_mesh_granulated: false,
-            show_gizmos_loops: true,
+            show_gizmos_loops: [true, true, true],
             show_gizmos_paths: true,
             show_gizmos_flat_edges: false,
             clear_color: [27, 27, 27],
@@ -448,11 +448,11 @@ pub fn handle_solution_tasks(
             match &id {
                 ActionEvent::Mutate => {
                     if let Some(new_solution) = chunk_data {
-                        if new_solution.get_quality() * 0.98 > solution.current_solution.get_quality() {
-                            println!("New solution is better than current solution. Updating...");
-                            solution.current_solution = new_solution;
-                        } else {
-                            println!("New solution is worse than current solution. Discarding...");
+                        if let Some(quality) = new_solution.get_quality() {
+                            if quality * 0.98 > solution.current_solution.get_quality().unwrap() {
+                                println!("New solution is better than current solution. Updating...");
+                                solution.current_solution = new_solution;
+                            }
                         }
                     }
 
@@ -507,9 +507,9 @@ pub fn handle_events(
                     configuration.window_has_position,
                     configuration.window_has_size,
                     configuration.window_shows_object,
+                    configuration.clear_color,
                 );
 
-                *configuration = Configuration::default();
                 *mesh_resmut = InputResource::default();
                 *solution = SolutionResource::default();
 
@@ -518,8 +518,6 @@ pub fn handle_events(
                         mesh_resmut.mesh = match Douconel::from_file(path) {
                             Ok(res) => {
                                 let mut mesh = res.0;
-                                let n = 10_000 - std::cmp::min(10_000, mesh.nr_edges());
-                                mesh.refine(n);
                                 Arc::new(mesh)
                             }
                             Err(err) => {
@@ -534,9 +532,12 @@ pub fn handle_events(
                             mesh_resmut.mesh = Arc::new(loaded_state.mesh);
                             solution.current_solution = Solution::new(mesh_resmut.mesh.clone());
                             *configuration = loaded_state.configuration.clone();
+
+                            // overwrite
                             configuration.window_has_position = current_configuration.0;
                             configuration.window_has_size = current_configuration.1;
                             configuration.window_shows_object = current_configuration.2;
+                            configuration.clear_color = current_configuration.3;
 
                             for saved_loop in loaded_state.loops {
                                 solution.current_solution.add_loop(saved_loop);
@@ -878,19 +879,7 @@ pub fn handle_events(
                     tasks.generating_chunks.insert(ActionEvent::Mutate, task);
                 }
             }
-            ActionEvent::Smoothen => {
-                let mut cloned_solution = solution.current_solution.clone();
-                configuration.smoothen_status = ActionEventStatus::Loading;
-                tasks.generating_chunks.insert(
-                    ActionEvent::Smoothen,
-                    AsyncComputeTaskPool::get().spawn(async move {
-                        {
-                            cloned_solution.smoothen();
-                            Some(cloned_solution)
-                        }
-                    }),
-                );
-            }
+            ActionEvent::Smoothen => {}
             ActionEvent::Recompute => {
                 println!("Once");
                 let mut cloned_solution = solution.current_solution.clone();
@@ -902,11 +891,11 @@ pub fn handle_events(
                             // dual.compute_level_values(Some(layout));
                             // self.resize_polycube();
                             if let Ok(dual) = cloned_solution.dual.as_mut() {
-                                if let (Ok(layout), false) = (&cloned_solution.layout, unit) {
-                                    dual.compute_level_values(Some(layout));
-                                } else {
-                                    dual.compute_level_values(None);
-                                }
+                                // if let (Ok(layout), false) = (&cloned_solution.layout, unit) {
+                                //     dual.compute_level_values(Some(layout));
+                                // } else {
+                                //     dual.compute_level_values(None);
+                                // }
                                 cloned_solution.resize_polycube();
                             }
                             Some(cloned_solution)

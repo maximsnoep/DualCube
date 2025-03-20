@@ -1,6 +1,6 @@
 use crate::dual::{Dual, PropertyViolationError};
 use crate::polycube::{Polycube, PolycubeEdgeID, PolycubeFaceID, PolycubeVertID};
-use crate::{EmbeddedMesh, FaceID, PrincipalDirection, VertID};
+use crate::{to_principal_direction, EmbeddedMesh, FaceID, PrincipalDirection, VertID};
 use bimap::BiHashMap;
 use douconel::douconel_embedded::HasPosition;
 use hutspot::consts::PI;
@@ -61,53 +61,114 @@ impl Layout {
         self.vert_to_corner.clear();
 
         // Find a candidate location for each region
-        // We simply take the average centroid of all faces in the region, weighted by the area of the faces
-        let mut region_to_candidate = HashMap::new();
+        // We know for each loop region what are going to be the aligned directions of the patches
+        // For each vertex in the region, we count the number of (relevant) directions adjacent to it
+        // Then the candidates for this loop region are vertices with the highest count
+        // If the loop region is a flat corner, we dont care, and take all vertices
+
+        let mut region_to_candidates = HashMap::new();
         for (region_id, region_obj) in &self.dual_ref.loop_structure.faces {
+            // Get the relevant directions for this region
+            let segments = self.dual_ref.loop_structure.edges(region_id);
+            // For every consecutive pair of segments (including last and first), their two colors together form a patch direction
+            let directions = segments
+                .iter()
+                .chain(std::iter::once(&segments[0]))
+                .tuple_windows()
+                .map(|(&s1, &s2)| {
+                    let l1 = self.dual_ref.loop_structure.edges[s1].loop_id;
+                    let l2 = self.dual_ref.loop_structure.edges[s2].loop_id;
+                    let d1 = self.dual_ref.loops_ref[l1].direction;
+                    let d2 = self.dual_ref.loops_ref[l2].direction;
+                    let direction = [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z]
+                        .iter()
+                        .find(|&&d| d != d1 && d != d2)
+                        .unwrap()
+                        .to_owned();
+                    direction
+                })
+                .collect::<HashSet<_>>();
+
             // Get all vertices in the region
             let verts = &region_obj.verts;
 
-            // Compute for each face its centroid and its area
-            let center = verts
-                .iter()
-                .map(|&vert| {
-                    let pos = self.dual_ref.mesh_ref.position(vert);
-                    let distance = verts.iter().map(|&v| self.dual_ref.mesh_ref.position(v).metric_distance(&pos)).sum::<f64>();
-                    (vert, distance)
-                })
-                .min_by_key(|(_, distance)| OrderedFloat(*distance))
-                .unwrap()
-                .0;
+            // Count the number of relevant directions adjacent to each vertex
+            let mut vertex_to_count = HashMap::new();
+            for &vert in verts {
+                let count = self
+                    .dual_ref
+                    .mesh_ref
+                    .outgoing(vert)
+                    .into_iter()
+                    .map(|edge| {
+                        let face = self.dual_ref.mesh_ref.face(edge);
+                        let direction = to_principal_direction(self.dual_ref.mesh_ref.normal(face)).0;
+                        direction
+                    })
+                    .filter(|&d| directions.contains(&d))
+                    .collect::<HashSet<_>>()
+                    .len();
+                vertex_to_count.insert(vert, count);
+            }
 
-            let center_pos = self.dual_ref.mesh_ref.position(center);
-            region_to_candidate.insert(region_id, center_pos);
+            // Get the highest count
+            let max_count = *vertex_to_count.values().max().unwrap();
+
+            // Get all vertices with the highest count
+            let candidates = vertex_to_count.iter().filter(|(_, &count)| count == max_count).map(|(&v, _)| v).collect_vec();
+
+            region_to_candidates.insert(region_id, candidates);
         }
 
-        // Find a candidate location for each zone (only a single coordinate, either X, Y or Z, depending on the type of zone
+        // For each zone, find a candidate slice (value), that minimizes the Hausdorf distance to the candidate locations of the regions in the zone
         // We simply take the coordinate that minimizes the Hausdorf distance to the candidate locations of the regions in the zone
         let mut zone_to_candidate = HashMap::new();
-        for (zone_id, zone_obj) in &self.dual_ref.zones {
+        for (zone_id, zone_obj) in &self.dual_ref.level_graphs.zones {
             let zone_type = zone_obj.direction;
 
             // Get all coordinates of the regions in the zone
-            let candidates = zone_obj
+            let zone_regions_with_candidates = zone_obj
                 .regions
                 .iter()
-                .map(|&region_id| region_to_candidate[&region_id][zone_type as usize])
+                .map(|&region_id| {
+                    region_to_candidates[&region_id]
+                        .iter()
+                        .map(|&v| self.dual_ref.mesh_ref.position(v)[zone_type as usize])
+                        .collect_vec()
+                })
                 .collect_vec();
 
-            // Find the coordinate that minimizes the worst distance to all candidates, do this in N steps
-            let n = 5;
-            let min = candidates.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap().to_owned();
-            let max = candidates.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap().to_owned();
+            // Find the coordinate that minimizes the worst distance to all regions (defined by candidates), do this in N steps
+            let n = 1000;
+            let min = zone_regions_with_candidates
+                .iter()
+                .flatten()
+                .min_by(|a, b| a.partial_cmp(b).unwrap())
+                .unwrap()
+                .to_owned();
+            let max = zone_regions_with_candidates
+                .iter()
+                .flatten()
+                .max_by(|a, b| a.partial_cmp(b).unwrap())
+                .unwrap()
+                .to_owned();
             let steps = (0..n).map(|i| (max - min).mul_add(f64::from(i) / f64::from(n), min)).collect_vec();
             let mut best_step = min;
             let mut best_worst_distance = f64::INFINITY;
             for step in steps {
-                let distances: Vec<f64> = candidates.iter().map(|&x| (step - x).abs()).collect();
-                let worst_distance = distances.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap().to_owned();
-                if worst_distance < best_worst_distance {
-                    best_worst_distance = worst_distance;
+                let mut worst_distance_for_step = 0.;
+                for region_with_candidates in &zone_regions_with_candidates {
+                    let best_distance_to_region = region_with_candidates
+                        .iter()
+                        .map(|&candidate| (step - candidate).abs())
+                        .min_by(|a, b| a.partial_cmp(b).unwrap())
+                        .unwrap();
+                    if best_distance_to_region > worst_distance_for_step {
+                        worst_distance_for_step = best_distance_to_region;
+                    }
+                }
+                if worst_distance_for_step < best_worst_distance {
+                    best_worst_distance = worst_distance_for_step;
                     best_step = step;
                 }
             }
@@ -122,7 +183,7 @@ impl Layout {
                     .map(|direction| zone_to_candidate[&self.dual_ref.region_to_zone(region_id, direction)]),
             );
 
-            let vertices = &region_obj.verts;
+            let vertices = &region_to_candidates[&region_id];
             let best_vertex = vertices
                 .iter()
                 .map(|&v| (v, self.dual_ref.mesh_ref.position(v)))
@@ -134,10 +195,6 @@ impl Layout {
             self.vert_to_corner
                 .insert(self.polycube_ref.region_to_vertex.get_by_left(&region_id).unwrap().to_owned(), best_vertex);
         }
-    }
-
-    pub fn reset_paths(&mut self) {
-        self.edge_to_path.clear();
     }
 
     // TODO: Make this robust
@@ -179,6 +236,9 @@ impl Layout {
 
         while let Some(edge_id) = edge_queue.pop_front() {
             //println!("Edge queue: {}", edge_queue.len());
+
+            let normal_on_left = primal.structure.normal(primal.structure.face(edge_id));
+            let normal_on_right = primal.structure.normal(primal.structure.face(primal.structure.twin(edge_id)));
 
             // if already found (because of twin), skip
             if self.edge_to_path.contains_key(&edge_id) {
@@ -399,22 +459,37 @@ impl Layout {
                 assert!(direction_vector.x < 1e-3 && direction_vector.y < 1e-3);
             }
 
-            // ALL EDGES THAT DEVIATE IN THE DIRECTION OF THE EDGE ARE PENALIZED
+            let ridge_function = |a: NodeType, b: NodeType| {
+                if let (NodeType::Vertex(a), NodeType::Vertex(b)) = (a, b) {
+                    let (edge1, edge2) = self.granulated_mesh.edge_between_verts(a, b).unwrap();
+                    let normal1 = self.granulated_mesh.normal(self.granulated_mesh.face(edge1));
+                    let normal2 = self.granulated_mesh.normal(self.granulated_mesh.face(edge2));
 
-            let curvature_function = |a_pos: Vector3D, b_pos: Vector3D| {
-                let a_to_b = b_pos - a_pos;
-                let res = a_to_b.angle(&direction_vector).min(PI - a_to_b.angle(&direction_vector)) + 1.0;
-                1.
+                    let mut mult = 1.;
+
+                    // angle between normal1 and normal_on_left
+                    let angle1 = normal1.angle(&normal_on_left);
+                    if angle1 > PI / 3. {
+                        mult += angle1.powi(3);
+                    }
+                    // angle between normal2 and normal_on_right
+                    let angle2 = normal2.angle(&normal_on_right);
+                    if angle2 > PI / 3. {
+                        mult += angle2.powi(3);
+                    }
+
+                    mult
+                } else if normal_on_left == normal_on_right {
+                    1.0
+                } else {
+                    10.
+                }
             };
 
-            let w_function = |a: NodeType, b: NodeType| {
-                OrderedFloat(curvature_function(nodetype_to_pos(a), nodetype_to_pos(b)) * nodetype_to_pos(a).metric_distance(&nodetype_to_pos(b)))
-            };
-
-            let h_function = |a: NodeType, b: NodeType| OrderedFloat(nodetype_to_pos(a).metric_distance(&nodetype_to_pos(b)));
+            let w_function = |a: NodeType, b: NodeType| OrderedFloat(ridge_function(a, b) * nodetype_to_pos(a).metric_distance(&nodetype_to_pos(b)));
 
             let mut granulated_path = vec![];
-            if let Some((path, _)) = hutspot::graph::find_shortest_path_astar(NodeType::Vertex(u), NodeType::Vertex(v), n_function, w_function, h_function) {
+            if let Some((path, _)) = hutspot::graph::find_shortest_path(NodeType::Vertex(u), NodeType::Vertex(v), n_function, w_function) {
                 let mut last_f_ids_maybe: Option<[FaceID; 3]> = None;
                 for node in path {
                     match node {
@@ -558,170 +633,5 @@ impl Layout {
             let faces = if cc1_shared { patches[cc1].clone() } else { patches[cc2].clone() };
             self.face_to_patch.insert(face_id, Patch { faces });
         }
-    }
-
-    // Try to improve the layou by doing the following:
-    // 1. Change the placement of 1 corner
-    // 2. Re-compute paths for this 1 corner (all its adjacent paths)
-    // 3. Re-compute patches for this 1 corner (all its adjacent patches)
-    pub fn improve(&mut self, corner: PolycubeVertID) -> Result<(), PropertyViolationError> {
-        // Change the placement of this corner
-        // Get all vertices in the adjacent patches
-        // Select a random vertex that is not occupied
-        let occupied = self.vert_to_corner.right_values().collect::<HashSet<_>>();
-        let adjacent_patches = self.polycube_ref.structure.star(corner);
-        let adjacent_patches_vertices = adjacent_patches
-            .iter()
-            .flat_map(|&patch| self.face_to_patch[&patch].faces.iter())
-            .flat_map(|&face| self.granulated_mesh.corners(face))
-            .collect::<HashSet<_>>();
-        let candidates = adjacent_patches_vertices.into_iter().filter(|v| !occupied.contains(v)).collect_vec();
-        let new_vertex = candidates.choose(&mut rand::thread_rng());
-        if new_vertex.is_none() {
-            return Ok(());
-        }
-        self.vert_to_corner.insert(corner, new_vertex.unwrap().to_owned());
-
-        // Get all paths that are adjacent to this corner
-        let edges = self.polycube_ref.structure.outgoing(corner);
-        for edge in edges {
-            self.edge_to_path.remove(&edge);
-        }
-
-        // Get all patches that are adjacent to this corner
-        let faces = self.polycube_ref.structure.star(corner);
-        for face in faces {
-            self.face_to_patch.remove(&face);
-        }
-
-        self.place_paths()?;
-
-        self.assign_patches();
-
-        Ok(())
-    }
-
-    pub fn smoothening(&mut self) {
-        // We smoothen each path until path is geodesic
-        // https://dl.acm.org/doi/pdf/10.1145/3414685.3417839
-        let paths = self.edge_to_path.keys().copied().collect_vec();
-
-        // 'o: loop {
-        for (i, &path_id) in paths.iter().enumerate() {
-            println!("Smoothening path {}/{}", i + 1, paths.len());
-            // We make each path geodesic by doing the following:
-            //   While the path is not geodesic (i.e. there is a wedge with an angle < 180 degrees):
-            //     Find the wedge with the smallest angle
-            //     Flip out the wedge
-            //     Update the path
-
-            self.smoothen_path(path_id);
-
-            break;
-        }
-
-        println!("Smoothening done");
-    }
-
-    fn smoothen_path(&mut self, path_id: PolycubeEdgeID) {
-        let max_x = self
-            .granulated_mesh
-            .vert_ids()
-            .iter()
-            .map(|&v| self.granulated_mesh.position(v)[0])
-            .max_by_key(|&x| OrderedFloat(x))
-            .unwrap();
-        let min_x = self
-            .granulated_mesh
-            .vert_ids()
-            .iter()
-            .map(|&v| self.granulated_mesh.position(v)[0])
-            .min_by_key(|&x| OrderedFloat(x))
-            .unwrap();
-        let width = max_x - min_x;
-        let threshold = 0.001 * width;
-
-        'o: loop {
-            // Calculate all wedges:
-            let mut wedges = priority_queue::PriorityQueue::new();
-            let path = self.edge_to_path.get(&path_id).unwrap();
-            for pair in path.windows(3) {
-                println!("path: {:?}", path_id);
-                println!("pair: {:?}", pair);
-                // Find the shortest (angle) wedge of a,b,c.
-                let (a, b, c) = (pair[0], pair[1], pair[2]);
-                println!("computing shortest wedge");
-                assert!(self.granulated_mesh.edge_between_verts(a, b).is_some());
-                assert!(self.granulated_mesh.edge_between_verts(b, c).is_some());
-                let (w, alpha) = self.granulated_mesh.shortest_wedge(a, b, c);
-                println!("shortest wedge: {:?}", alpha);
-                let length = self.granulated_mesh.distance(a, b) + self.granulated_mesh.distance(b, c);
-                println!("length: {:?}", length);
-                if length < threshold {
-                    continue;
-                }
-                // if parts of the wedge are OCCUPIED, we also skip it
-                for path in self.edge_to_path.values() {
-                    for (u, v) in path.iter().tuple_windows() {
-                        if w.iter().tuple_windows().any(|(u2, v2)| (u == u2 && v == v2) || (u == v2 && v == u2)) {
-                            continue;
-                        }
-                    }
-                }
-
-                println!("pushing wedge");
-                wedges.push((w, b), Reverse(OrderedFloat(alpha)));
-                println!("pushed wedge");
-            }
-
-            println!("nubmer of wedges: {}", wedges.len());
-
-            // While the path is not geodesic, grab the smallest wedge:
-            if let Some(((wedge, b), alpha)) = wedges.pop() {
-                println!("Worst wedge: {:?}", alpha.0 .0);
-                if alpha.0 .0 > 3.0 {
-                    println!("Path {path_id:?} is geodesic");
-                    break 'o;
-                }
-
-                // Flip out the wedge.
-                let mut wedge_copy = wedge.clone();
-                'l: loop {
-                    for i in 1..wedge_copy.len() - 1 {
-                        let (n_im1, n_i, n_ip1) = (wedge_copy[i - 1], wedge_copy[i], wedge_copy[i + 1]);
-                        let beta_i = self.granulated_mesh.vertex_angle(n_im1, n_i, b) + self.granulated_mesh.vertex_angle(b, n_i, n_ip1);
-                        if beta_i < 3.1 {
-                            // We flip the two triangles
-                            if let Some(new_v) = self.granulated_mesh.splip_edge(n_i, b) {
-                                wedge_copy[i] = new_v;
-                                continue 'l;
-                            }
-                        }
-                    }
-                    // If we reach this point, the wedge is flipped out as much as possible.
-                    break 'l;
-                }
-
-                assert!(wedge_copy.len() == wedge.len());
-
-                // Update the path
-                let path = self.edge_to_path.get(&path_id).unwrap();
-                let path_before_wedge = path.iter().take_while(|&&v| v != *wedge.first().unwrap()).copied().collect_vec();
-                let path_after_wedge = path.iter().skip_while(|&&v| v != *wedge.last().unwrap()).skip(1).copied().collect_vec();
-                let new_path = path_before_wedge
-                    .into_iter()
-                    .chain(wedge_copy)
-                    .chain(path_after_wedge.into_iter())
-                    .collect_vec();
-                self.edge_to_path.insert(path_id, new_path.clone());
-                continue 'o;
-            }
-            break 'o;
-        }
-    }
-
-    pub fn get_length_of_path(&self, path_id: PolycubeEdgeID) -> f64 {
-        let path = self.edge_to_path.get(&path_id).unwrap();
-        path.windows(2).map(|verts| self.granulated_mesh.distance(verts[0], verts[1])).sum()
     }
 }
