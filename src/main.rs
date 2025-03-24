@@ -361,7 +361,7 @@ fn main() {
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Bloopy".to_string(),
-                mode: WindowMode::BorderlessFullscreen,
+                mode: WindowMode::Windowed,
                 ..Default::default()
             }),
             ..Default::default()
@@ -643,7 +643,10 @@ pub fn handle_events(
                                     let face_b = mesh_resmut.mesh.face(end_edge);
                                     let alignment_vector_b = vector_b.cross(&mesh_resmut.mesh.normal(face_b)).angle(&direction.into());
 
-                                    let weight = (angular_weight, (alignment_vector_a + alignment_vector_b) / 2., 0.);
+                                    // cross product of the two normals of the faces
+                                    let c = mesh_resmut.mesh.normal(face_a).cross(&mesh_resmut.mesh.normal(face_b)).angle(&direction.into());
+
+                                    let weight = (angular_weight, (alignment_vector_a + alignment_vector_b) / 2., c);
 
                                     (node, neighbor, weight)
                                 })

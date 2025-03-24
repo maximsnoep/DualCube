@@ -505,7 +505,7 @@ impl Solution {
             cleaned_option_b.push(edge_id);
         }
 
-        let best_option = if cleaned_option_a.len() > cleaned_option_b.len() {
+        let best_option = if cleaned_option_a.len() < cleaned_option_b.len() {
             cleaned_option_a
         } else {
             cleaned_option_b

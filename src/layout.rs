@@ -7,6 +7,7 @@ use hutspot::consts::PI;
 use hutspot::geom::Vector3D;
 use itertools::Itertools;
 use ordered_float::OrderedFloat;
+use priority_queue::PriorityQueue;
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
@@ -52,6 +53,13 @@ impl Layout {
         };
         layout.place_vertices();
         layout.place_paths()?;
+
+        layout.verify_paths();
+
+        layout.smoothen();
+
+        layout.verify_paths();
+
         layout.assign_patches();
         Ok(layout)
     }
@@ -184,6 +192,8 @@ impl Layout {
             );
 
             let vertices = &region_to_candidates[&region_id];
+            // let vertices = region_obj.verts.clone();
+
             let best_vertex = vertices
                 .iter()
                 .map(|&v| (v, self.dual_ref.mesh_ref.position(v)))
@@ -437,53 +447,42 @@ impl Layout {
                 NodeType::Vertex(v_id) => self.granulated_mesh.position(v_id),
             };
 
-            let endpoints = self.polycube_ref.structure.endpoints(edge_id);
-            let direction_vector = self.polycube_ref.structure.position(endpoints.1) - self.polycube_ref.structure.position(endpoints.0);
-            // Should be constant in two of the three directions
-            let direction = {
-                let (x, y, z) = (direction_vector.x.abs(), direction_vector.y.abs(), direction_vector.z.abs());
-                if x > y && x > z {
-                    PrincipalDirection::X
-                } else if y > x && y > z {
-                    PrincipalDirection::Y
-                } else {
-                    PrincipalDirection::Z
-                }
-            };
-
-            if direction == PrincipalDirection::X {
-                assert!(direction_vector.y < 1e-3 && direction_vector.z < 1e-3);
-            } else if direction == PrincipalDirection::Y {
-                assert!(direction_vector.x < 1e-3 && direction_vector.z < 1e-3);
-            } else {
-                assert!(direction_vector.x < 1e-3 && direction_vector.y < 1e-3);
-            }
-
             let ridge_function = |a: NodeType, b: NodeType| {
-                if let (NodeType::Vertex(a), NodeType::Vertex(b)) = (a, b) {
-                    let (edge1, edge2) = self.granulated_mesh.edge_between_verts(a, b).unwrap();
-                    let normal1 = self.granulated_mesh.normal(self.granulated_mesh.face(edge1));
-                    let normal2 = self.granulated_mesh.normal(self.granulated_mesh.face(edge2));
-
-                    let mut mult = 1.;
-
-                    // angle between normal1 and normal_on_left
-                    let angle1 = normal1.angle(&normal_on_left);
-                    if angle1 > PI / 3. {
-                        mult += angle1.powi(3);
+                let (normal1, normal2) = match (a, b) {
+                    (NodeType::Vertex(a), NodeType::Vertex(b)) => {
+                        let (edge1, edge2) = self.granulated_mesh.edge_between_verts(a, b).unwrap();
+                        let normal1 = self.granulated_mesh.normal(self.granulated_mesh.face(edge1));
+                        let normal2 = self.granulated_mesh.normal(self.granulated_mesh.face(edge2));
+                        (normal1, normal2)
                     }
-                    // angle between normal2 and normal_on_right
-                    let angle2 = normal2.angle(&normal_on_right);
-                    if angle2 > PI / 3. {
-                        mult += angle2.powi(3);
+                    (NodeType::Face(f), NodeType::Face(_)) => {
+                        let normal = self.granulated_mesh.normal(f);
+                        (normal, normal)
                     }
+                    (NodeType::Face(f), NodeType::Vertex(_)) => {
+                        let normal = self.granulated_mesh.normal(f);
+                        (normal, normal)
+                    }
+                    (NodeType::Vertex(_), NodeType::Face(f)) => {
+                        let normal = self.granulated_mesh.normal(f);
+                        (normal, normal)
+                    }
+                };
 
-                    mult
-                } else if normal_on_left == normal_on_right {
-                    1.0
-                } else {
-                    10.
+                let mut mult = 1.;
+
+                // angle between normal1 and normal_on_left
+                let angle1 = normal1.angle(&normal_on_left);
+                if angle1 > PI / 3. {
+                    mult += angle1.powi(2);
                 }
+                // angle between normal2 and normal_on_right
+                let angle2 = normal2.angle(&normal_on_right);
+                if angle2 > PI / 3. {
+                    mult += angle2.powi(2);
+                }
+
+                mult
             };
 
             let w_function = |a: NodeType, b: NodeType| OrderedFloat(ridge_function(a, b) * nodetype_to_pos(a).metric_distance(&nodetype_to_pos(b)));
@@ -506,9 +505,31 @@ impl Layout {
                                 for last_f_id in last_f_ids {
                                     for new_f_id in new_f_ids {
                                         if let Some((edge_id, _)) = self.granulated_mesh.edge_between_faces(last_f_id, new_f_id) {
-                                            let mid_v_pos = self.granulated_mesh.midpoint(edge_id);
+                                            let (u, v) = self.granulated_mesh.endpoints(edge_id);
+                                            let c1 = self.granulated_mesh.corners(last_f_id).into_iter().find(|&c| c != u && c != v).unwrap();
+                                            let c2 = self
+                                                .granulated_mesh
+                                                .corners(new_f_id)
+                                                .into_iter()
+                                                .find(|&c| c != u && c != v && c != c1)
+                                                .unwrap();
+
+                                            let N = 10;
+                                            let mut smallest_distance = f64::MAX;
+                                            let mut smallest_pos = Vector3D::new(0., 0., 0.);
+                                            for s in 1..N {
+                                                let dir_vec = self.granulated_mesh.vector(edge_id);
+                                                let pos = self.granulated_mesh.position(u) + dir_vec * (f64::from(s) / f64::from(N));
+                                                let distance_c1 = pos.metric_distance(&self.granulated_mesh.position(c1));
+                                                let distance_c2 = pos.metric_distance(&self.granulated_mesh.position(c2));
+                                                let distance = distance_c1 + distance_c2;
+                                                if distance < smallest_distance {
+                                                    smallest_distance = distance;
+                                                    smallest_pos = pos;
+                                                }
+                                            }
                                             let (mid_v_id, _) = self.granulated_mesh.split_edge(edge_id);
-                                            self.granulated_mesh.verts[mid_v_id].set_position(mid_v_pos);
+                                            self.granulated_mesh.verts[mid_v_id].set_position(smallest_pos);
                                             granulated_path.push((mid_v_id, false));
                                         }
                                     }
@@ -530,7 +551,7 @@ impl Layout {
                     let (pos0, pos2) = (self.granulated_mesh.position(v0), self.granulated_mesh.position(v2));
                     // Set pos of v1 to be the midpoint of v0 and v2
                     let pos1 = (pos0 + pos2) / 2.0;
-                    self.granulated_mesh.verts[v1].set_position(pos1);
+                    // self.granulated_mesh.verts[v1].set_position(pos1);
                 }
             }
 
@@ -632,6 +653,127 @@ impl Layout {
 
             let faces = if cc1_shared { patches[cc1].clone() } else { patches[cc2].clone() };
             self.face_to_patch.insert(face_id, Patch { faces });
+        }
+    }
+
+    pub fn verify_paths(&self) {
+        for path in self.edge_to_path.values() {
+            for (a, b) in path.windows(2).map(|verts| (verts[0], verts[1])) {
+                // check if edge between them exists
+                let edge = self.granulated_mesh.edge_between_verts(a, b);
+                assert!(edge.is_some());
+                assert!(self.granulated_mesh.length(edge.unwrap().0) > 0.);
+            }
+        }
+    }
+
+    pub fn smoothen(&mut self) {
+        // For every path, we smoothen it
+        let keys = self
+            .edge_to_path
+            .keys()
+            .filter(|&&k| k < self.polycube_ref.structure.twin(k))
+            .copied()
+            .collect_vec();
+
+        for xxx in 0..1000 {
+            println!("Smoothening iteration {}", xxx);
+            let blocked = self
+                .edge_to_path
+                .values()
+                .flat_map(|path| path.windows(2))
+                .map(|verts| self.granulated_mesh.edge_between_verts(verts[0], verts[1]).unwrap())
+                .flat_map(|(a, b)| vec![a, b])
+                .collect::<HashSet<_>>();
+
+            let mut prio_queue = PriorityQueue::new();
+
+            for i in keys.clone() {
+                let path = self.edge_to_path.get(&i).unwrap().to_owned();
+
+                // go through all vertices in the path (by windows of size 3)
+                // calculate the angle between the two edges that meet at the vertex
+                // if one of these angles is smaller than 180 degrees, we have to refine
+                for (a, b, c) in path.clone().into_iter().tuple_windows() {
+                    let (_, alpha_min) = self.granulated_mesh.shortest_wedge(a, b, c);
+                    if alpha_min == 0. {
+                        continue;
+                    }
+                    if self.granulated_mesh.distance(a, b) < 0.00001 || self.granulated_mesh.distance(b, c) < 0.00001 {
+                        continue;
+                    }
+
+                    prio_queue.push((i, (a, b, c)), Reverse(OrderedFloat(alpha_min)));
+                }
+            }
+
+            let (&(worst_path, (a, b, c)), worst_alpha) = prio_queue.peek().unwrap();
+            println!("Worst path: {:?} with wedge {:?} (alpha: {:?})", worst_path, (a, b, c), worst_alpha);
+
+            let path = self.edge_to_path.get(&worst_path).unwrap().to_owned();
+            let path_edges = path
+                .windows(2)
+                .map(|verts| self.granulated_mesh.edge_between_verts(verts[0], verts[1]).unwrap())
+                .flat_map(|(a, b)| vec![a, b])
+                .collect::<HashSet<_>>();
+
+            let (worst_wedge, _) = self.granulated_mesh.shortest_wedge(a, b, c);
+
+            let mut new_subpath = vec![a];
+            for (i0, i, i1) in worst_wedge.clone().into_iter().tuple_windows() {
+                let beta_i = self.granulated_mesh.wedge_alpha((b, &[i0, i, i1]));
+                let edge = self.granulated_mesh.edge_between_verts(i, b).unwrap().0;
+
+                // skip if already tried to make this better.
+
+                if beta_i >= PI {
+                    println!("0.9pi adding {i:?}");
+                    new_subpath.push(i);
+                } else if blocked.contains(&edge) && !path_edges.contains(&edge) {
+                    println!("blocked adding {i:?}");
+                    new_subpath.push(i);
+                } else if let Some(inew) = self.granulated_mesh.splip_edge(i, b) {
+                    println!("splitting adding {inew:?}");
+                    new_subpath.push(inew);
+                } else {
+                    println!("default adding {i:?}");
+                    new_subpath.push(i);
+                }
+            }
+            new_subpath.push(c);
+
+            let path_before_wedge = path.iter().take_while(|&&v| v != *new_subpath.first().unwrap()).copied().collect_vec();
+            let path_after_wedge = path.iter().skip_while(|&&v| v != *new_subpath.last().unwrap()).skip(1).copied().collect_vec();
+            let new_path = path_before_wedge
+                .into_iter()
+                .chain(new_subpath.clone())
+                .chain(path_after_wedge.into_iter())
+                .collect_vec();
+
+            self.edge_to_path.insert(worst_path, new_path.clone());
+            self.edge_to_path
+                .insert(self.polycube_ref.structure.twin(worst_path), new_path.iter().rev().copied().collect_vec());
+        }
+    }
+
+    fn subdivide(&mut self) {
+        // grab all vertices in the paths
+
+        let vertices = self.edge_to_path.values().flat_map(|path| path.iter().copied()).collect::<HashSet<_>>();
+        let edges = vertices.iter().flat_map(|&v| self.granulated_mesh.outgoing(v)).collect::<HashSet<_>>();
+        // grab smallest edge length on path
+        let min_edge_length = edges
+            .iter()
+            .map(|&e| self.granulated_mesh.length(e))
+            .min_by(|a, b| a.partial_cmp(b).unwrap())
+            .unwrap();
+
+        for edge in edges {
+            if self.granulated_mesh.length(edge) < min_edge_length * 0.5 {
+                continue;
+            }
+            let (a, b) = self.granulated_mesh.endpoints(edge);
+            self.granulated_mesh.splip_edge(a, b);
         }
     }
 }
