@@ -3,7 +3,7 @@ use crate::polycube::{Polycube, PolycubeEdgeID, PolycubeFaceID, PolycubeVertID};
 use crate::{to_principal_direction, EmbeddedMesh, FaceID, PrincipalDirection, VertID};
 use bimap::BiHashMap;
 use douconel::douconel_embedded::HasPosition;
-use hutspot::consts::PI;
+use hutspot::consts::{EPS, PI};
 use hutspot::geom::Vector3D;
 use itertools::Itertools;
 use ordered_float::OrderedFloat;
@@ -676,7 +676,9 @@ impl Layout {
             .copied()
             .collect_vec();
 
-        for xxx in 0..1000 {
+        let mut already_attempted = HashSet::new();
+
+        for xxx in 0..10000 {
             println!("Smoothening iteration {}", xxx);
             let blocked = self
                 .edge_to_path
@@ -695,11 +697,14 @@ impl Layout {
                 // calculate the angle between the two edges that meet at the vertex
                 // if one of these angles is smaller than 180 degrees, we have to refine
                 for (a, b, c) in path.clone().into_iter().tuple_windows() {
-                    let (_, alpha_min) = self.granulated_mesh.shortest_wedge(a, b, c);
+                    let (wedge_min, alpha_min) = self.granulated_mesh.shortest_wedge(a, b, c);
                     if alpha_min == 0. {
                         continue;
                     }
-                    if self.granulated_mesh.distance(a, b) < 0.00001 || self.granulated_mesh.distance(b, c) < 0.00001 {
+                    if self.granulated_mesh.distance(a, b) <= 100. * EPS || self.granulated_mesh.distance(b, c) <= 100. * EPS {
+                        continue;
+                    }
+                    if already_attempted.contains(&(i, (a, b, c), wedge_min)) {
                         continue;
                     }
 
@@ -707,7 +712,10 @@ impl Layout {
                 }
             }
 
-            let (&(worst_path, (a, b, c)), worst_alpha) = prio_queue.peek().unwrap();
+            let ((worst_path, (a, b, c)), worst_alpha) = prio_queue.pop().unwrap();
+            let (worst_wedge, _) = self.granulated_mesh.shortest_wedge(a, b, c);
+            already_attempted.insert((worst_path, (a, b, c), worst_wedge.clone()));
+
             println!("Worst path: {:?} with wedge {:?} (alpha: {:?})", worst_path, (a, b, c), worst_alpha);
 
             let path = self.edge_to_path.get(&worst_path).unwrap().to_owned();
@@ -717,26 +725,18 @@ impl Layout {
                 .flat_map(|(a, b)| vec![a, b])
                 .collect::<HashSet<_>>();
 
-            let (worst_wedge, _) = self.granulated_mesh.shortest_wedge(a, b, c);
-
             let mut new_subpath = vec![a];
             for (i0, i, i1) in worst_wedge.clone().into_iter().tuple_windows() {
                 let beta_i = self.granulated_mesh.wedge_alpha((b, &[i0, i, i1]));
                 let edge = self.granulated_mesh.edge_between_verts(i, b).unwrap().0;
 
-                // skip if already tried to make this better.
-
                 if beta_i >= PI {
-                    println!("0.9pi adding {i:?}");
                     new_subpath.push(i);
                 } else if blocked.contains(&edge) && !path_edges.contains(&edge) {
-                    println!("blocked adding {i:?}");
                     new_subpath.push(i);
                 } else if let Some(inew) = self.granulated_mesh.splip_edge(i, b) {
-                    println!("splitting adding {inew:?}");
                     new_subpath.push(inew);
                 } else {
-                    println!("default adding {i:?}");
                     new_subpath.push(i);
                 }
             }
@@ -753,27 +753,6 @@ impl Layout {
             self.edge_to_path.insert(worst_path, new_path.clone());
             self.edge_to_path
                 .insert(self.polycube_ref.structure.twin(worst_path), new_path.iter().rev().copied().collect_vec());
-        }
-    }
-
-    fn subdivide(&mut self) {
-        // grab all vertices in the paths
-
-        let vertices = self.edge_to_path.values().flat_map(|path| path.iter().copied()).collect::<HashSet<_>>();
-        let edges = vertices.iter().flat_map(|&v| self.granulated_mesh.outgoing(v)).collect::<HashSet<_>>();
-        // grab smallest edge length on path
-        let min_edge_length = edges
-            .iter()
-            .map(|&e| self.granulated_mesh.length(e))
-            .min_by(|a, b| a.partial_cmp(b).unwrap())
-            .unwrap();
-
-        for edge in edges {
-            if self.granulated_mesh.length(edge) < min_edge_length * 0.5 {
-                continue;
-            }
-            let (a, b) = self.granulated_mesh.endpoints(edge);
-            self.granulated_mesh.splip_edge(a, b);
         }
     }
 }

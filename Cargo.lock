@@ -2767,6 +2767,7 @@ dependencies = [
 [[package]]
 name = "hutspot"
 version = "0.0.1"
+source = "git+https://github.com/maximsnoep/hutspot#c5f65a26c544ee605a705847b995405df63c69ad"
 dependencies = [
  "approx",
  "bevy_render",
