@@ -452,13 +452,23 @@ impl Solution {
         }
     }
 
-    pub fn construct_loop(start: &[EdgeID; 2], domain: &Graaf<[EdgeID; 2], (f64, f64, f64)>, measure: &impl Fn((f64, f64, f64)) -> f64) -> Vec<EdgeID> {
-        domain
-            .shortest_cycle(domain.node_to_index(start).unwrap(), measure)
-            .unwrap_or_default()
+    pub fn construct_loop(start: &[EdgeID; 2], domain: &Graaf<[EdgeID; 2], (f64, f64, f64)>, measure: &impl Fn((f64, f64, f64)) -> f64) -> (Vec<EdgeID>, f64) {
+        let solution = domain.shortest_cycle(domain.node_to_index(start).unwrap(), measure).unwrap_or_default();
+
+        let weight = solution
             .iter()
-            .flat_map(|&node_index| domain.index_to_node(node_index).unwrap().to_owned())
-            .collect_vec()
+            .copied()
+            .tuple_windows()
+            .map(|(e1, e2)| domain.get_weight(e1, e2))
+            .map(|(a, b, c)| measure((a, b, c)))
+            .sum::<f64>();
+
+        let flatten = solution
+            .into_iter()
+            .flat_map(|node_index| domain.index_to_node(node_index).unwrap().to_owned())
+            .collect_vec();
+
+        return (flatten, weight);
     }
 
     pub fn construct_unbounded_loop(
@@ -484,38 +494,24 @@ impl Solution {
         let g_original = &flow_graph;
         let g = g_original.filter(filter);
 
-        let option_a = Self::construct_loop(&[e1, e2], &g, &measure);
-        let option_b = Self::construct_loop(&[e2, e1], &g, &measure);
+        let (option_a, score_a) = Self::construct_loop(&[e1, e2], &g, &measure);
+        let (option_b, score_b) = Self::construct_loop(&[e2, e1], &g, &measure);
 
-        // The path may contain self intersections. We can remove these.
-        // If duplicated vertices are present, remove everything between them.
-        let mut cleaned_option_a = vec![];
-        for edge_id in option_a {
-            if cleaned_option_a.contains(&edge_id) {
-                cleaned_option_a = cleaned_option_a.into_iter().take_while(|&x| x != edge_id).collect_vec();
-            }
-            cleaned_option_a.push(edge_id);
-        }
+        let option = if score_a < score_b { option_a } else { option_b };
 
-        let mut cleaned_option_b = vec![];
-        for edge_id in option_b {
-            if cleaned_option_b.contains(&edge_id) {
-                cleaned_option_b = cleaned_option_b.into_iter().take_while(|&x| x != edge_id).collect_vec();
-            }
-            cleaned_option_b.push(edge_id);
-        }
-
-        let best_option = if cleaned_option_a.len() < cleaned_option_b.len() {
-            cleaned_option_a
-        } else {
-            cleaned_option_b
-        };
-
-        if best_option.len() < 5 {
+        if option.len() < 5 {
             return None;
         }
 
-        Some(best_option)
+        let mut cleaned_option = vec![];
+        for edge_id in &option {
+            if cleaned_option.contains(&edge_id) {
+                cleaned_option = cleaned_option.into_iter().take_while(|&x| x != edge_id).collect_vec();
+            }
+            cleaned_option.push(edge_id);
+        }
+
+        Some(option)
     }
 
     pub fn mutate_add_loop(&self, nr_loops: usize, flow_graphs: &[Graaf<[EdgeID; 2], (f64, f64, f64)>; 3]) -> Option<Self> {
@@ -937,8 +933,8 @@ impl Solution {
                 let g_original = flow_graph;
                 let g = g_original.filter(filter);
 
-                let option_a = Self::construct_loop(&[e1, e2], &g, &measure);
-                let option_b = Self::construct_loop(&[e2, e1], &g, &measure);
+                let (option_a, _) = Self::construct_loop(&[e1, e2], &g, &measure);
+                let (option_b, _) = Self::construct_loop(&[e2, e1], &g, &measure);
 
                 // The path may contain self intersections. We can remove these.
                 // If duplicated vertices are present, remove everything between them.

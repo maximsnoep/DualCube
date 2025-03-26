@@ -40,6 +40,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use winit::platform::windows::WindowExtWindows;
 use winit::window::Icon;
 
 slotmap::new_key_type! {
@@ -157,7 +158,6 @@ pub struct Configuration {
 
     pub automatic: bool,
     pub interactive: bool,
-    pub delete_mode: bool,
 
     pub ui_is_hovered: [bool; 32],
     pub window_shows_object: [Objects; 4],
@@ -205,7 +205,6 @@ impl Default for Configuration {
             selected: None,
             automatic: false,
             interactive: false,
-            delete_mode: false,
             ui_is_hovered: [false; 32],
             window_shows_object: [
                 Objects::MeshPolycubeLayout,
@@ -397,8 +396,7 @@ fn set_window_icon(
     // we have to use `NonSend` here
     windows: NonSend<WinitWindows>,
 ) {
-    let image = image::open("assets/logo2.png").expect("Failed to open icon path").into_rgba8();
-
+    let image = image::open("assets/logo-32.png").expect("Failed to open icon path").into_rgba8();
     let (icon_rgba, icon_width, icon_height) = {
         let (width, height) = image.dimensions();
         let rgba = image.into_raw();
@@ -409,6 +407,19 @@ fn set_window_icon(
     // do it for all windows
     for window in windows.windows.values() {
         window.set_window_icon(Some(icon.clone()));
+    }
+
+    let image = image::open("assets/logo-512.png").expect("Failed to open icon path").into_rgba8();
+    let (icon_rgba, icon_width, icon_height) = {
+        let (width, height) = image.dimensions();
+        let rgba = image.into_raw();
+        (rgba, width, height)
+    };
+    let icon = Icon::from_rgba(icon_rgba, icon_width, icon_height).unwrap();
+
+    // do it for all windows
+    for window in windows.windows.values() {
+        window.set_taskbar_icon(Some(icon.clone()));
     }
 }
 
@@ -558,6 +569,9 @@ pub fn handle_events(
                     _ => panic!("File format not supported."),
                 }
 
+                configuration.automatic = false;
+                configuration.interactive = false;
+
                 if mesh_resmut.mesh.vert_ids().is_empty() {
                     return;
                 }
@@ -624,10 +638,8 @@ pub fn handle_events(
                                     let angle = f64::min(angle_around_m1, angle_around_m2);
 
                                     if !(0. ..=PI + EPS).contains(&angle) {
-                                        warn!("{angle} is degenerate!!!");
+                                        warn!("{angle} is degenerate!!! ({angle_around_m1}, {angle_around_m2})");
                                     }
-
-                                    // assert!((0. ..=PI).contains(&angle));
 
                                     // Weight is based on how far the angle is from 180 degrees
                                     let angular_weight = PI - angle;
@@ -1196,7 +1208,7 @@ fn raycast(
         let g_original = &mesh_resmut.flow_graphs[configuration.direction as usize];
         let g = g_original.filter(filter);
 
-        let measure = |(a, b, c): (f64, f64, f64)| configuration.alpha * a.powi(10) + (1. - configuration.alpha) * b.powi(10);
+        let measure = |(a, b, c): (f64, f64, f64)| configuration.alpha * a.powi(5) + (1. - configuration.alpha) * b.powi(5);
 
         // Starting edges.
         let [e1, e2] = mesh_resmut.mesh.edges_in_face_with_vert(face_id, verts[0]).unwrap();
@@ -1242,7 +1254,7 @@ fn raycast(
             cleaned_option_a = cleaned_option_b.clone();
         }
 
-        let best_option = if cleaned_option_b.len() > cleaned_option_a.len() {
+        let best_option = if cleaned_option_b.len() < cleaned_option_a.len() {
             cleaned_option_b
         } else {
             cleaned_option_a

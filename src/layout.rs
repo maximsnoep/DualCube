@@ -668,6 +668,8 @@ impl Layout {
     }
 
     pub fn smoothen(&mut self) {
+        return;
+
         // For every path, we smoothen it
         let keys = self
             .edge_to_path

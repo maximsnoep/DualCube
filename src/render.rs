@@ -312,6 +312,23 @@ pub fn update(
                 ));
 
                 if let Ok(dual) = &solution.current_solution.dual {
+                    // draw a pointer to the first edge of each loop
+                    for (_, lewp) in &solution.current_solution.loops {
+                        let first_edge = solution.current_solution.get_pairs_of_sequence(&lewp.edges).first().unwrap().to_owned();
+                        let u = mesh_resmut.mesh.midpoint(first_edge[0]);
+                        let v = mesh_resmut.mesh.midpoint(first_edge[1]);
+                        let n = mesh_resmut.mesh.edge_normal(first_edge[0]);
+                        add_line2(
+                            &mut gizmos_cache.loops[0],
+                            u,
+                            v,
+                            n * 0.01,
+                            hutspot::color::RED,
+                            translation + Vec3::from(Objects::MeshDualLoops),
+                            scale,
+                        );
+                    }
+
                     for segment_id in dual.loop_structure.edge_ids() {
                         let direction = dual.segment_to_direction(segment_id);
                         let orientation = dual.segment_to_orientation(segment_id);
