@@ -805,8 +805,8 @@ pub fn gizmos(mut gizmos: Gizmos, gizmos_cache: Res<GizmosCache>, configuration:
     }
 }
 
-pub fn add_line(lines: &mut Vec<Line>, position: Vector3D, normal: Vector3D, length: f32, color: hutspot::color::Color, translation: Vec3, scale: f32) {
-    let line = DrawableLine::from_vertex(position, normal, length, vec3_to_vector3d(translation), scale);
+pub fn add_line(lines: &mut Vec<Line>, position: Vector3D, normal: Vector3D, length: f32, color: hutspot::color::Color, translation: Vector3D, scale: f32) {
+    let line = DrawableLine::from_vertex(position, normal, length, translation, scale);
     lines.push((line.u, line.v, color));
 }
 

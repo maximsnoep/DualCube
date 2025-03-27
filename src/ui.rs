@@ -381,6 +381,10 @@ pub fn update(
                         ui.add_space(15.);
 
                         if conf.automatic {
+                            if sleek_button(ui, "initialize") {
+                                ev_w.send(ActionEvent::Initialize);
+                            }
+
                             if ui.checkbox(&mut conf.should_continue, "run").clicked() && conf.should_continue {
                                 ev_w.send(ActionEvent::Mutate);
                             }

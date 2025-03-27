@@ -38,9 +38,20 @@ impl<V: Eq + PartialEq + Hash + Default + Copy, E: Copy> Graaf<V, E> {
         self.edges.clone()
     }
 
-    pub fn filter(&self, predicate: impl Fn((&V, &V)) -> bool) -> Self {
+    pub fn filter_edges(&self, predicate: impl Fn((&V, &V)) -> bool) -> Self {
         let nodes = self.nodes.clone();
         let edges = self.edges.iter().filter(|(from, to, _)| predicate((from, to))).copied().collect_vec();
+        Self::from(nodes, edges)
+    }
+
+    pub fn filter_nodes(&self, predicate: impl Fn(&V) -> bool) -> Self {
+        let nodes = self.nodes.iter().filter(|&&node| predicate(&node)).copied().collect_vec();
+        let edges = self
+            .edges
+            .iter()
+            .filter(|(from, to, _)| predicate(from) && predicate(to))
+            .copied()
+            .collect_vec();
         Self::from(nodes, edges)
     }
 
@@ -120,6 +131,15 @@ impl<V: Eq + PartialEq + Hash + Default + Copy, E: Copy> Graaf<V, E> {
             })
             .min_by_key(|(_, cost)| OrderedFloat(cost.to_owned()))
             .map(|(path, _)| path)
+    }
+
+    pub fn shortest_cycle_edge<W: Measure + Copy + FloatCore, F: Fn(E) -> W>(
+        &self,
+        (a, b): (NodeIndex, NodeIndex),
+        measure: &F,
+    ) -> Option<(Vec<NodeIndex>, W)> {
+        let path = self.shortest_path(b, a, measure);
+        path.map(|(cost, path)| (path, cost + measure(self.get_weight(a, b))))
     }
 
     pub fn get_weight(&self, a: NodeIndex, b: NodeIndex) -> E {

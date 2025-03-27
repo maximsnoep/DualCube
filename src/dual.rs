@@ -5,6 +5,7 @@ use crate::{
 };
 use douconel::douconel::Douconel;
 use itertools::Itertools;
+use log::error;
 use slotmap::{SecondaryMap, SlotMap};
 use std::{
     collections::{HashMap, HashSet},
@@ -237,6 +238,7 @@ impl Dual {
         // Intersections are edges that are occupied exactly twice. It is not possible for an edge to be occupied more than twice.
         // NOTE: An intersection exists on two half-edges, we only store the intersection at the lower ID half-edge
         if occupied.values().any(|x| x.len() >= 3) {
+            error!("Invalid intersection: an edge is occupied by more than two loops.");
             return Err(PropertyViolationError::UnknownError);
         }
 
@@ -314,6 +316,10 @@ impl Dual {
                 })
                 .collect_vec();
             if (ordered_adjacent_intersections.len() != 4) || (ordered_adjacent_intersections.iter().map(|x| x.1).collect::<HashSet<_>>().len() != 4) {
+                error!(
+                    "Invalid intersection: ordered adjacent intersections are not unique or not 4. {:?} ({:?})",
+                    ordered_adjacent_intersections, quad
+                );
                 return Err(PropertyViolationError::UnknownError);
             }
 
@@ -321,21 +327,25 @@ impl Dual {
             assert!(ordered_adjacent_intersections.iter().map(|x| x.1).collect::<HashSet<_>>().len() == 4);
 
             if ordered_adjacent_intersections[0].0 == ordered_adjacent_intersections[1].0 {
+                error!("[0].0 == [1].0: {:?}", ordered_adjacent_intersections[0].0);
                 return Err(PropertyViolationError::UnknownError);
             }
             assert!(ordered_adjacent_intersections[0].0 != ordered_adjacent_intersections[1].0);
 
             if ordered_adjacent_intersections[1].0 == ordered_adjacent_intersections[2].0 {
+                error!("[1].0 == [2].0: {:?}", ordered_adjacent_intersections[1].0);
                 return Err(PropertyViolationError::UnknownError);
             }
             assert!(ordered_adjacent_intersections[1].0 != ordered_adjacent_intersections[2].0);
 
             if ordered_adjacent_intersections[2].0 == ordered_adjacent_intersections[3].0 {
+                error!("[2].0 == [3].0: {:?}", ordered_adjacent_intersections[2].0);
                 return Err(PropertyViolationError::UnknownError);
             }
             assert!(ordered_adjacent_intersections[2].0 != ordered_adjacent_intersections[3].0);
 
             if ordered_adjacent_intersections[3].0 == ordered_adjacent_intersections[0].0 {
+                error!("[3].0 == [0].0: {:?}", ordered_adjacent_intersections[3].0);
                 return Err(PropertyViolationError::UnknownError);
             }
             assert!(ordered_adjacent_intersections[3].0 != ordered_adjacent_intersections[0].0);
@@ -400,6 +410,7 @@ impl Dual {
 
             self.loop_structure = douconel;
         } else {
+            error!("Failed to create loop structure from faces.");
             return Err(PropertyViolationError::UnknownError);
         }
 
@@ -417,6 +428,11 @@ impl Dual {
         });
         // This number should be equal to the number of faces in the loop structure
         if loop_regions.len() != self.loop_structure.face_ids().len() {
+            error!(
+                "Invalid number of loop regions: expected {}, got {}",
+                self.loop_structure.face_ids().len(),
+                loop_regions.len()
+            );
             return Err(PropertyViolationError::UnknownError);
         }
 

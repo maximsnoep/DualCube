@@ -669,7 +669,6 @@ impl Layout {
 
     pub fn smoothen(&mut self) {
         return;
-
         // For every path, we smoothen it
         let keys = self
             .edge_to_path
@@ -680,13 +679,17 @@ impl Layout {
 
         let mut already_attempted = HashSet::new();
 
-        for xxx in 0..10000 {
+        for xxx in 0..1_000 {
             println!("Smoothening iteration {}", xxx);
             let blocked = self
                 .edge_to_path
                 .values()
                 .flat_map(|path| path.windows(2))
-                .map(|verts| self.granulated_mesh.edge_between_verts(verts[0], verts[1]).unwrap())
+                .map(|verts| {
+                    self.granulated_mesh
+                        .edge_between_verts(verts[0], verts[1])
+                        .expect(&format!("Edge not found {verts:?}"))
+                })
                 .flat_map(|(a, b)| vec![a, b])
                 .collect::<HashSet<_>>();
 
@@ -737,12 +740,18 @@ impl Layout {
                 } else if blocked.contains(&edge) && !path_edges.contains(&edge) {
                     new_subpath.push(i);
                 } else if let Some(inew) = self.granulated_mesh.splip_edge(i, b) {
-                    new_subpath.push(inew);
+                    if inew == b {
+                        new_subpath.push(i);
+                    } else {
+                        new_subpath.push(inew);
+                    }
                 } else {
                     new_subpath.push(i);
                 }
             }
             new_subpath.push(c);
+
+            println!("New subpath: {:?}", new_subpath);
 
             let path_before_wedge = path.iter().take_while(|&&v| v != *new_subpath.first().unwrap()).copied().collect_vec();
             let path_after_wedge = path.iter().skip_while(|&&v| v != *new_subpath.last().unwrap()).skip(1).copied().collect_vec();

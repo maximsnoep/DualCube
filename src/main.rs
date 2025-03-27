@@ -284,6 +284,7 @@ pub enum ActionEvent {
     Mutate,
     Smoothen,
     Recompute,
+    Initialize,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -324,7 +325,7 @@ pub struct InputResource {
     properties: MeshProperties,
     properties2: MeshProperties,
     vertex_lookup: TreeD,
-    flow_graphs: [Graaf<[EdgeID; 2], (f64, f64, f64)>; 3],
+    flow_graphs: [Graaf<EdgeID, f64>; 3],
 }
 
 #[derive(Debug, Clone, Resource)]
@@ -392,35 +393,14 @@ fn main() {
         .run();
 }
 
-fn set_window_icon(
-    // we have to use `NonSend` here
-    windows: NonSend<WinitWindows>,
-) {
-    let image = image::open("assets/logo-32.png").expect("Failed to open icon path").into_rgba8();
-    let (icon_rgba, icon_width, icon_height) = {
-        let (width, height) = image.dimensions();
-        let rgba = image.into_raw();
-        (rgba, width, height)
+fn set_window_icon(windows: NonSend<WinitWindows>) {
+    let window = windows.windows.iter().next().unwrap().1;
+    let set_icon = |path: &str, set_fn: fn(&winit::window::Window, Option<Icon>)| {
+        let image = image::open(path).expect("Failed to open icon path").into_rgba8();
+        set_fn(window, Some(Icon::from_rgba(image.clone().into_raw(), image.width(), image.height()).unwrap()));
     };
-    let icon = Icon::from_rgba(icon_rgba, icon_width, icon_height).unwrap();
-
-    // do it for all windows
-    for window in windows.windows.values() {
-        window.set_window_icon(Some(icon.clone()));
-    }
-
-    let image = image::open("assets/logo-512.png").expect("Failed to open icon path").into_rgba8();
-    let (icon_rgba, icon_width, icon_height) = {
-        let (width, height) = image.dimensions();
-        let rgba = image.into_raw();
-        (rgba, width, height)
-    };
-    let icon = Icon::from_rgba(icon_rgba, icon_width, icon_height).unwrap();
-
-    // do it for all windows
-    for window in windows.windows.values() {
-        window.set_taskbar_icon(Some(icon.clone()));
-    }
+    set_icon("assets/logo-32.png", winit::window::Window::set_window_icon);
+    set_icon("assets/logo-512.png", winit::window::Window::set_taskbar_icon);
 }
 
 pub fn handle_hexmesh_tasks(mut tasks: ResMut<HexTasks>, mut configuration: ResMut<Configuration>) {
@@ -586,91 +566,38 @@ pub fn handle_events(
 
                 mesh_resmut.properties.source = String::from(path.to_str().unwrap());
 
-                let nodes = mesh_resmut
-                    .mesh
-                    .face_ids()
-                    .into_par_iter()
-                    .flat_map(|face_id| {
-                        let edges = mesh_resmut.mesh.edges(face_id);
-                        assert!(edges.len() == 3);
-                        vec![
-                            [edges[0], edges[1]],
-                            [edges[1], edges[0]],
-                            [edges[0], edges[2]],
-                            [edges[2], edges[0]],
-                            [edges[1], edges[2]],
-                            [edges[2], edges[1]],
-                        ]
-                    })
-                    .collect::<Vec<_>>();
+                let nodes = mesh_resmut.mesh.edge_ids();
 
-                for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
+                for axis in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
                     let edges = nodes
                         .clone()
                         .into_par_iter()
                         .flat_map(|node| {
-                            mesh_resmut.mesh.neighbor_function_edgepairgraph()(node)
+                            mesh_resmut.mesh.neighbor_function_edgegraph()(node)
                                 .into_iter()
                                 .map(|neighbor| {
-                                    assert!(mesh_resmut.mesh.twin(node[1]) == neighbor[0]);
-                                    let middle_edge = node[1];
-                                    let (m1, m2) = mesh_resmut.mesh.endpoints(middle_edge);
+                                    let face1 = mesh_resmut.mesh.face(node);
+                                    let face2 = mesh_resmut.mesh.face(neighbor);
 
-                                    let start_edge = node[0];
-                                    let end_edge = neighbor[1];
-                                    // Vector from middle_edge to start_edge
-                                    let vector_a = mesh_resmut.mesh.midpoint(start_edge) - mesh_resmut.mesh.midpoint(middle_edge);
-                                    // Vector from middle_edge to end_edge
-                                    let vector_b = mesh_resmut.mesh.midpoint(end_edge) - mesh_resmut.mesh.midpoint(middle_edge);
+                                    if face1 == face2 {
+                                        let normal = mesh_resmut.mesh.normal(face1);
+                                        let m1 = mesh_resmut.mesh.midpoint(node);
+                                        let m2 = mesh_resmut.mesh.midpoint(neighbor);
+                                        let direction = m2 - m1;
+                                        let cross = direction.cross(&normal);
+                                        let angle = cross.angle(&axis.into());
 
-                                    // Vector from middle_edge to m1
-                                    let vector_m1 = mesh_resmut.mesh.position(m1) - mesh_resmut.mesh.midpoint(middle_edge);
-                                    // Vector from middle_edge to m2
-                                    let vector_m2 = mesh_resmut.mesh.position(m2) - mesh_resmut.mesh.midpoint(middle_edge);
-
-                                    // Angle around m1
-                                    let angle_around_m1 = mesh_resmut.mesh.vec_angle(vector_a, vector_m1) + mesh_resmut.mesh.vec_angle(vector_b, vector_m1);
-
-                                    // Angle around m2
-                                    let angle_around_m2 = mesh_resmut.mesh.vec_angle(vector_a, vector_m2) + mesh_resmut.mesh.vec_angle(vector_b, vector_m2);
-
-                                    // Whichever angle is shorter is the "real" angle
-                                    let angle = f64::min(angle_around_m1, angle_around_m2);
-
-                                    if !(0. ..=PI + EPS).contains(&angle) {
-                                        warn!("{angle} is degenerate!!! ({angle_around_m1}, {angle_around_m2})");
+                                        (node, neighbor, angle)
+                                    } else {
+                                        assert!(mesh_resmut.mesh.twin(node) == neighbor);
+                                        (node, neighbor, 0.)
                                     }
-
-                                    // Weight is based on how far the angle is from 180 degrees
-                                    let angular_weight = PI - angle;
-
-                                    // Alignment per edge
-                                    // Vector_a
-                                    // Find the face that is bounded by the two edges
-                                    let face_a = mesh_resmut.mesh.face(start_edge);
-                                    let alignment_vector_a = (-vector_a).cross(&mesh_resmut.mesh.normal(face_a)).angle(&direction.into());
-
-                                    // Vector_b
-                                    // Find the face that is bounded by the two edges
-                                    let face_b = mesh_resmut.mesh.face(end_edge);
-                                    let alignment_vector_b = vector_b.cross(&mesh_resmut.mesh.normal(face_b)).angle(&direction.into());
-
-                                    // cross product of the two normals of the faces
-                                    let c = mesh_resmut.mesh.normal(face_a).cross(&mesh_resmut.mesh.normal(face_b)).angle(&direction.into());
-
-                                    let weight = (angular_weight, (alignment_vector_a + alignment_vector_b) / 2., c);
-
-                                    (node, neighbor, weight)
                                 })
                                 .collect_vec()
                         })
                         .collect::<Vec<_>>();
 
-                    mesh_resmut.flow_graphs[direction as usize] = Graaf::from(nodes.clone(), edges);
-                }
-
-                if solution.current_solution.loops.is_empty() {
-                    // solution.current_solution.initialize(&mesh_resmut.flow_graphs);
+                    mesh_resmut.flow_graphs[axis as usize] = Graaf::from(nodes.clone(), edges);
                 }
 
                 solution.current_solution.reconstruct_solution(configuration.unit_cubes);
@@ -735,7 +662,6 @@ pub fn handle_events(
 
                 solution.current_solution.export(&PathBuf::from(path_obj), &PathBuf::from(path_flag));
             }
-
             ActionEvent::ExportState => {
                 if mesh_resmut.mesh.vert_ids().is_empty() {
                     return;
@@ -773,7 +699,6 @@ pub fn handle_events(
                 let res = fs::write(PathBuf::from(path_save), serde_json::to_string(&state).unwrap());
                 info!("{:?}", res);
             }
-
             ActionEvent::ExportSolution => {
                 if mesh_resmut.mesh.vert_ids().is_empty() {
                     return;
@@ -793,8 +718,8 @@ pub fn handle_events(
                     .next()
                     .unwrap();
 
-                let path_obj = format!("./out/{n}_{t:?}.obj");
-                let path_flag = format!("./out/{n}_{t:?}.flag");
+                let path_obj = format!("./out/temp/{n}_{t:?}.obj");
+                let path_flag = format!("./out/temp/{n}_{t:?}.flag");
 
                 solution.current_solution.export(&PathBuf::from(path_obj), &PathBuf::from(path_flag));
             }
@@ -806,9 +731,9 @@ pub fn handle_events(
                 let t = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards").as_secs();
                 let n = mesh_resmut.properties.source.split("\\").last().unwrap().split('.').next().unwrap().to_owned();
 
-                let path_save = format!("./out/{n}_{t}.save");
-                let path_obj = format!("./out/{n}_{t}.obj",);
-                let path_flag = format!("./out/{n}_{t}.flag",);
+                let path_save = format!("./out/temp/{n}_{t}.save");
+                let path_obj = format!("./out/temp/{n}_{t}.obj",);
+                let path_flag = format!("./out/temp/{n}_{t}.flag",);
 
                 let state = SaveStateObject {
                     mesh: (*mesh_resmut.mesh).clone(),
@@ -866,33 +791,33 @@ pub fn handle_events(
                 render::reset(&mut commands, &cameras, &mut images, &mut camera_handles, &configuration);
             }
             ActionEvent::Mutate => {
-                let task_pool = AsyncComputeTaskPool::get();
+                // let task_pool = AsyncComputeTaskPool::get();
 
-                let cloned_solution = solution.current_solution.clone();
-                let cloned_flow_graphs = mesh_resmut.flow_graphs.clone();
+                // let cloned_solution = solution.current_solution.clone();
+                // let cloned_flow_graphs = mesh_resmut.flow_graphs.clone();
 
-                if (cloned_solution.loops.len() < 10) {
-                    let task = task_pool.spawn(async move {
-                        {
-                            cloned_solution.mutate_add_loop(10, &cloned_flow_graphs)
-                        }
-                    });
-                    tasks.generating_chunks.insert(ActionEvent::Mutate, task);
-                } else if rand::random() {
-                    let task = task_pool.spawn(async move {
-                        {
-                            cloned_solution.mutate_add_loop(10, &cloned_flow_graphs)
-                        }
-                    });
-                    tasks.generating_chunks.insert(ActionEvent::Mutate, task);
-                } else {
-                    let task = task_pool.spawn(async move {
-                        {
-                            cloned_solution.mutate_del_loop(10)
-                        }
-                    });
-                    tasks.generating_chunks.insert(ActionEvent::Mutate, task);
-                }
+                // if (cloned_solution.loops.len() < 10) {
+                //     let task = task_pool.spawn(async move {
+                //         {
+                //             cloned_solution.mutate_add_loop(10, &cloned_flow_graphs)
+                //         }
+                //     });
+                //     tasks.generating_chunks.insert(ActionEvent::Mutate, task);
+                // } else if rand::random() {
+                //     let task = task_pool.spawn(async move {
+                //         {
+                //             cloned_solution.mutate_add_loop(10, &cloned_flow_graphs)
+                //         }
+                //     });
+                //     tasks.generating_chunks.insert(ActionEvent::Mutate, task);
+                // } else {
+                //     let task = task_pool.spawn(async move {
+                //         {
+                //             cloned_solution.mutate_del_loop(10)
+                //         }
+                //     });
+                //     tasks.generating_chunks.insert(ActionEvent::Mutate, task);
+                // }
             }
             ActionEvent::Smoothen => {}
             ActionEvent::Recompute => {
@@ -917,6 +842,9 @@ pub fn handle_events(
                         }
                     }),
                 );
+            }
+            ActionEvent::Initialize => {
+                solution.current_solution.initialize(&mesh_resmut.flow_graphs);
             }
         }
     }
@@ -944,52 +872,11 @@ fn raycast(
     configuration.raycasted = None;
     configuration.selected = None;
     gizmos_cache.raycaster.clear();
-
-    if configuration.ui_is_hovered.iter().any(|&x| x) {
+    if !configuration.interactive {
         return;
     }
 
-    if !configuration.interactive || cursor_ray.is_none() {
-        return;
-    }
-
-    // Safe unwrap because `cursor_ray` is not none
-    let intersections = raycast.cast_ray(cursor_ray.unwrap(), &default());
-
-    if intersections.is_empty() {
-        return;
-    }
-
-    // Safe index because we know there is at least one intersection because `intersections` is not empty
-    let intersected_entity = intersections[0].0;
-    let intersection = &intersections[0].1;
-
-    let main_mesh_entity = query.single();
-    if intersected_entity != main_mesh_entity {
-        return;
-    }
-
-    // For drawing purposes.
-    let normal = vec3_to_vector3d(intersection.normal().normalize());
-    let position = hutspot::draw::invert_transform_coordinates(
-        vec3_to_vector3d(intersection.position()),
-        mesh_resmut.properties.translation,
-        mesh_resmut.properties.scale,
-    );
-    add_line(
-        &mut gizmos_cache.raycaster,
-        position,
-        normal,
-        0.1,
-        to_color(configuration.direction, Perspective::Dual, None),
-        Vec3::new(
-            mesh_resmut.properties.translation.x as f32,
-            mesh_resmut.properties.translation.y as f32,
-            mesh_resmut.properties.translation.z as f32,
-        ),
-        mesh_resmut.properties.scale,
-    );
-
+    // Render all current solutions  (for currently selected direction)
     for (&edgepair, sol) in &solution.next[configuration.direction as usize] {
         let u = mesh_resmut.mesh.midpoint(edgepair[0]);
         let v = mesh_resmut.mesh.midpoint(edgepair[1]);
@@ -1013,6 +900,15 @@ fn raycast(
         );
     }
 
+    if configuration.ui_is_hovered.iter().any(|&x| x) || cursor_ray.is_none() {
+        return;
+    }
+
+    let intersections = raycast.cast_ray(cursor_ray.unwrap(), &default());
+    if intersections.is_empty() || query.single() != intersections[0].0 {
+        return;
+    }
+
     if keyboard.pressed(KeyCode::ControlLeft) {
         return;
     }
@@ -1029,10 +925,16 @@ fn raycast(
         }
     }
 
-    // Match the selected verts of the selected triangle (face of three vertices).
+    let intersection = &intersections[0].1;
     if intersection.triangle().is_none() {
         return;
     }
+
+    let position = hutspot::draw::invert_transform_coordinates(
+        vec3_to_vector3d(intersection.position()),
+        mesh_resmut.properties.translation,
+        mesh_resmut.properties.scale,
+    );
     let verts = [
         vec3_to_vector3d(intersection.triangle().unwrap()[0].into()),
         vec3_to_vector3d(intersection.triangle().unwrap()[1].into()),
@@ -1051,17 +953,32 @@ fn raycast(
     })
     .collect_vec();
 
-    // Match the selected face.
     if mesh_resmut.mesh.face_with_verts(&verts).is_none() {
         return;
     }
     let face_id = mesh_resmut.mesh.face_with_verts(&verts).unwrap();
     let edgepair = mesh_resmut.mesh.edges_in_face_with_vert(face_id, verts[0]).unwrap();
-    configuration.raycasted = Some(edgepair);
+
+    let u = mesh_resmut.mesh.midpoint(edgepair[0]);
+    let v = mesh_resmut.mesh.midpoint(edgepair[1]);
+    let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edgepair[0]));
+    let color = to_color(configuration.direction, Perspective::Dual, None);
+    add_line2(
+        &mut gizmos_cache.raycaster,
+        u,
+        v,
+        n * 0.01,
+        color,
+        Vec3::new(
+            mesh_resmut.properties.translation.x as f32,
+            mesh_resmut.properties.translation.y as f32,
+            mesh_resmut.properties.translation.z as f32,
+        ),
+        mesh_resmut.properties.scale,
+    );
 
     if keyboard.pressed(KeyCode::Space) {
         // Find closest loop.
-
         let option_a = [edgepair[0], edgepair[1]];
         let option_b = [edgepair[1], edgepair[0]];
 
@@ -1158,123 +1075,124 @@ fn raycast(
         return;
     }
 
-    if let Ok(dual) = &solution.current_solution.dual {
-        if mouse.just_pressed(MouseButton::Left) || mouse.just_released(MouseButton::Left) {
-            let selected_edges = mesh_resmut.mesh.edges_in_face_with_vert(face_id, verts[0]).unwrap();
-            let alpha = rand::random::<f64>();
-            let measure = |(a, b, c): (f64, f64, f64)| alpha * a.powi(10) + (1. - alpha) * b.powi(10);
+    if mouse.just_pressed(MouseButton::Left) || mouse.just_released(MouseButton::Left) {
+        let selected_edges = mesh_resmut.mesh.edges_in_face_with_vert(face_id, verts[0]).unwrap();
+        let alpha = rand::random::<f64>();
+        let measure = |a: f64| a.powi(10);
 
-            if let Some(candidate_loop) = solution.current_solution.construct_unbounded_loop(
-                selected_edges,
-                configuration.direction,
-                &mesh_resmut.flow_graphs[configuration.direction as usize],
-                measure,
-            ) {
-                let mut candidate_solution = solution.current_solution.clone();
-                candidate_solution.add_loop(Loop {
-                    edges: candidate_loop,
-                    direction: configuration.direction,
-                });
-                if candidate_solution.reconstruct_solution(configuration.unit_cubes).is_ok() {
-                    solution.next[configuration.direction as usize].insert([selected_edges[0], selected_edges[1]], Some(candidate_solution));
-                }
-            }
-        }
-    } else {
-        // The left mouse button is pressed, and no solution has been computed yet.
-        // We will compute a solution for this face and vertex combination.
-        let mut timer = hutspot::timer::Timer::new();
-        solution.next[configuration.direction as usize].insert(edgepair, None);
+        if let Some((candidate_loop, _)) = solution.current_solution.construct_unbounded_loop(
+            selected_edges,
+            configuration.direction,
+            &mesh_resmut.flow_graphs[configuration.direction as usize],
+            measure,
+        ) {
+            let mut candidate_solution = solution.current_solution.clone();
+            candidate_solution.add_loop(Loop {
+                edges: candidate_loop,
+                direction: configuration.direction,
+            });
 
-        // Compute the occupied edges (edges that are already part of the solution, they are covered by loops)
-        let occupied = solution.current_solution.occupied_edgepairs();
-        timer.report("Computed `occupied`, hashmap of occupied edges");
-        timer.reset();
+            candidate_solution.reconstruct_solution(configuration.unit_cubes);
 
-        let filter = |(a, b): (&[EdgeID; 2], &[EdgeID; 2])| {
-            !occupied.contains(a)
-                && !occupied.contains(b)
-                && [a[0], a[1], b[0], b[1]].iter().all(|&edge| {
-                    solution
-                        .current_solution
-                        .loops_on_edge(edge)
-                        .iter()
-                        .filter(|&&loop_id| solution.current_solution.loop_to_direction(loop_id) == configuration.direction)
-                        .count()
-                        == 0
-                })
-        };
-
-        let g_original = &mesh_resmut.flow_graphs[configuration.direction as usize];
-        let g = g_original.filter(filter);
-
-        let measure = |(a, b, c): (f64, f64, f64)| configuration.alpha * a.powi(5) + (1. - configuration.alpha) * b.powi(5);
-
-        // Starting edges.
-        let [e1, e2] = mesh_resmut.mesh.edges_in_face_with_vert(face_id, verts[0]).unwrap();
-        let a = g.node_to_index(&[e1, e2]).unwrap();
-        let b = g.node_to_index(&[e2, e1]).unwrap();
-        let option_a = g
-            .shortest_cycle(a, &measure)
-            .unwrap_or_default()
-            .into_iter()
-            .flat_map(|node_index| g.index_to_node(node_index).unwrap().to_owned())
-            .collect_vec();
-        let option_b = g
-            .shortest_cycle(b, &measure)
-            .unwrap_or_default()
-            .into_iter()
-            .flat_map(|node_index| g.index_to_node(node_index).unwrap().to_owned())
-            .collect_vec();
-
-        // The path may contain self intersections. We can remove these.
-        // If duplicated vertices are present, remove everything between them.
-        let mut cleaned_option_a = vec![];
-        for edge_id in option_a {
-            if cleaned_option_a.contains(&edge_id) {
-                cleaned_option_a = cleaned_option_a.into_iter().take_while(|&x| x != edge_id).collect_vec();
-            }
-            cleaned_option_a.push(edge_id);
-        }
-
-        let mut cleaned_option_b = vec![];
-        for edge_id in option_b {
-            if cleaned_option_b.contains(&edge_id) {
-                cleaned_option_b = cleaned_option_b.into_iter().take_while(|&x| x != edge_id).collect_vec();
-            }
-            cleaned_option_b.push(edge_id);
-        }
-
-        if cleaned_option_a.len() <= 5 && cleaned_option_b.len() <= 5 {
-            println!("Path is empty and/or invalid.");
-            return;
-        }
-
-        if cleaned_option_a.len() <= 5 {
-            cleaned_option_a = cleaned_option_b.clone();
-        }
-
-        let best_option = if cleaned_option_b.len() < cleaned_option_a.len() {
-            cleaned_option_b
+            solution.next[configuration.direction as usize].insert([selected_edges[0], selected_edges[1]], Some(candidate_solution));
         } else {
-            cleaned_option_a
-        };
-
-        if best_option.len() <= 5 {
-            return;
+            solution.next[configuration.direction as usize].insert([selected_edges[0], selected_edges[1]], None);
         }
-
-        timer.report("Path computation");
-        timer.reset();
-
-        let mut real_solution = solution.current_solution.clone();
-
-        real_solution.add_loop(Loop {
-            edges: best_option,
-            direction: configuration.direction,
-        });
-        real_solution.reconstruct_solution(configuration.unit_cubes);
-
-        solution.next[configuration.direction as usize].insert(edgepair, Some(real_solution));
     }
+
+    // // The left mouse button is pressed, and no solution has been computed yet.
+    // // We will compute a solution for this face and vertex combination.
+    // let mut timer = hutspot::timer::Timer::new();
+    // solution.next[configuration.direction as usize].insert(edgepair, None);
+
+    // // Compute the occupied edges (edges that are already part of the solution, they are covered by loops)
+    // let occupied = solution.current_solution.occupied_edgepairs();
+    // timer.report("Computed `occupied`, hashmap of occupied edges");
+    // timer.reset();
+
+    // let filter = |(a, b): (&[EdgeID; 2], &[EdgeID; 2])| {
+    //     !occupied.contains(a)
+    //         && !occupied.contains(b)
+    //         && [a[0], a[1], b[0], b[1]].iter().all(|&edge| {
+    //             solution
+    //                 .current_solution
+    //                 .loops_on_edge(edge)
+    //                 .iter()
+    //                 .filter(|&&loop_id| solution.current_solution.loop_to_direction(loop_id) == configuration.direction)
+    //                 .count()
+    //                 == 0
+    //         })
+    // };
+
+    // let g_original = &mesh_resmut.flow_graphs[configuration.direction as usize];
+    // let g = g_original.filter(filter);
+
+    // let measure = |(a, b, c): (f64, f64, f64)| configuration.alpha * a.powi(5) + (1. - configuration.alpha) * b.powi(5);
+
+    // // Starting edges.
+    // let [e1, e2] = mesh_resmut.mesh.edges_in_face_with_vert(face_id, verts[0]).unwrap();
+    // let a = g.node_to_index(&[e1, e2]).unwrap();
+    // let b = g.node_to_index(&[e2, e1]).unwrap();
+    // let option_a = g
+    //     .shortest_cycle(a, &measure)
+    //     .unwrap_or_default()
+    //     .into_iter()
+    //     .flat_map(|node_index| g.index_to_node(node_index).unwrap().to_owned())
+    //     .collect_vec();
+    // let option_b = g
+    //     .shortest_cycle(b, &measure)
+    //     .unwrap_or_default()
+    //     .into_iter()
+    //     .flat_map(|node_index| g.index_to_node(node_index).unwrap().to_owned())
+    //     .collect_vec();
+
+    // // The path may contain self intersections. We can remove these.
+    // // If duplicated vertices are present, remove everything between them.
+    // let mut cleaned_option_a = vec![];
+    // for edge_id in option_a {
+    //     if cleaned_option_a.contains(&edge_id) {
+    //         cleaned_option_a = cleaned_option_a.into_iter().take_while(|&x| x != edge_id).collect_vec();
+    //     }
+    //     cleaned_option_a.push(edge_id);
+    // }
+
+    // let mut cleaned_option_b = vec![];
+    // for edge_id in option_b {
+    //     if cleaned_option_b.contains(&edge_id) {
+    //         cleaned_option_b = cleaned_option_b.into_iter().take_while(|&x| x != edge_id).collect_vec();
+    //     }
+    //     cleaned_option_b.push(edge_id);
+    // }
+
+    // if cleaned_option_a.len() <= 5 && cleaned_option_b.len() <= 5 {
+    //     println!("Path is empty and/or invalid.");
+    //     return;
+    // }
+
+    // if cleaned_option_a.len() <= 5 {
+    //     cleaned_option_a = cleaned_option_b.clone();
+    // }
+
+    // let best_option = if cleaned_option_b.len() < cleaned_option_a.len() {
+    //     cleaned_option_b
+    // } else {
+    //     cleaned_option_a
+    // };
+
+    // if best_option.len() <= 5 {
+    //     return;
+    // }
+
+    // timer.report("Path computation");
+    // timer.reset();
+
+    // let mut real_solution = solution.current_solution.clone();
+
+    // real_solution.add_loop(Loop {
+    //     edges: best_option,
+    //     direction: configuration.direction,
+    // });
+    // real_solution.reconstruct_solution(configuration.unit_cubes);
+
+    // solution.next[configuration.direction as usize].insert(edgepair, Some(real_solution));
 }

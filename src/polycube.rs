@@ -60,10 +60,10 @@ impl Polycube {
         polycube
     }
 
-    pub fn find_intersectionfree_embedding(&mut self, dual: &Dual, layout: Option<&Layout>) {
-        // Compute initial embedding without extra intersection constraints
-        self.resize(dual, layout, None);
-    }
+    // pub fn find_intersectionfree_embedding(&mut self, dual: &Dual, layout: Option<&Layout>) {
+    //     // Compute initial embedding without extra intersection constraints
+    //     self.resize(dual, layout, None);
+    // }
 
     pub fn resize(&mut self, dual: &Dual, layout: Option<&Layout>, constraints: Option<HashSet<(PolycubeFaceID, PolycubeFaceID)>>) {
         let mut vert_to_coord = HashMap::new();
@@ -94,7 +94,6 @@ impl Polycube {
                     level as f64
                 };
 
-                println!("Level {} in direction {:?} should be {}", level, direction, value);
                 for vert in verts_in_level {
                     vert_to_coord.get_mut(&vert).unwrap()[direction as usize] = value;
                 }
@@ -110,35 +109,35 @@ impl Polycube {
         }
     }
 
-    pub fn edge_to_segment(&self, edge_id: PolycubeEdgeID, dual: &Dual) -> LoopSegmentID {
-        let (vertex_start, vertex_end) = self.structure.endpoints(edge_id);
-        let (intersection_start, intersection_end) = (
-            self.region_to_vertex.get_by_right(&vertex_start).unwrap(),
-            self.region_to_vertex.get_by_right(&vertex_end).unwrap(),
-        );
+    // pub fn edge_to_segment(&self, edge_id: PolycubeEdgeID, dual: &Dual) -> LoopSegmentID {
+    //     let (vertex_start, vertex_end) = self.structure.endpoints(edge_id);
+    //     let (intersection_start, intersection_end) = (
+    //         self.region_to_vertex.get_by_right(&vertex_start).unwrap(),
+    //         self.region_to_vertex.get_by_right(&vertex_end).unwrap(),
+    //     );
 
-        dual.loop_structure.edge_between_faces(*intersection_start, *intersection_end).unwrap().0
-    }
+    //     dual.loop_structure.edge_between_faces(*intersection_start, *intersection_end).unwrap().0
+    // }
 
-    fn label(&self, face_id: PolycubeFaceID, dual: &Dual) -> PrincipalDirection {
-        let segments = self
-            .structure
-            .edges(face_id)
-            .into_iter()
-            .map(|e| {
-                let endpoints = self.structure.endpoints(e);
-                (
-                    self.region_to_vertex.get_by_right(&endpoints.0).unwrap().to_owned(),
-                    self.region_to_vertex.get_by_right(&endpoints.1).unwrap().to_owned(),
-                )
-            })
-            .map(|(r1, r2)| dual.loop_structure.edge_between_faces(r1, r2).unwrap().0)
-            .map(|s| dual.segment_to_direction(s))
-            .collect_vec();
-        [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z]
-            .iter()
-            .find(|&direction| !segments.contains(direction))
-            .unwrap()
-            .to_owned()
-    }
+    // fn label(&self, face_id: PolycubeFaceID, dual: &Dual) -> PrincipalDirection {
+    //     let segments = self
+    //         .structure
+    //         .edges(face_id)
+    //         .into_iter()
+    //         .map(|e| {
+    //             let endpoints = self.structure.endpoints(e);
+    //             (
+    //                 self.region_to_vertex.get_by_right(&endpoints.0).unwrap().to_owned(),
+    //                 self.region_to_vertex.get_by_right(&endpoints.1).unwrap().to_owned(),
+    //             )
+    //         })
+    //         .map(|(r1, r2)| dual.loop_structure.edge_between_faces(r1, r2).unwrap().0)
+    //         .map(|s| dual.segment_to_direction(s))
+    //         .collect_vec();
+    //     [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z]
+    //         .iter()
+    //         .find(|&direction| !segments.contains(direction))
+    //         .unwrap()
+    //         .to_owned()
+    // }
 }
