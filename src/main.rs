@@ -791,34 +791,30 @@ pub fn handle_events(
                 render::reset(&mut commands, &cameras, &mut images, &mut camera_handles, &configuration);
             }
             ActionEvent::Mutate => {
-                // let task_pool = AsyncComputeTaskPool::get();
+                let task_pool = AsyncComputeTaskPool::get();
 
-                // let cloned_solution = solution.current_solution.clone();
-                // let cloned_flow_graphs = mesh_resmut.flow_graphs.clone();
+                let cloned_solution = solution.current_solution.clone();
+                let cloned_flow_graphs = mesh_resmut.flow_graphs.clone();
 
-                // if (cloned_solution.loops.len() < 10) {
-                //     let task = task_pool.spawn(async move {
-                //         {
-                //             cloned_solution.mutate_add_loop(10, &cloned_flow_graphs)
-                //         }
-                //     });
-                //     tasks.generating_chunks.insert(ActionEvent::Mutate, task);
-                // } else if rand::random() {
-                //     let task = task_pool.spawn(async move {
-                //         {
-                //             cloned_solution.mutate_add_loop(10, &cloned_flow_graphs)
-                //         }
-                //     });
-                //     tasks.generating_chunks.insert(ActionEvent::Mutate, task);
-                // } else {
-                //     let task = task_pool.spawn(async move {
-                //         {
-                //             cloned_solution.mutate_del_loop(10)
-                //         }
-                //     });
-                //     tasks.generating_chunks.insert(ActionEvent::Mutate, task);
-                // }
+                let task = task_pool.spawn(async move {
+                    let sols = vec![(cloned_solution, cloned_flow_graphs); 20]
+                        .into_par_iter()
+                        .map(|(sol, flows)| {
+                            // Mutate the solution
+                            let mutation = sol.mutation(&flows);
+                            let quality = mutation.get_quality().unwrap_or(0.0);
+                            // Compute quality
+                            (mutation, quality)
+                        })
+                        .collect::<Vec<_>>();
+
+                    // Grab the best solution
+                    sols.into_iter().max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap()).map(|(sol, _)| sol)
+                });
+
+                tasks.generating_chunks.insert(ActionEvent::Mutate, task);
             }
+
             ActionEvent::Smoothen => {}
             ActionEvent::Recompute => {
                 println!("Once");
