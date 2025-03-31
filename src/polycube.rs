@@ -96,7 +96,6 @@ impl Polycube {
         for vert_id in self.structure.vert_ids() {
             let [x, y, z] = vert_to_coord[&vert_id];
             let position = Vector3D::new(x, y, z);
-            // println!("Vertex {vert_id:?} at {position:?}");
             self.structure.verts[vert_id].set_position(position);
         }
     }

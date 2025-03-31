@@ -440,15 +440,11 @@ pub fn handle_solution_tasks(
                 ActionEvent::Mutate => {
                     if let Some(new_solution) = chunk_data {
                         if let Some(quality) = new_solution.get_quality() {
-                            if quality * 0.98 > solution.current_solution.get_quality().unwrap() {
+                            if quality >= solution.current_solution.get_quality().unwrap() {
                                 println!("New solution is better than current solution. Updating...");
                                 solution.current_solution = new_solution;
                             }
                         }
-                    }
-
-                    if configuration.should_continue {
-                        ev_writer.send(ActionEvent::Mutate);
                     }
                 }
                 ActionEvent::Smoothen => {
@@ -796,26 +792,91 @@ pub fn handle_events(
                 let cloned_solution = solution.current_solution.clone();
                 let cloned_flow_graphs = mesh_resmut.flow_graphs.clone();
 
+                let pool_size = 10;
+                let pool2_size = 30;
+
                 let task = task_pool.spawn(async move {
-                    let sols = vec![(cloned_solution, cloned_flow_graphs); 20]
-                        .into_par_iter()
-                        .map(|(sol, flows)| {
-                            // Mutate the solution
-                            let mutation = sol.mutation(&flows);
-                            let quality = mutation.get_quality().unwrap_or(0.0);
-                            // Compute quality
-                            (mutation, quality)
-                        })
-                        .collect::<Vec<_>>();
+                    let mut pool1 = vec![(cloned_solution.clone(), cloned_solution.get_quality().unwrap()); pool_size];
+
+                    for _ in 0..10 {
+                        let pool2 = (0..pool2_size)
+                            .into_par_iter()
+                            .map(|_| {
+                                // Grab a random solution from pool1
+                                let mut rng = rand::thread_rng();
+                                let index = rand::Rng::gen_range(&mut rng, 0..pool1.len());
+                                pool1[index].clone()
+                            })
+                            .filter_map(|(sol, _)| {
+                                // Mutate the solution
+                                sol.mutation(&cloned_flow_graphs).map_or_else(
+                                    || None,
+                                    |mutation| {
+                                        let quality = mutation.get_quality().unwrap_or(0.0);
+                                        // Compute quality
+                                        Some((mutation, quality))
+                                    },
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .into_iter()
+                            .sorted_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                            .rev();
+
+                        for (_, quality) in pool2.clone() {
+                            println!("Generated solution with quality: {quality}");
+                        }
+
+                        // overwrite pool1 with top 5 solutions of pool1 and top 5 solutions of pool2
+
+                        pool1 = pool1
+                            .into_iter()
+                            .take(5)
+                            .chain(pool2.take(5))
+                            .sorted_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                            .rev()
+                            .collect();
+
+                        for (_, quality) in &pool1 {
+                            println!("PICKED solution with quality: {quality}");
+                        }
+                    }
+
+                    if pool1.is_empty() {
+                        println!("No valid solutions generated.");
+                        return None;
+                    }
+
+                    // Log all qualities of generated solutions
+                    for (sol, quality) in &pool1 {
+                        println!("Generated solution with quality: {quality}");
+                    }
 
                     // Grab the best solution
-                    sols.into_iter().max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap()).map(|(sol, _)| sol)
+                    let (sol, quality) = pool1.into_iter().max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap()).unwrap();
+                    println!("Picked solution with quality: {quality}");
+                    Some(sol)
                 });
 
                 tasks.generating_chunks.insert(ActionEvent::Mutate, task);
             }
 
-            ActionEvent::Smoothen => {}
+            ActionEvent::Smoothen => {
+                let cloned_sol = solution.current_solution.clone();
+                tasks.generating_chunks.insert(
+                    ActionEvent::Smoothen,
+                    AsyncComputeTaskPool::get().spawn(async move {
+                        let mut new_sol = cloned_sol;
+                        if let Ok(lay) = new_sol.layout.as_mut() {
+                            lay.smoothen();
+                            lay.verify_paths();
+                            lay.assign_patches();
+                        }
+                        new_sol.compute_quality();
+                        Some(new_sol)
+                    }),
+                );
+            }
             ActionEvent::Recompute => {
                 println!("Once");
                 let mut cloned_solution = solution.current_solution.clone();
@@ -824,16 +885,7 @@ pub fn handle_events(
                     ActionEvent::Recompute,
                     AsyncComputeTaskPool::get().spawn(async move {
                         {
-                            // dual.compute_level_values(Some(layout));
-                            // self.resize_polycube();
-                            if let Ok(dual) = cloned_solution.dual.as_mut() {
-                                // if let (Ok(layout), false) = (&cloned_solution.layout, unit) {
-                                //     dual.compute_level_values(Some(layout));
-                                // } else {
-                                //     dual.compute_level_values(None);
-                                // }
-                                cloned_solution.resize_polycube();
-                            }
+                            cloned_solution.resize_polycube(unit);
                             Some(cloned_solution)
                         }
                     }),
@@ -1073,7 +1125,6 @@ fn raycast(
 
     if mouse.just_pressed(MouseButton::Left) || mouse.just_released(MouseButton::Left) {
         let selected_edges = mesh_resmut.mesh.edges_in_face_with_vert(face_id, verts[0]).unwrap();
-        let alpha = rand::random::<f64>();
         let measure = |a: f64| a.powi(10);
 
         if let Some((candidate_loop, _)) = solution.current_solution.construct_unbounded_loop(

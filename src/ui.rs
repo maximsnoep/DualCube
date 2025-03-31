@@ -118,11 +118,11 @@ fn header(
                             polycube.structure.nr_faces()
                         ));
                     }
-                });
 
-                ui.separator();
+                    ui.add_space(5.);
+                    ui.separator();
+                    ui.add_space(5.);
 
-                menu_button(ui, "Controls", |ui| {
                     ui.label("CAMERA");
                     ui.add_space(2.);
                     ui.label("  Rotate: ctrl + right-mouse-drag");
@@ -138,21 +138,6 @@ fn header(
                     ui.label("  Add loop: right-mouse-click");
                     ui.add_space(1.);
                     ui.label("  Delete loop: space + right-mouse-click");
-
-                    // Slider for sensitivity
-                    ui.add_space(5.);
-                    ui.horizontal(|ui| {
-                        ui.label("Sensitivity");
-                        ui.add_space(5.);
-                        // ui.add(Slider::new(&mut mesh.properties.sensitivity, 0.0..=1.0).text(text("")));
-                    });
-
-                    ui.add_space(5.);
-                    ui.horizontal(|ui| {
-                        ui.label("Sensitivity");
-                        ui.add_space(5.);
-                        // ui.add(Slider::new(&mut mesh.properties.sensitivity, 0.0..=1.0).text(text("")));
-                    });
                 });
 
                 ui.separator();
@@ -200,7 +185,7 @@ fn header(
                 ui.separator();
 
                 menu_button(ui, "Solution", |ui| {
-                    ui.checkbox(&mut configuration.unit_cubes, "Unit lengths");
+                    ui.checkbox(&mut configuration.unit_cubes, "Contrain to unit grid");
 
                     if sleek_button(ui, "Recompute") {
                         ev_w.send(ActionEvent::Recompute);
@@ -209,9 +194,28 @@ fn header(
 
                 ui.separator();
 
-                menu_button_unfocused(ui, "WIP: Hex-meshing", |ui| {
+                menu_button(ui, "EXPERIMENTAL", |ui| {
                     ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
-                        if sleek_button_unfocused(ui, "Run hex-mesh pipeline") && !matches!(&configuration.hex_mesh_status, HexMeshStatus::Loading) {
+                        if sleek_button(ui, "Smoothening") && !matches!(&configuration.smoothen_status, ActionEventStatus::Loading) {
+                            ev_w.send(ActionEvent::Smoothen);
+                        };
+
+                        if matches!(configuration.smoothen_status, ActionEventStatus::Loading) {
+                            ui.add_space(5.);
+                            ui.label(text(&timer_animation(time)));
+                        }
+                    });
+
+                    if let ActionEventStatus::Done(score) = &configuration.smoothen_status {
+                        ui.add_space(5.);
+
+                        ui.label(score);
+                    }
+
+                    ui.add_space(5.);
+
+                    ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
+                        if sleek_button(ui, "Run hex-mesh pipeline") && !matches!(&configuration.hex_mesh_status, HexMeshStatus::Loading) {
                             ev_w.send(ActionEvent::ToHexmesh);
                         };
                         if matches!(configuration.hex_mesh_status, HexMeshStatus::Loading) {
@@ -232,28 +236,6 @@ fn header(
                             sjmax = score.max_jacob,
                             irr = score.irregular,
                         ));
-                    }
-                });
-
-                ui.separator();
-
-                menu_button_unfocused(ui, "WIP: Smoothening", |ui| {
-                    ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
-                        if sleek_button_unfocused(ui, "Run smoothening algorithm") && !matches!(&configuration.smoothen_status, ActionEventStatus::Loading) {
-                            ev_w.send(ActionEvent::Smoothen);
-                        };
-
-                        if matches!(configuration.smoothen_status, ActionEventStatus::Loading) {
-                            ui.add_space(5.);
-                            ui.label(text(&timer_animation(time)));
-                        }
-                    });
-
-                    if let ActionEventStatus::Done(score) = &configuration.smoothen_status {
-                        ui.add_space(5.);
-                        ui.label("Smoothening results:");
-                        ui.add_space(5.);
-                        ui.label(score);
                     }
                 });
             });
@@ -385,7 +367,7 @@ pub fn update(
                                 ev_w.send(ActionEvent::Initialize);
                             }
 
-                            if ui.checkbox(&mut conf.should_continue, "run").clicked() && conf.should_continue {
+                            if sleek_button(ui, "mutate") {
                                 ev_w.send(ActionEvent::Mutate);
                             }
                         }

@@ -56,10 +56,6 @@ impl Layout {
 
         layout.verify_paths();
 
-        layout.smoothen();
-
-        layout.verify_paths();
-
         layout.assign_patches();
         Ok(layout)
     }
@@ -668,7 +664,6 @@ impl Layout {
     }
 
     pub fn smoothen(&mut self) {
-        return;
         // For every path, we smoothen it
         let keys = self
             .edge_to_path

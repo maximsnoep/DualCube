@@ -77,6 +77,10 @@ impl<V: Eq + PartialEq + Hash + Default + Copy, E: Copy> Graaf<V, E> {
         self.neighbors(a).iter().any(|n| n == &b)
     }
 
+    pub fn node_exists(&self, a: V) -> bool {
+        self.node_to_index.contains_key(&a)
+    }
+
     pub fn edge_exists(&self, a: V, b: V) -> bool {
         self.directed_edge_exists(a, b) || self.directed_edge_exists(b, a)
     }
@@ -139,7 +143,7 @@ impl<V: Eq + PartialEq + Hash + Default + Copy, E: Copy> Graaf<V, E> {
         measure: &F,
     ) -> Option<(Vec<NodeIndex>, W)> {
         let path = self.shortest_path(b, a, measure);
-        path.map(|(cost, path)| (path, cost + measure(self.get_weight(a, b))))
+        path.map(|(cost, path)| (path, cost))
     }
 
     pub fn get_weight(&self, a: NodeIndex, b: NodeIndex) -> E {

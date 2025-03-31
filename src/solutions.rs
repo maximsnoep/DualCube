@@ -9,7 +9,7 @@ use bimap::BiHashMap;
 use core::net;
 use hutspot::geom::Vector3D;
 use itertools::Itertools;
-use log::{error, info};
+use log::{debug, error, info, trace};
 use ordered_float::OrderedFloat;
 use rand::distributions::Distribution;
 use rand::{
@@ -151,8 +151,6 @@ impl Solution {
             self.occupied.get_mut(e).unwrap().push(loop_id);
         }
 
-        self.validate_loops();
-
         loop_id
     }
 
@@ -201,7 +199,20 @@ impl Solution {
             .collect()
     }
 
+    pub fn cycled_windows(sequence: &[EdgeID]) -> Vec<[EdgeID; 2]> {
+        (0..sequence.len())
+            .map(|i| {
+                let a = sequence[i];
+                let b = sequence[(i + 1) % sequence.len()];
+                [a, b]
+            })
+            .collect_vec()
+    }
+
     pub fn is_occupied(&self, [e1, e2]: [EdgeID; 2]) -> Option<LoopID> {
+        if self.mesh_ref.twin(e1) == e2 {
+            return None;
+        }
         if let Some(loops_e1) = self.occupied.get(e1) {
             if let Some(loops_e2) = self.occupied.get(e2) {
                 for &loop_e1 in loops_e1 {
@@ -239,52 +250,48 @@ impl Solution {
             .collect()
     }
 
-    pub fn validate_loops(&self) -> Result<(), PropertyViolationError> {
-        // For all loops, check that the loops is valid
-        for (_, lewp) in &self.loops {
-            let edges = &lewp.edges;
+    pub fn check_loop(&self, lewp: &[EdgeID]) -> Result<(), PropertyViolationError> {
+        let edges = lewp;
 
-            // Loop should alternate between edges that are twins, and edges that are sharing a face.
-            // If alternate is true, then the next edge should be a twin of the current edge
-            let mut alternate = self.mesh_ref.twin(edges[0]) == edges[1];
-            for edge_pair in edges.windows(2) {
-                if alternate {
-                    if self.mesh_ref.twin(edge_pair[0]) != edge_pair[1] {
-                        error!("loops should alternate {:?} != {:?}", self.mesh_ref.twin(edge_pair[0]), edge_pair[1]);
-                        return Err(PropertyViolationError::UnknownError);
-                    }
-                    assert!(self.mesh_ref.twin(edge_pair[0]) == edge_pair[1]);
-                    alternate = false;
-                } else {
-                    if self.mesh_ref.face(edge_pair[0]) != self.mesh_ref.face(edge_pair[1]) {
-                        error!("{:?} != {:?}", self.mesh_ref.face(edge_pair[0]), self.mesh_ref.face(edge_pair[1]));
-                        return Err(PropertyViolationError::UnknownError);
-                    }
-                    assert!(self.mesh_ref.face(edge_pair[0]) == self.mesh_ref.face(edge_pair[1]));
-                    alternate = true;
-                }
-            }
+        if edges.is_empty() {
+            return Err(PropertyViolationError::UnknownError);
+        }
 
-            // Loop should be closed
-            // Check the last edge with the first edge, should be closing, depending on alternate they should be twins or sharing a face
-            if alternate {
-                if self.mesh_ref.twin(edges[edges.len() - 1]) != edges[0] {
-                    error!("loops should close {:?} != {:?}", self.mesh_ref.twin(edges[edges.len() - 1]), edges[0]);
-                    return Err(PropertyViolationError::UnknownError);
-                }
-                assert!(self.mesh_ref.twin(edges[edges.len() - 1]) == edges[0]);
-            } else {
-                if self.mesh_ref.face(edges[edges.len() - 1]) != self.mesh_ref.face(edges[0]) {
-                    error!("{:?} != {:?}", self.mesh_ref.face(edges[edges.len() - 1]), self.mesh_ref.face(edges[0]));
-                    return Err(PropertyViolationError::UnknownError);
-                }
-                assert!(self.mesh_ref.face(edges[edges.len() - 1]) == self.mesh_ref.face(edges[0]));
+        // Check if none of the edges are already occupied
+        for edge_pair in Self::cycled_windows(edges) {
+            if self.is_occupied(edge_pair).is_some() {
+                return Err(PropertyViolationError::UnknownError);
             }
         }
+
+        // Check if the loop is valid
+        // Loop should alternate between edges that are twins, and edges that are sharing a face.
+        // If alternate is true, then the next edge should be a twin of the current edge
+        let mut alternate = self.mesh_ref.twin(edges[0]) == edges[1];
+        for edge_pair in Self::cycled_windows(edges) {
+            if alternate {
+                if self.mesh_ref.twin(edge_pair[0]) != edge_pair[1] {
+                    return Err(PropertyViolationError::UnknownError);
+                }
+                assert!(self.mesh_ref.twin(edge_pair[0]) == edge_pair[1]);
+                alternate = false;
+            } else {
+                if self.mesh_ref.face(edge_pair[0]) != self.mesh_ref.face(edge_pair[1]) {
+                    return Err(PropertyViolationError::UnknownError);
+                }
+                assert!(self.mesh_ref.face(edge_pair[0]) == self.mesh_ref.face(edge_pair[1]));
+                alternate = true;
+            }
+        }
+
         Ok(())
     }
 
-    pub fn construct_loop([e1, e2]: [EdgeID; 2], domain: &Graaf<EdgeID, f64>, measure: &impl Fn(f64) -> f64) -> Option<(Vec<EdgeID>, f64)> {
+    pub fn construct_loop(&self, [e1, e2]: [EdgeID; 2], domain: &Graaf<EdgeID, f64>, measure: &impl Fn(f64) -> f64) -> Option<(Vec<EdgeID>, f64)> {
+        if !domain.node_exists(e1) || !domain.node_exists(e2) || !domain.edge_exists(e1, e2) || !domain.edge_exists(e2, e1) {
+            return None;
+        }
+
         if let (Some(n1), Some(n2)) = (domain.node_to_index(&e1), domain.node_to_index(&e2)) {
             // Get the better direction
             let (n1, n2) = if measure(domain.get_weight(n1, n2).to_owned()) < measure(domain.get_weight(n2, n1).to_owned()) {
@@ -300,7 +307,23 @@ impl Solution {
                 .map(|node_index| domain.index_to_node(node_index).unwrap().to_owned())
                 .collect_vec();
 
-            Some((flatten, cost))
+            // If three edges share the same face, remove the middle edge
+            let mut short = vec![];
+            for i in 0..flatten.len() {
+                if self.mesh_ref.face(flatten[i]) == self.mesh_ref.face(flatten[(i + flatten.len() - 1) % flatten.len()])
+                    && self.mesh_ref.face(flatten[i]) == self.mesh_ref.face(flatten[(i + 1) % flatten.len()])
+                {
+                    continue;
+                }
+
+                short.push(flatten[i]);
+            }
+
+            if self.check_loop(&short).is_err() {
+                return None;
+            }
+
+            Some((short, cost))
         } else {
             None
         }
@@ -320,7 +343,7 @@ impl Solution {
         let g = flow_graph.filter_edges(filter_edges);
         let g = g.filter_nodes(filter_nodes);
 
-        if let Some((option, cost)) = Self::construct_loop([e1, e2], &g, &measure) {
+        if let Some((option, cost)) = self.construct_loop([e1, e2], &g, &measure) {
             let mut cleaned_option = vec![];
             for edge_id in &option {
                 if cleaned_option.contains(&edge_id) {
@@ -328,7 +351,6 @@ impl Solution {
                 }
                 cleaned_option.push(edge_id);
             }
-
             Some((option, cost))
         } else {
             None
@@ -338,33 +360,42 @@ impl Solution {
     pub fn sample_loops(
         &self,
         n: usize,
-        m: usize,
         axis: PrincipalDirection,
         flow_graphs: &[Graaf<EdgeID, f64>; 3],
         measure: impl Fn(f64) -> f64 + std::marker::Sync + std::marker::Send,
+        score: impl Fn((&[EdgeID], f64)) -> f64 + std::marker::Sync + std::marker::Send,
     ) -> Vec<Vec<EdgeID>> {
-        (0..n)
-            .into_par_iter()
+        (0..n.pow(4))
             .map(|_| {
                 let e1 = self.mesh_ref.edges.keys().choose(&mut thread_rng()).unwrap();
                 let e2 = self.mesh_ref.next(e1);
                 [e1, e2]
             })
+            .sorted_by_key(|&[e1, e2]| {
+                let n1 = flow_graphs[axis as usize].node_to_index(&e1).unwrap();
+                let n2 = flow_graphs[axis as usize].node_to_index(&e2).unwrap();
+                OrderedFloat(measure(flow_graphs[axis as usize].get_weight(n1, n2).to_owned()))
+            })
+            .take(n.pow(2))
+            .collect_vec()
+            .into_par_iter()
             .filter_map(|es| self.construct_unbounded_loop(es, axis, &flow_graphs[axis as usize], &measure))
             .collect::<Vec<_>>()
             .into_iter()
-            .sorted_by_key(|&(_, cost)| OrderedFloat(cost))
-            .take(m)
+            .sorted_by_key(|(path, s)| OrderedFloat(score((path, *s))))
+            .take(n)
             .map(|(x, _)| x)
             .collect::<Vec<_>>()
     }
 
     pub fn initialize(&mut self, flow_graphs: &[Graaf<EdgeID, f64>; 3]) {
-        let samples = 100;
-        let top = 5;
-        let x_loops = self.sample_loops(samples, top, PrincipalDirection::X, flow_graphs, |b: f64| b.powi(10));
-        let y_loops = self.sample_loops(samples, top, PrincipalDirection::Y, flow_graphs, |b: f64| b.powi(10));
-        let z_loops = self.sample_loops(samples, top, PrincipalDirection::Z, flow_graphs, |b: f64| b.powi(10));
+        let m = |b: f64| b.powi(10);
+        let s = |(p, _): (&[EdgeID], f64)| -(p.len() as f64);
+
+        let samples = 3;
+        let x_loops = self.sample_loops(samples, PrincipalDirection::X, flow_graphs, m, s);
+        let y_loops = self.sample_loops(samples, PrincipalDirection::Y, flow_graphs, m, s);
+        let z_loops = self.sample_loops(samples, PrincipalDirection::Z, flow_graphs, m, s);
 
         // Compute all n^3 combinations
         let combinations = x_loops
@@ -379,26 +410,29 @@ impl Solution {
             .filter_map(|(x_loop, y_loop, z_loop)| {
                 let mut solution = self.clone();
                 solution.add_loop(Loop {
-                    edges: x_loop.clone(),
+                    edges: x_loop,
                     direction: PrincipalDirection::X,
                 });
                 solution.add_loop(Loop {
-                    edges: y_loop.clone(),
+                    edges: y_loop,
                     direction: PrincipalDirection::Y,
                 });
                 solution.add_loop(Loop {
-                    edges: z_loop.clone(),
+                    edges: z_loop,
                     direction: PrincipalDirection::Z,
                 });
-
-                Some(solution)
+                if solution.reconstruct_solution(false).is_err() {
+                    None
+                } else {
+                    Some(solution)
+                }
             })
             .collect::<Vec<_>>();
 
         // Get the best solution based on quality
         if let Some(best_solution) = candidate_solutions
             .into_iter()
-            .max_by_key(|solution| OrderedFloat(solution.get_quality().unwrap_or_default()))
+            .max_by_key(|solution| OrderedFloat(solution.get_quality().unwrap()))
         {
             *self = best_solution;
         }
@@ -411,21 +445,13 @@ impl Solution {
     pub fn reconstruct_solution(&mut self, unit: bool) -> Result<(), PropertyViolationError> {
         self.clear();
 
-        if let Err(err) = self.validate_loops() {
-            error!("{err:?}");
-            return Err(err);
-        }
-
-        info!("Constructing DUAL...");
         self.dual = Dual::from(self.mesh_ref.clone(), &self.loops);
         if let Err(e) = &self.dual {
-            error!("{e:?}");
             return Err(e.clone());
         }
 
         self.polycube = Some(Polycube::from_dual(self.dual.as_ref().unwrap()));
 
-        info!("Constructing LAYOUT...");
         for _ in 0..10 {
             self.layout = Layout::embed(self.dual.as_ref().unwrap(), self.polycube.as_ref().unwrap());
             if self.layout.is_ok() {
@@ -433,19 +459,21 @@ impl Solution {
             }
         }
         if let Err(e) = &self.layout {
-            error!("{e:?}");
             return Err(e.clone());
         }
 
-        info!("Computing QUALITY...");
         self.compute_quality();
 
         Ok(())
     }
 
-    pub fn resize_polycube(&mut self) {
+    pub fn resize_polycube(&mut self, unit: bool) {
         if let (Ok(dual), Some(polycube), Ok(layout)) = (&self.dual, &mut self.polycube, &mut self.layout) {
-            polycube.resize(dual, Some(layout));
+            if unit {
+                polycube.resize(dual, None)
+            } else {
+                polycube.resize(dual, Some(layout))
+            };
         }
     }
 
@@ -500,43 +528,62 @@ impl Solution {
     }
 
     pub fn get_quality(&self) -> Option<f64> {
-        let w1 = 1e1;
-        let w2 = 1e-1;
-        let w3 = 1e-2;
+        let w1 = 10.;
+        let w3 = -0.01;
 
         if let (Some(align), Some(ortho)) = (self.alignment, self.orthogonality) {
-            Some(w1 * align + w2 * ortho + w3 * self.loops.len() as f64)
+            // println!("Alignment: {}, Orthogonality: {}", align, ortho);
+            // println!("Loops: {}", self.loops.len());
+            // println!("w1 * align + w3 * loops: {}", w1 * align + w3 * self.loops.len() as f64);
+            Some(w1 * align + w3 * self.loops.len() as f64)
         } else {
             None
         }
     }
 
-    pub fn mutation(&self, flow_graphs: &[Graaf<EdgeID, f64>; 3]) -> Self {
+    pub fn mutation(&self, flow_graphs: &[Graaf<EdgeID, f64>; 3]) -> Option<Self> {
         // Three types of mutation:
         // 1. Add loop(s)
         // 2. Remove loop(s)
         // 3. Replace loop(s)
 
+        let m = |b: f64| b.powi(10);
+        let s = |(_, s): (&[EdgeID], f64)| s;
+
+        let mut mutated = false;
         let mut mutated_solution = self.clone();
-        let case = (rand::random::<u8>() % 3) + 1;
+        let mut case = (rand::random::<u8>() % 3) + 1;
+
+        if self.loops.len() == 0 {
+            return None;
+        }
+
+        if self.loops.len() < 5 {
+            case = 1;
+        }
+
         match case {
             1 => {
                 // Add loop(s)
                 let x = rand::random::<usize>() % 3;
+                let y = rand::random::<usize>() % 3;
+                let z = rand::random::<usize>() % 3;
+                if x + y + z == 0 {
+                    return None;
+                }
+
                 let x_loops = self
-                    .sample_loops(x, x, PrincipalDirection::X, flow_graphs, |b: f64| b.powi(10))
+                    .sample_loops(x, PrincipalDirection::X, flow_graphs, m, s)
                     .into_iter()
                     .map(|x| (x, PrincipalDirection::X))
                     .collect_vec();
-                let y = rand::random::<usize>() % 3;
                 let y_loops = self
-                    .sample_loops(y, y, PrincipalDirection::Y, flow_graphs, |b: f64| b.powi(10))
+                    .sample_loops(y, PrincipalDirection::Y, flow_graphs, m, s)
                     .into_iter()
                     .map(|y| (y, PrincipalDirection::Y))
                     .collect_vec();
-                let z = rand::random::<usize>() % 3;
                 let z_loops = self
-                    .sample_loops(z, z, PrincipalDirection::Z, flow_graphs, |b: f64| b.powi(10))
+                    .sample_loops(z, PrincipalDirection::Z, flow_graphs, m, s)
                     .into_iter()
                     .map(|z| (z, PrincipalDirection::Z))
                     .collect_vec();
@@ -548,6 +595,7 @@ impl Solution {
                     // Check solution
                     if candidate_solution.dual_is_ok() {
                         mutated_solution = candidate_solution;
+                        mutated = true;
                     }
                 }
             }
@@ -556,9 +604,11 @@ impl Solution {
                 let loop_id = self.loops.keys().choose(&mut rand::thread_rng()).unwrap();
                 let mut candidate_solution = mutated_solution.clone();
                 candidate_solution.del_loop(loop_id);
+
                 // Check solution
                 if candidate_solution.dual_is_ok() {
                     mutated_solution = candidate_solution;
+                    mutated = true;
                 }
             }
             3 => {
@@ -575,16 +625,22 @@ impl Solution {
                 let mut candidate_solution = mutated_solution.clone();
                 candidate_solution.del_loop(loop_id);
                 candidate_solution.add_loop(Loop { edges: new_loop, direction });
+
                 // Check solution
                 if candidate_solution.dual_is_ok() {
                     mutated_solution = candidate_solution;
+                    mutated = true;
                 }
             }
             _ => unreachable!(),
         };
 
+        if !mutated {
+            return None;
+        }
+
         mutated_solution.reconstruct_solution(true);
-        mutated_solution
+        Some(mutated_solution)
     }
 
     // pub fn mutate_add_loop(&self, nr_loops: usize, flow_graphs: &[Graaf<EdgeID, f64>; 3]) -> Option<Self> {
