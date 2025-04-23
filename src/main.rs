@@ -401,7 +401,7 @@ fn set_window_icon(windows: NonSend<WinitWindows>) {
         set_fn(window, Some(Icon::from_rgba(image.clone().into_raw(), image.width(), image.height()).unwrap()));
     };
     set_icon("assets/logo-32.png", winit::window::Window::set_window_icon);
-    set_icon("assets/logo-512.png", winit::window::Window::set_taskbar_icon);
+    // set_icon("assets/logo-512.png", winit::window::Window::set_taskbar_icon);
 }
 
 pub fn handle_hexmesh_tasks(mut tasks: ResMut<HexTasks>, mut configuration: ResMut<Configuration>) {
