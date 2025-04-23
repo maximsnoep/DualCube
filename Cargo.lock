@@ -1992,6 +1992,7 @@ dependencies = [
 [[package]]
 name = "douconel"
 version = "0.0.1"
+source = "git+https://github.com/maximsnoep/douconel#69d9685f4f082ab7ec24fb4e497bec7387b35d9c"
 dependencies = [
  "approx",
  "bevy",
