@@ -7,6 +7,7 @@ use crate::{
 };
 use bimap::BiHashMap;
 use core::net;
+use hutspot::consts::PI;
 use hutspot::geom::Vector3D;
 use itertools::Itertools;
 use log::{debug, error, info, trace};
@@ -23,6 +24,7 @@ use slotmap::{SecondaryMap, SlotMap};
 use std::io::Write;
 use std::{
     collections::{HashMap, HashSet},
+    f64::consts::E,
     hash::Hash,
     path::PathBuf,
     sync::Arc,
@@ -100,6 +102,8 @@ pub struct Solution {
     pub alignment: Option<f64>,
     pub orthogonality_per_patch: SecondaryMap<PolycubeFaceID, f64>,
     pub orthogonality: Option<f64>,
+
+    pub external_flag: Option<SecondaryMap<FaceID, usize>>,
 }
 
 impl Solution {
@@ -115,6 +119,7 @@ impl Solution {
             alignment: None,
             orthogonality_per_patch: SecondaryMap::new(),
             orthogonality: None,
+            external_flag: None,
         }
     }
 
@@ -452,12 +457,21 @@ impl Solution {
 
         self.polycube = Some(Polycube::from_dual(self.dual.as_ref().unwrap()));
 
+        // check all faces of the polycube have a normal
+        for face in self.polycube.as_ref().unwrap().structure.faces.keys() {
+            let normal = self.polycube.as_ref().unwrap().structure.normal(face);
+            if normal.x.is_nan() || normal.y.is_nan() || normal.z.is_nan() {
+                return Err(PropertyViolationError::UnknownError);
+            }
+        }
+
         for _ in 0..10 {
             self.layout = Layout::embed(self.dual.as_ref().unwrap(), self.polycube.as_ref().unwrap());
             if self.layout.is_ok() {
                 break;
             }
         }
+
         if let Err(e) = &self.layout {
             return Err(e.clone());
         }
@@ -528,14 +542,13 @@ impl Solution {
     }
 
     pub fn get_quality(&self) -> Option<f64> {
-        let w1 = 10.;
-        let w3 = -0.01;
+        let beta = 0.001;
 
         if let (Some(align), Some(ortho)) = (self.alignment, self.orthogonality) {
             // println!("Alignment: {}, Orthogonality: {}", align, ortho);
             // println!("Loops: {}", self.loops.len());
             // println!("w1 * align + w3 * loops: {}", w1 * align + w3 * self.loops.len() as f64);
-            Some(w1 * align + w3 * self.loops.len() as f64)
+            Some(align - beta * self.loops.len() as f64)
         } else {
             None
         }
@@ -639,7 +652,10 @@ impl Solution {
             return None;
         }
 
-        mutated_solution.reconstruct_solution(true);
+        if mutated_solution.reconstruct_solution(true).is_err() {
+            return None;
+        }
+
         Some(mutated_solution)
     }
 

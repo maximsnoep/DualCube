@@ -1,4 +1,4 @@
-use crate::dual::{Dual, PropertyViolationError};
+use crate::dual::{Dual, Orientation, PropertyViolationError};
 use crate::polycube::{Polycube, PolycubeEdgeID, PolycubeFaceID, PolycubeVertID};
 use crate::{to_principal_direction, EmbeddedMesh, FaceID, PrincipalDirection, VertID};
 use bimap::BiHashMap;
@@ -73,55 +73,47 @@ impl Layout {
         let mut region_to_candidates = HashMap::new();
         for (region_id, region_obj) in &self.dual_ref.loop_structure.faces {
             // Get the relevant directions for this region
-            let segments = self.dual_ref.loop_structure.edges(region_id);
-            // For every consecutive pair of segments (including last and first), their two colors together form a patch direction
-            let directions = segments
+            let polycube_vert = self.polycube_ref.region_to_vertex.get_by_left(&region_id).unwrap().to_owned();
+            let polycube_faces = self.polycube_ref.structure.star(polycube_vert);
+            let face_labels = polycube_faces
                 .iter()
-                .chain(std::iter::once(&segments[0]))
-                .tuple_windows()
-                .map(|(&s1, &s2)| {
-                    let l1 = self.dual_ref.loop_structure.edges[s1].loop_id;
-                    let l2 = self.dual_ref.loop_structure.edges[s2].loop_id;
-                    let d1 = self.dual_ref.loops_ref[l1].direction;
-                    let d2 = self.dual_ref.loops_ref[l2].direction;
-                    let direction = [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z]
-                        .iter()
-                        .find(|&&d| d != d1 && d != d2)
-                        .unwrap()
-                        .to_owned();
-                    direction
-                })
+                .map(|&f| to_principal_direction(self.polycube_ref.structure.normal(f)))
                 .collect::<HashSet<_>>();
 
             // Get all vertices in the region
             let verts = &region_obj.verts;
 
-            // Count the number of relevant directions adjacent to each vertex
-            let mut vertex_to_count = HashMap::new();
-            for &vert in verts {
-                let count = self
-                    .dual_ref
-                    .mesh_ref
-                    .outgoing(vert)
-                    .into_iter()
-                    .map(|edge| {
-                        let face = self.dual_ref.mesh_ref.face(edge);
-                        let direction = to_principal_direction(self.dual_ref.mesh_ref.normal(face)).0;
-                        direction
-                    })
-                    .filter(|&d| directions.contains(&d))
-                    .collect::<HashSet<_>>()
-                    .len();
-                vertex_to_count.insert(vert, count);
+            if face_labels.len() == 1 {
+                region_to_candidates.insert(region_id, verts.clone().into_iter().collect_vec());
+            } else {
+                // Count the number of relevant directions adjacent to each vertex
+                let mut vertex_to_count = HashMap::new();
+                for &vert in verts {
+                    let labels = self
+                        .dual_ref
+                        .mesh_ref
+                        .star(vert)
+                        .into_iter()
+                        .map(|face| {
+                            let normal = self.dual_ref.mesh_ref.normal(face);
+                            to_principal_direction(normal)
+                        })
+                        .collect::<HashSet<_>>();
+
+                    // Count the number of relevant directions adjacent to this vertex
+                    let positive_count = labels.clone().into_iter().filter(|&d| face_labels.contains(&d)).count() as i32;
+                    let negative_count = labels.clone().into_iter().filter(|&d| !face_labels.contains(&d)).count() as i32;
+                    vertex_to_count.insert(vert, positive_count - negative_count);
+                }
+
+                // Get the highest count
+                let max_count = *vertex_to_count.values().max().unwrap();
+
+                // Get all vertices with the highest count
+                let candidates = vertex_to_count.iter().filter(|(_, &count)| count == max_count).map(|(&v, _)| v).collect_vec();
+
+                region_to_candidates.insert(region_id, candidates);
             }
-
-            // Get the highest count
-            let max_count = *vertex_to_count.values().max().unwrap();
-
-            // Get all vertices with the highest count
-            let candidates = vertex_to_count.iter().filter(|(_, &count)| count == max_count).map(|(&v, _)| v).collect_vec();
-
-            region_to_candidates.insert(region_id, candidates);
         }
 
         // For each zone, find a candidate slice (value), that minimizes the Hausdorf distance to the candidate locations of the regions in the zone
@@ -143,7 +135,7 @@ impl Layout {
                 .collect_vec();
 
             // Find the coordinate that minimizes the worst distance to all regions (defined by candidates), do this in N steps
-            let n = 1000;
+            let n = 100;
             let min = zone_regions_with_candidates
                 .iter()
                 .flatten()
@@ -465,17 +457,21 @@ impl Layout {
                     }
                 };
 
+                if normal_on_left == normal_on_right {
+                    return 1.;
+                }
+
                 let mut mult = 1.;
 
                 // angle between normal1 and normal_on_left
                 let angle1 = normal1.angle(&normal_on_left);
                 if angle1 > PI / 3. {
-                    mult += angle1.powi(2);
+                    mult += angle1.powi(3);
                 }
                 // angle between normal2 and normal_on_right
                 let angle2 = normal2.angle(&normal_on_right);
                 if angle2 > PI / 3. {
-                    mult += angle2.powi(2);
+                    mult += angle2.powi(3);
                 }
 
                 mult
@@ -674,8 +670,12 @@ impl Layout {
 
         let mut already_attempted = HashSet::new();
 
-        for xxx in 0..1_000 {
-            println!("Smoothening iteration {}", xxx);
+        for xxx in 0..10_000 {
+            if xxx % 1_000 == 0 {
+                println!("Smoothening iteration {}", xxx);
+                already_attempted.clear();
+            }
+
             let blocked = self
                 .edge_to_path
                 .values()
@@ -716,7 +716,12 @@ impl Layout {
             let (worst_wedge, _) = self.granulated_mesh.shortest_wedge(a, b, c);
             already_attempted.insert((worst_path, (a, b, c), worst_wedge.clone()));
 
-            println!("Worst path: {:?} with wedge {:?} (alpha: {:?})", worst_path, (a, b, c), worst_alpha);
+            if worst_wedge.iter().tuple_windows().any(|(&i0, &i1)| {
+                let edge = self.granulated_mesh.edge_between_verts(i0, i1).unwrap().0;
+                blocked.contains(&edge)
+            }) {
+                continue;
+            }
 
             let path = self.edge_to_path.get(&worst_path).unwrap().to_owned();
             let path_edges = path
@@ -745,8 +750,6 @@ impl Layout {
                 }
             }
             new_subpath.push(c);
-
-            println!("New subpath: {:?}", new_subpath);
 
             let path_before_wedge = path.iter().take_while(|&&v| v != *new_subpath.first().unwrap()).copied().collect_vec();
             let path_after_wedge = path.iter().skip_while(|&&v| v != *new_subpath.last().unwrap()).skip(1).copied().collect_vec();

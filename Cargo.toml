@@ -23,9 +23,9 @@ missing_errors_doc = "allow"
 [dependencies]
 # for local development:
 douconel = { path = "../douconel"}
-# hutspot = { path = "../hutspot" }
+hutspot = { path = "../hutspot" }
 # else:
-# douconel = { git = "https://github.com/maximsnoep/douconel" }
+douconel = { git = "https://github.com/maximsnoep/douconel" }
 hutspot = { git = "https://github.com/maximsnoep/hutspot" }
 
 bevy = "0.14.2"

@@ -1996,7 +1996,7 @@ dependencies = [
  "approx",
  "bevy",
  "bimap",
- "hutspot 0.0.1",
+ "hutspot",
  "itertools 0.13.0",
  "nalgebra",
  "obj",
@@ -2021,7 +2021,7 @@ dependencies = [
  "bimap",
  "douconel",
  "enum-iterator",
- "hutspot 0.0.1 (git+https://github.com/maximsnoep/hutspot)",
+ "hutspot",
  "image",
  "itertools 0.14.0",
  "kdtree",
@@ -2762,21 +2762,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3d1354bf6b7235cb4a0576c2619fd4ed18183f689b12b006a0ee7329eeff9a5"
 dependencies = [
  "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "hutspot"
-version = "0.0.1"
-dependencies = [
- "approx",
- "bevy_render",
- "glam",
- "itertools 0.13.0",
- "log",
- "nalgebra",
- "ordered-float 5.0.0",
- "pathfinding",
- "rayon",
 ]
 
 [[package]]

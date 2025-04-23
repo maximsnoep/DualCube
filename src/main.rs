@@ -28,6 +28,7 @@ use ordered_float::OrderedFloat;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use render::{add_line, add_line2, CameraFor, GizmosCache, MeshProperties, Objects};
 use serde::{Deserialize, Serialize};
+use slotmap::SecondaryMap;
 use smooth_bevy_cameras::controllers::orbit::OrbitCameraPlugin;
 use smooth_bevy_cameras::LookTransformPlugin;
 use solutions::{Loop, Solution};
@@ -35,7 +36,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fmt::Display;
 use std::fs::{self, File};
-use std::io::BufReader;
+use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
@@ -61,9 +62,9 @@ pub enum PrincipalDirection {
 impl Display for PrincipalDirection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::X => write!(f, "X-axis"),
+            Self::X => write!(f, "Z-axis"),
             Self::Y => write!(f, "Y-axis"),
-            Self::Z => write!(f, "Z-axis"),
+            Self::Z => write!(f, "X-axis"),
         }
     }
 }
@@ -490,18 +491,18 @@ pub fn handle_events(
         info!("Received event {ev:?}. Handling...");
         match ev {
             ActionEvent::LoadFile(path) => {
-                let current_configuration = (
-                    configuration.window_has_position,
-                    configuration.window_has_size,
-                    configuration.window_shows_object,
-                    configuration.clear_color,
-                );
-
-                *mesh_resmut = InputResource::default();
-                *solution = SolutionResource::default();
-
                 match path.extension().unwrap().to_str() {
                     Some("obj" | "stl") => {
+                        let current_configuration = (
+                            configuration.window_has_position,
+                            configuration.window_has_size,
+                            configuration.window_shows_object,
+                            configuration.clear_color,
+                        );
+
+                        *mesh_resmut = InputResource::default();
+                        *solution = SolutionResource::default();
+
                         mesh_resmut.mesh = match Douconel::from_file(path) {
                             Ok(res) => {
                                 let mut mesh = res.0;
@@ -515,6 +516,16 @@ pub fn handle_events(
                         solution.current_solution = Solution::new(mesh_resmut.mesh.clone());
                     }
                     Some("save") => {
+                        let current_configuration = (
+                            configuration.window_has_position,
+                            configuration.window_has_size,
+                            configuration.window_shows_object,
+                            configuration.clear_color,
+                        );
+
+                        *mesh_resmut = InputResource::default();
+                        *solution = SolutionResource::default();
+
                         if let Ok(loaded_state) = serde_json::from_reader::<_, SaveStateObject>(BufReader::new(File::open(path).unwrap())) {
                             mesh_resmut.mesh = Arc::new(loaded_state.mesh);
                             solution.current_solution = Solution::new(mesh_resmut.mesh.clone());
@@ -541,6 +552,17 @@ pub fn handle_events(
                         } else {
                             println!("Error while parsing save file {path:?}");
                         }
+                    }
+                    Some("flag") => {
+                        let mut flags = SecondaryMap::new();
+
+                        for (i, line) in BufReader::new(File::open(path).unwrap()).lines().flatten().enumerate() {
+                            let label = line.parse::<usize>().unwrap();
+                            let face_id = mesh_resmut.mesh.face_ids()[i];
+                            flags.insert(face_id, label);
+                        }
+
+                        solution.current_solution.external_flag = Some(flags);
                     }
                     _ => panic!("File format not supported."),
                 }
@@ -688,9 +710,6 @@ pub fn handle_events(
                 };
 
                 info!("writing to {cur}/out/{n}_{t}.save");
-                info!("writing to {cur}/out/{n}_{t}.save");
-                info!("writing to {cur}/out/{n}_{t}.save");
-                info!("writing to {cur}/out/{n}_{t}.save");
 
                 let res = fs::write(PathBuf::from(path_save), serde_json::to_string(&state).unwrap());
                 info!("{:?}", res);
@@ -727,9 +746,9 @@ pub fn handle_events(
                 let t = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards").as_secs();
                 let n = mesh_resmut.properties.source.split("\\").last().unwrap().split('.').next().unwrap().to_owned();
 
-                let path_save = format!("./out/temp/{n}_{t}.save");
                 let path_obj = format!("./out/temp/{n}_{t}.obj",);
                 let path_flag = format!("./out/temp/{n}_{t}.flag",);
+                let path_save = format!("./out/temp/{n}_{t}.save");
 
                 let state = SaveStateObject {
                     mesh: (*mesh_resmut.mesh).clone(),
@@ -745,27 +764,43 @@ pub fn handle_events(
 
                 let task_pool = AsyncComputeTaskPool::get();
                 let task = task_pool.spawn(async move {
-                    Command::new("wsl")
+                    let out = Command::new("wsl")
                         .args([
-                            "~/polycube-to-hexmesh/pipeline.sh",
-                            &format!("/mnt/c/Users/20182085/Documents/douconel-test-env/out/{n}_{t}.obj"),
-                            "-flag",
-                            &format!("/mnt/c/Users/20182085/Documents/douconel-test-env/out/{n}_{t}.flag"),
+                            "python3",
+                            "~/polycube-to-hexmesh/seg_eval.py",
+                            &format!("/mnt/c/Users/20182085/Documents/douconel-test-env/out/temp/{n}_{t}.obj"),
+                            &format!("/mnt/c/Users/20182085/Documents/douconel-test-env/out/temp/{n}_{t}.flag"),
                         ])
                         .output()
                         .expect("failed to execute process");
+
+                    println!("Seg output: {:?}", out);
+
+                    let out = Command::new("wsl")
+                        .args([
+                            "~/polycube-to-hexmesh/pipeline.sh",
+                            &format!("/mnt/c/Users/20182085/Documents/douconel-test-env/out/temp/{n}_{t}.obj"),
+                            "-algo",
+                            &format!("/mnt/c/Users/20182085/Documents/douconel-test-env/out/temp/{n}_{t}.flag"),
+                        ])
+                        .output()
+                        .expect("failed to execute process");
+
+                    println!("Pipeline output: {:?}", out);
 
                     // outputs to '~/polycube-to-hexmesh/out/{n}_{t}_hex.mesh'
 
                     let out = Command::new("wsl")
                         .args([
                             "python3",
-                            "~/polycube-to-hexmesh/evaluator.py",
-                            &format!("~/polycube-to-hexmesh/tmp/{n}_{t}_remesh.mesh"),
-                            &format!("~/polycube-to-hexmesh/out/{n}_{t}_hex.mesh"),
+                            "~/polycube-to-hexmesh/evaluator_old.py",
+                            &format!("/home/snoep/polycube-to-hexmesh/tmp/{n}_{t}_custom_remesh.mesh"),
+                            &format!("/home/snoep/polycube-to-hexmesh/out/{n}_{t}_custom_hex.mesh"),
                         ])
                         .output()
                         .expect("failed to execute process");
+
+                    println!("Hexmesh evaluation output: {:?}", out);
 
                     let out_str = String::from_utf8(out.stdout).unwrap();
                     let out_vec = out_str.split('\n').filter(|s| !s.is_empty()).collect_vec();

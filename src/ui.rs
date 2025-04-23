@@ -58,7 +58,10 @@ fn header(
             bevy_egui::egui::menu::bar(ui, |ui| {
                 menu_button(ui, "File", |ui| {
                     if sleek_button(ui, "Load") {
-                        if let Some(path) = rfd::FileDialog::new().add_filter("triangulated geometry", &["obj", "stl", "save"]).pick_file() {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("triangulated geometry", &["obj", "stl", "save", "flag"])
+                            .pick_file()
+                        {
                             ev_w.send(ActionEvent::LoadFile(path));
                         }
                     }
