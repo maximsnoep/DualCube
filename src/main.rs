@@ -41,7 +41,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use winit::platform::windows::WindowExtWindows;
+// use winit::platform::windows::WindowExtWindows;
 use winit::window::Icon;
 
 slotmap::new_key_type! {
