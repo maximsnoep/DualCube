@@ -144,14 +144,14 @@ impl Solution {
             let p_mid_z = (p_min_z + p_max_z) / 2.;
 
             let v1 = Vector3D::new(mid_x, mid_y, mid_z) - mult * delta_x - mult * delta_y - mult * delta_z;
-            let v2 = v1 + 2 * mult * delta_z;
-            let v3 = v2 + 2 * mult * delta_y;
-            let v4 = v3 - 2 * mult * delta_z;
+            let v2 = v1 + 2. * mult * delta_z;
+            let v3 = v2 + 2. * mult * delta_y;
+            let v4 = v3 - 2. * mult * delta_z;
 
-            let v5 = v1 + 2 * mult * delta_x;
-            let v6 = v5 + 2 * mult * delta_z;
-            let v7 = v6 + 2 * mult * delta_y;
-            let v8 = v7 - 2 * mult * delta_z;
+            let v5 = v1 + 2. * mult * delta_x;
+            let v6 = v5 + 2. * mult * delta_z;
+            let v7 = v6 + 2. * mult * delta_y;
+            let v8 = v7 - 2. * mult * delta_z;
 
             assert!(polycube.structure.verts.len() < 10000);
             let vert_to_id: BiHashMap<PolycubeVertID, usize> = polycube.structure.vert_ids().iter().enumerate().map(|(i, &id)| (id, 10001 + i)).collect();
