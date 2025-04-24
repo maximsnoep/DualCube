@@ -1,6 +1,7 @@
 mod dual;
 mod graph;
 mod layout;
+mod nlr;
 mod polycube;
 mod render;
 mod solutions;
@@ -637,13 +638,13 @@ pub fn handle_events(
                     .next()
                     .unwrap();
 
-                let path_topol = format!("{cur}/out/{t}.topol");
-                let path_geom = format!("{cur}/out/{t}.geom",);
-                let path_cdim = format!("{cur}/out/{t}.cdim",);
+                let path = format!("{cur}/out/{t}");
 
-                solution
-                    .current_solution
-                    .export_to_nlr(&PathBuf::from(path_topol), &PathBuf::from(path_geom), &PathBuf::from(path_cdim));
+                println!("Exporting to {path}");
+
+                solution.current_solution.export_to_nlr(&PathBuf::from(path));
+
+                // solution.current_solution.write_to_stl(&PathBuf::from(format!("{cur}/out/{t}.stl")));
             }
             ActionEvent::ExportAll => {
                 if mesh_resmut.mesh.vert_ids().is_empty() {
