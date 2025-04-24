@@ -445,6 +445,7 @@ impl Solution {
                 file_cdim,
                 "{}",
                 edge_per_loop
+                    .clone()
                     .map(|edge_id| {
                         let edge_int = edge_to_id
                             .get_by_left(&edge_id)
@@ -468,12 +469,15 @@ impl Solution {
             write!(file_cdim, "\n NUMBER OF BLOCKS WITH LOCAL GRID REFINEMENT:\n       0")?;
 
             // Write edges in x (i) direction
-            let x_edges = polycube
-                .structure
-                .edge_ids()
-                .into_iter()
-                .filter(|&edge_id| edge_id < polycube.structure.twin(edge_id))
+            let x_edges = edge_per_loop
+                .clone()
                 .filter(|&edge_id| to_principal_direction(polycube.structure.vector(edge_id)).0 == PrincipalDirection::X)
+                .map(|edge_id| {
+                    edge_to_id
+                        .get_by_left(&edge_id)
+                        .or_else(|| edge_to_id.get_by_left(&polycube.structure.twin(edge_id)))
+                        .unwrap()
+                })
                 .collect_vec();
             write!(
                 file_cdim,
@@ -483,21 +487,20 @@ impl Solution {
             write!(
                 file_cdim,
                 "{}",
-                x_edges
-                    .iter()
-                    .map(|edge_id| format!("  {}", edge_to_id.get_by_left(edge_id).unwrap()))
-                    .collect::<Vec<_>>()
-                    .join("  ")
+                x_edges.iter().map(|edge_id| format!("  {edge_id}")).collect::<Vec<_>>().join("  ")
             )?;
             write!(file_cdim, "  29015")?;
 
             // Write edges in y (j) direction
-            let y_edges = polycube
-                .structure
-                .edge_ids()
-                .into_iter()
-                .filter(|&edge_id| edge_id < polycube.structure.twin(edge_id))
+            let y_edges = edge_per_loop
+                .clone()
                 .filter(|&edge_id| to_principal_direction(polycube.structure.vector(edge_id)).0 == PrincipalDirection::Y)
+                .map(|edge_id| {
+                    edge_to_id
+                        .get_by_left(&edge_id)
+                        .or_else(|| edge_to_id.get_by_left(&polycube.structure.twin(edge_id)))
+                        .unwrap()
+                })
                 .collect_vec();
             write!(
                 file_cdim,
@@ -507,21 +510,20 @@ impl Solution {
             write!(
                 file_cdim,
                 "{}",
-                y_edges
-                    .iter()
-                    .map(|edge_id| format!("  {}", edge_to_id.get_by_left(edge_id).unwrap()))
-                    .collect::<Vec<_>>()
-                    .join("  ")
+                y_edges.iter().map(|edge_id| format!("  {edge_id}")).collect::<Vec<_>>().join("  ")
             )?;
             write!(file_cdim, "  29041")?;
 
             // Write edges in z (k) direction
-            let z_edges = polycube
-                .structure
-                .edge_ids()
-                .into_iter()
-                .filter(|&edge_id| edge_id < polycube.structure.twin(edge_id))
+            let z_edges = edge_per_loop
+                .clone()
                 .filter(|&edge_id| to_principal_direction(polycube.structure.vector(edge_id)).0 == PrincipalDirection::Z)
+                .map(|edge_id| {
+                    edge_to_id
+                        .get_by_left(&edge_id)
+                        .or_else(|| edge_to_id.get_by_left(&polycube.structure.twin(edge_id)))
+                        .unwrap()
+                })
                 .collect_vec();
             write!(
                 file_cdim,
@@ -531,11 +533,7 @@ impl Solution {
             write!(
                 file_cdim,
                 "{}",
-                z_edges
-                    .iter()
-                    .map(|edge_id| format!("  {}", edge_to_id.get_by_left(edge_id).unwrap()))
-                    .collect::<Vec<_>>()
-                    .join("  ")
+                z_edges.iter().map(|edge_id| format!("  {edge_id}")).collect::<Vec<_>>().join("  ")
             )?;
             write!(file_cdim, "  29012")?;
 
