@@ -144,14 +144,14 @@ impl Solution {
             let p_mid_z = (p_min_z + p_max_z) / 2.;
 
             let v1 = Vector3D::new(mid_x, mid_y, mid_z) - mult * delta_x - mult * delta_y - mult * delta_z;
-            let v2 = v1 + mult * delta_z;
-            let v3 = v2 + mult * delta_y;
-            let v4 = v3 - mult * delta_z;
+            let v2 = v1 + 2 * mult * delta_z;
+            let v3 = v2 + 2 * mult * delta_y;
+            let v4 = v3 - 2 * mult * delta_z;
 
-            let v5 = v1 + mult * delta_x;
-            let v6 = v5 + mult * delta_z;
-            let v7 = v6 + mult * delta_y;
-            let v8 = v7 - mult * delta_z;
+            let v5 = v1 + 2 * mult * delta_x;
+            let v6 = v5 + 2 * mult * delta_z;
+            let v7 = v6 + 2 * mult * delta_y;
+            let v8 = v7 - 2 * mult * delta_z;
 
             assert!(polycube.structure.verts.len() < 10000);
             let vert_to_id: BiHashMap<PolycubeVertID, usize> = polycube.structure.vert_ids().iter().enumerate().map(|(i, &id)| (id, 10001 + i)).collect();
@@ -222,7 +222,7 @@ impl Solution {
             )?;
             // Add the bounding box faces
             write!(file_topol, "\n       39001       29012       29034       29023       29041       'FACE'")?;
-            write!(file_topol, "\n       39002       20056       20078       20067       20085       'FACE'")?;
+            write!(file_topol, "\n       39002       29056       29078       29067       29085       'FACE'")?;
             write!(file_topol, "\n       39003       29015       29048       29041       29085       'FACE'")?;
             write!(file_topol, "\n       39004       29026       29037       29023       29067       'FACE'")?;
             write!(file_topol, "\n       39005       29012       29056       29015       29026       'FACE'")?;
