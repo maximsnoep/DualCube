@@ -22,13 +22,13 @@ missing_errors_doc = "allow"
 
 [dependencies]
 # for local development:
-# douconel = { path = "../douconel"}
-# hutspot = { path = "../hutspot" }
+douconel = { path = "../douconel"}
+hutspot = { path = "../hutspot" }
 # else:
-douconel = { git = "https://github.com/maximsnoep/douconel" }
-hutspot = { git = "https://github.com/maximsnoep/hutspot" }
+# douconel = { git = "https://github.com/maximsnoep/douconel" }
+# hutspot = { git = "https://github.com/maximsnoep/hutspot" }
 
-bevy = "0.14.2"
+bevy = "0.16.0"
 bevy_egui = "0.30.1"
 smooth-bevy-cameras = "0.12.0"
 bevy_mod_raycast = "0.18"
@@ -45,12 +45,12 @@ slotmap = { version = "1.0.7", features = ["serde"] }
 kdtree = { version = "0.7.0", features = ["serialize"]}
 ordered-float = { version = "5.0.0", features = ["serde"]}
 bimap = "0.6.3"
-log = "0.4.25"
-rand = "0.8.5"
+log = "0.4.27"
+rand = "0.9.1"
 tico = "2.0.0"
 winit = "0.30.8"
-image = "0.25.5"
-priority-queue = "=2.1.1"
+image = "0.25.6"
+priority-queue = "=2.3.1"
 enum-iterator = "2.1.0"
 ahash = "0.8.11"
 ryu = "1.0.19"

@@ -170,7 +170,7 @@ pub fn setup(
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct MeshProperties {
     pub source: String,
-    pub scale: f32,
+    pub scale: f64,
     pub translation: Vector3D,
 }
 
@@ -190,11 +190,11 @@ fn get_pbrbundle(mesh: Handle<Mesh>, translation: Vec3, scale: f32, material: &H
 fn get_mesh<VertID: Key, V: Default + HasPosition, EdgeID: Key, E: Default, FaceID: Key, F: Default>(
     dcel: &Douconel<VertID, V, EdgeID, E, FaceID, F>,
     color_map: &HashMap<FaceID, [f32; 3]>,
-) -> (Mesh, Vec3, f32) {
+) -> (Mesh, Vector3D, f64) {
     let mesh = dcel.bevy(color_map);
-    let aabb = mesh.compute_aabb().unwrap();
-    let scale = 10. * (1. / aabb.half_extents.max_element());
-    let translation = (-scale * aabb.center).into();
+    let (center, half_extents) = dcel.get_aabb();
+    let scale = 10. * (1. / half_extents.max());
+    let translation = (-scale * center);
     (mesh, translation, scale)
 }
 
@@ -775,7 +775,7 @@ pub fn update(
                     let (mesh, translation, scale) = get_mesh(&mesh_resmut.mesh, &colormap);
 
                     commands.spawn((
-                        get_pbrbundle(meshes.add(mesh), translation + Vec3::from(object), scale, &standard_material),
+                        get_pbrbundle(meshes.add(mesh), translation + Vec3::from(object), scale as f32, &standard_material),
                         RenderedMesh,
                     ));
 
@@ -882,7 +882,7 @@ pub fn gizmos(mut gizmos: Gizmos, gizmos_cache: Res<GizmosCache>, configuration:
     }
 }
 
-pub fn add_line(lines: &mut Vec<Line>, position: Vector3D, normal: Vector3D, length: f32, color: hutspot::color::Color, translation: Vector3D, scale: f32) {
+pub fn add_line(lines: &mut Vec<Line>, position: Vector3D, normal: Vector3D, length: f32, color: hutspot::color::Color, translation: Vector3D, scale: f64) {
     let line = DrawableLine::from_vertex(position, normal, length, translation, scale);
     lines.push((line.u, line.v, color));
 }
@@ -893,9 +893,9 @@ pub fn add_line2(
     position_b: Vector3D,
     offset: Vector3D,
     color: hutspot::color::Color,
-    translation: Vec3,
-    scale: f32,
+    translation: Vector3D,
+    scale: f64,
 ) {
-    let line = DrawableLine::from_line(position_a, position_b, offset, vec3_to_vector3d(translation), scale);
+    let line = DrawableLine::from_line(position_a, position_b, offset, translation, scale);
     lines.push((line.u, line.v, color));
 }

@@ -568,25 +568,25 @@ impl Solution {
         match case {
             1 => {
                 // Add loop(s)
-                let x = rand::random::<usize>() % 3;
-                let y = rand::random::<usize>() % 3;
-                let z = rand::random::<usize>() % 3;
+                let x = rand::random::<u8>() % 3;
+                let y = rand::random::<u8>() % 3;
+                let z = rand::random::<u8>() % 3;
                 if x + y + z == 0 {
                     return None;
                 }
 
                 let x_loops = self
-                    .sample_loops(x, PrincipalDirection::X, flow_graphs, m, s)
+                    .sample_loops(x as usize, PrincipalDirection::X, flow_graphs, m, s)
                     .into_iter()
                     .map(|x| (x, PrincipalDirection::X))
                     .collect_vec();
                 let y_loops = self
-                    .sample_loops(y, PrincipalDirection::Y, flow_graphs, m, s)
+                    .sample_loops(y as usize, PrincipalDirection::Y, flow_graphs, m, s)
                     .into_iter()
                     .map(|y| (y, PrincipalDirection::Y))
                     .collect_vec();
                 let z_loops = self
-                    .sample_loops(z, PrincipalDirection::Z, flow_graphs, m, s)
+                    .sample_loops(z as usize, PrincipalDirection::Z, flow_graphs, m, s)
                     .into_iter()
                     .map(|z| (z, PrincipalDirection::Z))
                     .collect_vec();

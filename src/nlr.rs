@@ -22,7 +22,7 @@ impl Solution {
             let signature = " -- automatically generated via the DualLoops algorithm";
 
             // Also add farfield description (box around the model) with size mult*a x mult*b x mult*c (if whole model is a x b x c)
-            let mult = 25.;
+            let mult = 10.;
 
             // Find the most front vertex (reference vertex), which is the vertex with the smallest x-coordinate
             let refv = polycube
@@ -459,8 +459,8 @@ impl Solution {
             )?;
             let (cartesian_x, cartesian_y, cartesian_z) = ((mult * p_delta_x) as usize, (mult * p_delta_y) as usize, (mult * p_delta_z) as usize);
             write!(file_cdim, "\n       29015       {}", cartesian_x * 2)?;
-            write!(file_cdim, "\n       29041       {}", cartesian_y * 2)?;
-            write!(file_cdim, "\n       29012       {}", cartesian_z * 2)?;
+            write!(file_cdim, "\n       29041       {}", cartesian_x * 2)?;
+            write!(file_cdim, "\n       29012       {}", cartesian_x * 2)?;
 
             // Write grid levels
             write!(file_cdim, "\n GRID LEVEL OF BASIC GRID AND COMPUTATIONAL GRID:\n       1 1")?;
@@ -540,7 +540,7 @@ impl Solution {
             // Write reference (origin) vertex
             write!(file_cdim, "\n NUMBER OF VERTICES WITH CARTESIAN COORDINATES:\n       2\n        VERT i j k\n")?;
             write!(file_cdim, "       {} 0 0 0\n", vert_to_id.get_by_left(&refv).unwrap())?;
-            write!(file_cdim, "       19001 -{cartesian_x} -{cartesian_y} -{cartesian_z}\n")?;
+            write!(file_cdim, "       19001 -{cartesian_x} -{cartesian_x} -{cartesian_x}\n")?;
 
             // Write symmetry and orientation
             write!(file_cdim, "SYMMETRY\n       0\nORIENTATION\n       0")?;
