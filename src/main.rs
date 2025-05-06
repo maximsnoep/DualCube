@@ -9,22 +9,28 @@ mod ui;
 
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::input::mouse::{MouseMotion, MouseWheel};
-use bevy::prelude::*;
+use bevy::picking::pointer::PointerInteraction;
+use bevy::platform::collections::HashSet;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{block_on, AsyncComputeTaskPool, Task};
 use bevy::window::WindowMode;
 use bevy::winit::WinitWindows;
+use bevy::{gizmos, prelude::*};
 use bevy_egui::EguiPlugin;
-use bevy_mod_raycast::prelude::*;
+use bvh::aabb::{Aabb, Bounded};
+use bvh::bounding_hierarchy::BHShape;
+// use bevy_mod_raycast::prelude::*;
 use douconel::douconel::Douconel;
 use douconel::{douconel::Empty, douconel_embedded::EmbeddedVertex};
 use dual::Orientation;
 use graph::Graaf;
 use hutspot::consts::{EPS, PI};
 use hutspot::geom::Vector3D;
+use image::imageops::FilterType::Triangle;
 use itertools::Itertools;
 use kdtree::distance::squared_euclidean;
 use kdtree::KdTree;
+use nalgebra::Const;
 use ordered_float::OrderedFloat;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use render::{add_line, add_line2, CameraFor, GizmosCache, MeshProperties, Objects};
@@ -43,6 +49,7 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 // use winit::platform::windows::WindowExtWindows;
+use bvh::bvh::Bvh;
 use winit::window::Icon;
 
 slotmap::new_key_type! {
@@ -316,9 +323,63 @@ impl Default for TreeD {
     }
 }
 
+// implement default for Bvh using the New Type Idiom
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Bhv((Bvh<f32, 3>, Vec<TriangleBvhShape>));
+impl Bhv {
+    fn nearest(&self, point: &[f64; 3]) -> (f32, FaceID) {
+        let neighbor = self
+            .0
+             .0
+            .nearest_to(nalgebra::Point3::new(point[0] as f32, point[1] as f32, point[2] as f32), &self.0 .1);
+        let (t, d) = neighbor.unwrap();
+        (d, t.real_index)
+    }
+    fn overwrite(&mut self, shapes: &mut [TriangleBvhShape]) {
+        self.0 .0 = Bvh::build(shapes);
+        self.0 .1 = shapes.to_vec();
+    }
+}
+impl Default for Bhv {
+    fn default() -> Self {
+        Self((Bvh::build::<TriangleBvhShape>(&mut []), Vec::new()))
+    }
+}
+
 #[derive(Default, Resource)]
 pub struct CacheResource {
     cache: [HashMap<[EdgeID; 2], Vec<([EdgeID; 2], OrderedFloat<f64>)>>; 3],
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TriangleBvhShape {
+    corners: [Vector3D; 3],
+    node_index: usize,
+    real_index: FaceID,
+}
+
+impl Bounded<f32, 3> for TriangleBvhShape {
+    fn aabb(&self) -> Aabb<f32, 3> {
+        let min_x = self.corners.iter().map(|v| v.x).fold(f64::MAX, |a, b| a.min(b));
+        let min_y = self.corners.iter().map(|v| v.y).fold(f64::MAX, |a, b| a.min(b));
+        let min_z = self.corners.iter().map(|v| v.z).fold(f64::MAX, |a, b| a.min(b));
+        let max_x = self.corners.iter().map(|v| v.x).fold(f64::MIN, |a, b| a.max(b));
+        let max_y = self.corners.iter().map(|v| v.y).fold(f64::MIN, |a, b| a.max(b));
+        let max_z = self.corners.iter().map(|v| v.z).fold(f64::MIN, |a, b| a.max(b));
+        let min = nalgebra::Point3::new(min_x as f32, min_y as f32, min_z as f32);
+        let max = nalgebra::Point3::new(max_x as f32, max_y as f32, max_z as f32);
+        Aabb::with_bounds(min, max)
+    }
+}
+
+impl BHShape<f32, 3> for TriangleBvhShape {
+    fn set_bh_node_index(&mut self, index: usize) {
+        self.node_index = index;
+    }
+
+    fn bh_node_index(&self) -> usize {
+        self.node_index
+    }
 }
 
 #[derive(Default, Debug, Clone, Resource, Serialize, Deserialize)]
@@ -327,7 +388,24 @@ pub struct InputResource {
     properties: MeshProperties,
     properties2: MeshProperties,
     vertex_lookup: TreeD,
+    triangle_lookup: Bhv,
     flow_graphs: [Graaf<EdgeID, f64>; 3],
+}
+
+impl bvh::point_query::PointDistance<f32, 3> for TriangleBvhShape {
+    fn distance_squared(&self, query_point: nalgebra::Point<f32, 3>) -> f32 {
+        let a = nalgebra::Point3::new(self.corners[0].x as f32, self.corners[0].y as f32, self.corners[0].z as f32);
+        let b = nalgebra::Point3::new(self.corners[1].x as f32, self.corners[1].y as f32, self.corners[1].z as f32);
+        let c = nalgebra::Point3::new(self.corners[2].x as f32, self.corners[2].y as f32, self.corners[2].z as f32);
+        hutspot::geom::distance_to_triangle(
+            Vector3D::new(query_point[0] as f64, query_point[1] as f64, query_point[2] as f64),
+            (
+                Vector3D::new(a[0] as f64, a[1] as f64, a[2] as f64),
+                Vector3D::new(b[0] as f64, b[1] as f64, b[2] as f64),
+                Vector3D::new(c[0] as f64, c[1] as f64, c[2] as f64),
+            ),
+        ) as f32
+    }
 }
 
 #[derive(Debug, Clone, Resource)]
@@ -358,6 +436,7 @@ fn main() {
         .insert_resource(AmbientLight {
             color: Color::WHITE,
             brightness: 1.0,
+            affects_lightmapped_meshes: true,
         })
         // Load default plugins
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -368,15 +447,16 @@ fn main() {
             }),
             ..Default::default()
         }))
-        // Cursor ray
-        .add_plugins(CursorRayPlugin)
         // Plugin for FPS
-        .add_plugins(FrameTimeDiagnosticsPlugin)
+        .add_plugins(FrameTimeDiagnosticsPlugin::default())
         // Plugin for GUI
-        .add_plugins(EguiPlugin)
+        .add_plugins(EguiPlugin {
+            enable_multipass_for_primary_context: false,
+        })
         // Plugin for smooth camera
-        .add_plugins(LookTransformPlugin)
-        .add_plugins(OrbitCameraPlugin::default())
+        .add_plugins((LookTransformPlugin, OrbitCameraPlugin::default()))
+        // Plugin for raycast cursor picking
+        .add_plugins(MeshPickingPlugin)
         // Setups
         .add_systems(Startup, ui::setup)
         .add_systems(Startup, render::setup)
@@ -582,6 +662,24 @@ pub fn handle_events(
                     patterns.add(mesh_resmut.mesh.position(v_id).into(), v_id);
                 }
                 mesh_resmut.vertex_lookup = patterns;
+
+                let mut triangles = mesh_resmut
+                    .mesh
+                    .face_ids()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &face_id)| TriangleBvhShape {
+                        corners: [
+                            mesh_resmut.mesh.position(mesh_resmut.mesh.corners(face_id)[0]),
+                            mesh_resmut.mesh.position(mesh_resmut.mesh.corners(face_id)[1]),
+                            mesh_resmut.mesh.position(mesh_resmut.mesh.corners(face_id)[2]),
+                        ],
+                        node_index: i,
+                        real_index: face_id,
+                    })
+                    .collect_vec();
+
+                mesh_resmut.triangle_lookup.overwrite(&mut triangles);
 
                 mesh_resmut.properties.source = String::from(path.to_str().unwrap());
 
@@ -939,9 +1037,13 @@ fn vec3_to_vector3d(v: Vec3) -> Vector3D {
     Vector3D::new(v.x.into(), v.y.into(), v.z.into())
 }
 
+#[inline]
+fn vector3d_to_vec3(v: Vector3D) -> Vec3 {
+    Vec3::new(v.x as f32, v.y as f32, v.z as f32)
+}
+
 fn raycast(
-    cursor_ray: Res<CursorRay>,
-    mut raycast: Raycast,
+    pointers: Query<&PointerInteraction>,
     mut mouse: ResMut<ButtonInput<MouseButton>>,
     mut evr_motion: EventReader<MouseMotion>,
     mut evr_scroll: EventReader<MouseWheel>,
@@ -952,6 +1054,7 @@ fn raycast(
     mut gizmos_cache: ResMut<GizmosCache>,
     mut configuration: ResMut<Configuration>,
     query: Query<Entity, With<MainMesh>>,
+    mut gizmos: Gizmos,
 ) {
     configuration.raycasted = None;
     configuration.selected = None;
@@ -975,25 +1078,12 @@ fn raycast(
             v,
             n * 0.01,
             color,
-            Vec3::new(
-                mesh_resmut.properties.translation.x as f32,
-                mesh_resmut.properties.translation.y as f32,
-                mesh_resmut.properties.translation.z as f32,
-            ),
+            mesh_resmut.properties.translation,
             mesh_resmut.properties.scale,
         );
     }
 
-    if configuration.ui_is_hovered.iter().any(|&x| x) || cursor_ray.is_none() {
-        return;
-    }
-
-    let intersections = raycast.cast_ray(cursor_ray.unwrap(), &default());
-    if intersections.is_empty() || query.single() != intersections[0].0 {
-        return;
-    }
-
-    if keyboard.pressed(KeyCode::ControlLeft) {
+    if configuration.ui_is_hovered.iter().any(|&x| x) || keyboard.pressed(KeyCode::ControlLeft) || mouse.just_pressed(MouseButton::Left) {
         return;
     }
 
@@ -1009,57 +1099,62 @@ fn raycast(
         }
     }
 
-    let intersection = &intersections[0].1;
-    if intersection.triangle().is_none() {
+    let intersections = pointers
+        .iter()
+        .filter_map(|interaction| interaction.get_nearest_hit())
+        .filter_map(|(_, hit)| hit.position)
+        .collect_vec();
+
+    if intersections.is_empty() {
         return;
     }
 
-    let position = hutspot::draw::invert_transform_coordinates(
-        vec3_to_vector3d(intersection.position()),
-        mesh_resmut.properties.translation,
-        mesh_resmut.properties.scale,
-    );
-    let verts = [
-        vec3_to_vector3d(intersection.triangle().unwrap()[0].into()),
-        vec3_to_vector3d(intersection.triangle().unwrap()[1].into()),
-        vec3_to_vector3d(intersection.triangle().unwrap()[2].into()),
-    ]
-    .into_iter()
-    .map(|p| hutspot::draw::invert_transform_coordinates(p, mesh_resmut.properties.translation, mesh_resmut.properties.scale))
-    .map(|p| mesh_resmut.vertex_lookup.nearest(&p.into()).1)
-    .sorted_by(|&a, &b| {
-        mesh_resmut
-            .mesh
-            .position(a)
-            .metric_distance(&position)
-            .partial_cmp(&mesh_resmut.mesh.position(b).metric_distance(&position))
-            .unwrap()
-    })
-    .collect_vec();
+    let intersection = intersections[0];
 
-    if mesh_resmut.mesh.face_with_verts(&verts).is_none() {
-        return;
-    }
-    let face_id = mesh_resmut.mesh.face_with_verts(&verts).unwrap();
-    let edgepair = mesh_resmut.mesh.edges_in_face_with_vert(face_id, verts[0]).unwrap();
+    let position =
+        hutspot::draw::invert_transform_coordinates(vec3_to_vector3d(intersection), mesh_resmut.properties.translation, mesh_resmut.properties.scale);
+
+    let nearest_face = mesh_resmut.triangle_lookup.nearest(&position.into()).1;
+    // get the nearest_vert (one of 3 corners of nearest_face)
+    let nearest_vert = mesh_resmut
+        .mesh
+        .corners(nearest_face)
+        .iter()
+        .min_by_key(|&v| OrderedFloat(position.metric_distance(&mesh_resmut.mesh.position(*v))))
+        .unwrap()
+        .to_owned();
+
+    let edgepair = mesh_resmut.mesh.edges_in_face_with_vert(nearest_face, nearest_vert).unwrap();
 
     let u = mesh_resmut.mesh.midpoint(edgepair[0]);
     let v = mesh_resmut.mesh.midpoint(edgepair[1]);
     let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edgepair[0]));
     let color = to_color(configuration.direction, Perspective::Dual, None);
+
     add_line2(
         &mut gizmos_cache.raycaster,
         u,
         v,
         n * 0.01,
         color,
-        Vec3::new(
-            mesh_resmut.properties.translation.x as f32,
-            mesh_resmut.properties.translation.y as f32,
-            mesh_resmut.properties.translation.z as f32,
-        ),
+        mesh_resmut.properties.translation,
         mesh_resmut.properties.scale,
     );
+
+    add_line2(
+        &mut gizmos_cache.raycaster,
+        position,
+        position + n,
+        n * 0.,
+        color,
+        mesh_resmut.properties.translation,
+        mesh_resmut.properties.scale,
+    );
+
+    // Controls:
+    // If INSERT is pressed, we add a loop to the list of candidate loops
+    // If Shift + INSERT is pressed, we add the candidate loop to the current solution
+    // If DELETE is pressed, we remove the loop from the current solution
 
     if keyboard.pressed(KeyCode::Space) {
         // Find closest loop.
@@ -1125,11 +1220,7 @@ fn raycast(
                             v,
                             n * 0.05,
                             color,
-                            Vec3::new(
-                                mesh_resmut.properties.translation.x as f32,
-                                mesh_resmut.properties.translation.y as f32,
-                                mesh_resmut.properties.translation.z as f32,
-                            ),
+                            mesh_resmut.properties.translation,
                             mesh_resmut.properties.scale,
                         );
                     }
@@ -1160,7 +1251,7 @@ fn raycast(
     }
 
     if mouse.just_pressed(MouseButton::Left) || mouse.just_released(MouseButton::Left) {
-        let selected_edges = mesh_resmut.mesh.edges_in_face_with_vert(face_id, verts[0]).unwrap();
+        let selected_edges = mesh_resmut.mesh.edges_in_face_with_vert(nearest_face, nearest_vert).unwrap();
         let measure = |a: f64| a.powi(10);
 
         if let Some((candidate_loop, _)) = solution.current_solution.construct_unbounded_loop(

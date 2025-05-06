@@ -1,5 +1,7 @@
 use crate::dual::Orientation;
-use crate::{to_color, to_principal_direction, vec3_to_vector3d, Configuration, InputResource, MainMesh, Perspective, RenderedMesh, SolutionResource};
+use crate::{
+    to_color, to_principal_direction, vec3_to_vector3d, vector3d_to_vec3, Configuration, InputResource, MainMesh, Perspective, RenderedMesh, SolutionResource,
+};
 use crate::{CameraHandles, PrincipalDirection};
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::prelude::*;
@@ -73,10 +75,11 @@ pub fn reset(
         commands.entity(camera).despawn();
     }
 
-    // Main camera. This is the camera that the user can control.
+    // // Main camera. This is the camera that the user can control.
     commands
-        .spawn(Camera3dBundle {
-            camera: Camera {
+        .spawn((
+            Camera3d::default(),
+            Camera {
                 clear_color: ClearColorConfig::Custom(bevy::prelude::Color::srgb(
                     configuration.clear_color[0] as f32 / 255.,
                     configuration.clear_color[1] as f32 / 255.,
@@ -84,9 +87,8 @@ pub fn reset(
                 )),
                 ..Default::default()
             },
-            tonemapping: Tonemapping::None,
-            ..default()
-        })
+            Tonemapping::None,
+        ))
         .insert((OrbitCameraBundle::new(
             OrbitCameraController {
                 mouse_rotate_sensitivity: Vec2::splat(0.08),
@@ -121,33 +123,30 @@ pub fn reset(
     };
     image.resize(image.texture_descriptor.size);
 
-    for object in all::<Objects>() {
+    for (i, object) in all::<Objects>().enumerate() {
         let handle = images.add(image.clone());
         handles.map.insert(CameraFor(object), handle.clone());
         let projection = if object == Objects::PolycubeDual || object == Objects::PolycubePrimal {
-            bevy::prelude::Projection::Orthographic(OrthographicProjection {
-                scaling_mode: ScalingMode::FixedVertical(30.0),
-                ..default()
-            })
+            let mut proj = OrthographicProjection::default_3d();
+            proj.scaling_mode = ScalingMode::FixedVertical { viewport_height: 30. };
+            Projection::Orthographic(proj)
         } else {
             bevy::prelude::Projection::default()
         };
 
         commands.spawn((
-            Camera3dBundle {
-                camera: Camera {
-                    target: handle.into(),
-                    clear_color: ClearColorConfig::Custom(bevy::prelude::Color::srgb(
-                        configuration.clear_color[0] as f32 / 255.,
-                        configuration.clear_color[1] as f32 / 255.,
-                        configuration.clear_color[2] as f32 / 255.,
-                    )),
-                    ..Default::default()
-                },
-                projection,
-                tonemapping: Tonemapping::None,
-                ..default()
+            Camera3d::default(),
+            Camera {
+                target: handle.into(),
+                clear_color: ClearColorConfig::Custom(bevy::prelude::Color::srgb(
+                    configuration.clear_color[0] as f32 / 255.,
+                    configuration.clear_color[1] as f32 / 255.,
+                    configuration.clear_color[2] as f32 / 255.,
+                )),
+                ..Default::default()
             },
+            projection,
+            Tonemapping::None,
             CameraFor(object),
         ));
     }
@@ -162,7 +161,7 @@ pub fn setup(
     configuration: ResMut<Configuration>,
 ) {
     let (config, _) = config_store.config_mut::<DefaultGizmoConfigGroup>();
-    config.line_width = 2.;
+    config.line.width = 2.;
 
     self::reset(&mut commands, &cameras, &mut images, &mut handles, &configuration);
 }
@@ -174,17 +173,21 @@ pub struct MeshProperties {
     pub translation: Vector3D,
 }
 
-fn get_pbrbundle(mesh: Handle<Mesh>, translation: Vec3, scale: f32, material: &Handle<StandardMaterial>) -> PbrBundle {
-    PbrBundle {
-        mesh,
-        transform: Transform {
+fn get_pbrbundle(
+    mesh: Handle<Mesh>,
+    translation: Vec3,
+    scale: f32,
+    material: &Handle<StandardMaterial>,
+) -> (Mesh3d, MeshMaterial3d<StandardMaterial>, Transform) {
+    (
+        Mesh3d(mesh),
+        MeshMaterial3d(material.clone()),
+        Transform {
             translation,
             rotation: Quat::IDENTITY,
             scale: Vec3::splat(scale),
         },
-        material: material.clone(),
-        ..default()
-    }
+    )
 }
 
 fn get_mesh<VertID: Key, V: Default + HasPosition, EdgeID: Key, E: Default, FaceID: Key, F: Default>(
@@ -194,7 +197,7 @@ fn get_mesh<VertID: Key, V: Default + HasPosition, EdgeID: Key, E: Default, Face
     let mesh = dcel.bevy(color_map);
     let (center, half_extents) = dcel.get_aabb();
     let scale = 10. * (1. / half_extents.max());
-    let translation = (-scale * center);
+    let translation = -scale * center;
     (mesh, translation, scale)
 }
 
@@ -219,9 +222,10 @@ pub fn update(
 
     for (mut sub_transform, mut sub_projection, sub_object) in &mut cameras {
         sub_transform.translation = normalized_translation + Vec3::from(sub_object.0);
+        // println!("translate: {:?}", sub_transform.translation);
         sub_transform.rotation = normalized_rotation;
         if let Projection::Orthographic(orthographic) = sub_projection.as_mut() {
-            orthographic.scaling_mode = ScalingMode::FixedVertical(distance);
+            orthographic.scaling_mode = ScalingMode::FixedVertical { viewport_height: distance };
         }
     }
 
@@ -274,7 +278,7 @@ pub fn update(
                 v,
                 n * 0.005,
                 hutspot::color::GRAY,
-                translation + Vec3::from(object),
+                translation + vec3_to_vector3d(Vec3::from(object)),
                 scale,
             );
         }
@@ -294,7 +298,7 @@ pub fn update(
                     v,
                     n * 0.005,
                     hutspot::color::GRAY,
-                    translation + Vec3::from(object),
+                    translation + vec3_to_vector3d(Vec3::from(object)),
                     scale,
                 );
             }
@@ -306,10 +310,15 @@ pub fn update(
             Objects::MeshDualLoops => {
                 let (mesh, translation, scale) = get_mesh(&(*mesh_resmut.mesh).clone(), &HashMap::new());
                 mesh_resmut.properties.scale = scale;
-                mesh_resmut.properties.translation = vec3_to_vector3d(translation);
+                mesh_resmut.properties.translation = translation;
 
                 commands.spawn((
-                    get_pbrbundle(meshes.add(mesh), translation + Vec3::from(Objects::MeshDualLoops), scale, &standard_material),
+                    get_pbrbundle(
+                        meshes.add(mesh),
+                        vector3d_to_vec3(translation) + Vec3::from(object),
+                        scale as f32,
+                        &standard_material,
+                    ),
                     RenderedMesh,
                     MainMesh,
                 ));
@@ -351,7 +360,7 @@ pub fn update(
                                 mesh_resmut.mesh.midpoint(v),
                                 mesh_resmut.mesh.edge_normal(u) * 0.01,
                                 color,
-                                translation + Vec3::from(Objects::MeshDualLoops),
+                                translation + vec3_to_vector3d(Vec3::from(object)),
                                 scale,
                             );
                         }
@@ -367,7 +376,7 @@ pub fn update(
                                 mesh_resmut.mesh.midpoint(v),
                                 mesh_resmut.mesh.edge_normal(u) * 0.01 + offset,
                                 color,
-                                translation + Vec3::from(Objects::MeshDualLoops),
+                                translation + vec3_to_vector3d(Vec3::from(object)),
                                 scale,
                             );
                         }
@@ -393,7 +402,7 @@ pub fn update(
                                     v,
                                     n * 0.01,
                                     hutspot::color::GRAY,
-                                    translation + Vec3::from(object),
+                                    translation + vec3_to_vector3d(Vec3::from(object)),
                                     scale,
                                 );
                             } else {
@@ -403,7 +412,7 @@ pub fn update(
                                     v,
                                     n * 0.01,
                                     hutspot::color::GRAY,
-                                    translation + Vec3::from(object),
+                                    translation + vec3_to_vector3d(Vec3::from(object)),
                                     scale,
                                 );
                             }
@@ -420,7 +429,7 @@ pub fn update(
                                 mesh_resmut.mesh.midpoint(v),
                                 mesh_resmut.mesh.edge_normal(u) * 0.01,
                                 color,
-                                translation + Vec3::from(Objects::MeshDualLoops),
+                                translation + vec3_to_vector3d(Vec3::from(object)),
                                 scale,
                             );
                         }
@@ -433,7 +442,12 @@ pub fn update(
                     let (mesh, translation, scale) = get_mesh(&polycube.structure, &colormap);
 
                     commands.spawn((
-                        get_pbrbundle(meshes.add(mesh), translation + Vec3::from(object), scale, &standard_material),
+                        get_pbrbundle(
+                            meshes.add(mesh),
+                            vector3d_to_vec3(translation) + Vec3::from(object),
+                            scale as f32,
+                            &standard_material,
+                        ),
                         RenderedMesh,
                     ));
 
@@ -485,7 +499,7 @@ pub fn update(
                                     this_centroid,
                                     direction_vector,
                                     offset + normal * 0.01,
-                                    vec3_to_vector3d(translation + Vec3::from(object)),
+                                    translation + vec3_to_vector3d(Vec3::from(object)),
                                     scale,
                                 );
                                 let c = to_color(assigned_label, Perspective::Dual, Some(orientation));
@@ -502,7 +516,7 @@ pub fn update(
                             let v = polycube.structure.position(endpoints.1);
                             let f1 = polycube.structure.normal(polycube.structure.face(edge_id));
                             let f2 = polycube.structure.normal(polycube.structure.face(polycube.structure.twin(edge_id)));
-                            let line = DrawableLine::from_line(u, v, ((f1 + f2) / 2.) * 0.05, vec3_to_vector3d(translation + Vec3::from(object)), scale);
+                            let line = DrawableLine::from_line(u, v, ((f1 + f2) / 2.) * 0.05, translation + vec3_to_vector3d(Vec3::from(object)), scale);
                             if f1 == f2 {
                                 gizmos_cache.flat_edges.push((line.u, line.v, hutspot::color::GRAY));
                             } else {
@@ -618,7 +632,12 @@ pub fn update(
                     let (mesh, translation, scale) = get_mesh(&polycube.structure, &colormap);
 
                     commands.spawn((
-                        get_pbrbundle(meshes.add(mesh), translation + Vec3::from(object), scale, &standard_material),
+                        get_pbrbundle(
+                            meshes.add(mesh),
+                            vector3d_to_vec3(translation) + Vec3::from(object),
+                            scale as f32,
+                            &standard_material,
+                        ),
                         RenderedMesh,
                     ));
 
@@ -630,7 +649,7 @@ pub fn update(
                             let v = polycube.structure.position(endpoints.1);
                             let f1 = polycube.structure.normal(polycube.structure.face(edge_id));
                             let f2 = polycube.structure.normal(polycube.structure.face(polycube.structure.twin(edge_id)));
-                            let line = DrawableLine::from_line(u, v, ((f1 + f2) / 2.) * 0.05, vec3_to_vector3d(translation + Vec3::from(object)), scale);
+                            let line = DrawableLine::from_line(u, v, ((f1 + f2) / 2.) * 0.05, translation + vec3_to_vector3d(Vec3::from(object)), scale);
                             if f1 == f2 {
                                 gizmos_cache.flat_edges.push((line.u, line.v, hutspot::color::BLACK));
                             } else {
@@ -656,7 +675,12 @@ pub fn update(
                         let (mesh, translation, scale) = get_mesh(&lay.granulated_mesh, &layout_color_map);
 
                         commands.spawn((
-                            get_pbrbundle(meshes.add(mesh), translation + Vec3::from(object), scale, &standard_material),
+                            get_pbrbundle(
+                                meshes.add(mesh),
+                                vector3d_to_vec3(translation) + Vec3::from(object),
+                                scale as f32,
+                                &standard_material,
+                            ),
                             RenderedMesh,
                         ));
 
@@ -680,7 +704,7 @@ pub fn update(
                                         v,
                                         n * 0.01,
                                         hutspot::color::BLACK,
-                                        translation + Vec3::from(object),
+                                        translation + vec3_to_vector3d(Vec3::from(object)),
                                         scale,
                                     );
                                 } else {
@@ -690,7 +714,7 @@ pub fn update(
                                         v,
                                         n * 0.01,
                                         hutspot::color::BLACK,
-                                        translation + Vec3::from(object),
+                                        translation + vec3_to_vector3d(Vec3::from(object)),
                                         scale,
                                     );
                                 }
@@ -712,7 +736,12 @@ pub fn update(
 
                         let (mesh, translation, scale) = get_mesh(&lay.granulated_mesh, &layout_color_map);
                         commands.spawn((
-                            get_pbrbundle(meshes.add(mesh), translation + Vec3::from(object), scale, &standard_material),
+                            get_pbrbundle(
+                                meshes.add(mesh),
+                                vector3d_to_vec3(translation) + Vec3::from(object),
+                                scale as f32,
+                                &standard_material,
+                            ),
                             RenderedMesh,
                         ));
 
@@ -736,7 +765,7 @@ pub fn update(
                                         v,
                                         n * 0.01,
                                         hutspot::color::BLACK,
-                                        translation + Vec3::from(object),
+                                        translation + vec3_to_vector3d(Vec3::from(object)),
                                         scale,
                                     );
                                 } else {
@@ -746,7 +775,7 @@ pub fn update(
                                         v,
                                         n * 0.01,
                                         hutspot::color::BLACK,
-                                        translation + Vec3::from(object),
+                                        translation + vec3_to_vector3d(Vec3::from(object)),
                                         scale,
                                     );
                                 }
@@ -775,7 +804,12 @@ pub fn update(
                     let (mesh, translation, scale) = get_mesh(&mesh_resmut.mesh, &colormap);
 
                     commands.spawn((
-                        get_pbrbundle(meshes.add(mesh), translation + Vec3::from(object), scale as f32, &standard_material),
+                        get_pbrbundle(
+                            meshes.add(mesh),
+                            vector3d_to_vec3(translation) + Vec3::from(object),
+                            scale as f32,
+                            &standard_material,
+                        ),
                         RenderedMesh,
                     ));
 
@@ -793,7 +827,7 @@ pub fn update(
                                 v,
                                 n * 0.01,
                                 hutspot::color::BLACK,
-                                translation + Vec3::from(object),
+                                translation + vec3_to_vector3d(Vec3::from(object)),
                                 scale,
                             );
                         }
@@ -804,15 +838,9 @@ pub fn update(
 
         // Spawning covers such that the objects are view-blocked.
         commands.spawn((
-            PbrBundle {
-                mesh: meshes.add(Sphere::new(400.)),
-                transform: Transform {
-                    translation: Vec3::from(object),
-                    ..default()
-                },
-                material: background_material.clone(),
-                ..default()
-            },
+            Mesh3d(meshes.add(Sphere::new(400.))),
+            MeshMaterial3d(background_material.clone()),
+            Transform::from_translation(Vec3::from(object)),
             RenderedMesh,
         ));
     }

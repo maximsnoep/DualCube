@@ -3,7 +3,7 @@ use crate::{dual, to_color, ActionEvent, ActionEventStatus, CameraHandles, Confi
 use crate::{HexMeshStatus, PrincipalDirection};
 use bevy::prelude::*;
 use bevy_egui::egui::{emath::Numeric, text::LayoutJob, Align, Color32, FontId, Frame, Layout, Slider, TextFormat, TopBottomPanel, Ui, Window};
-use bevy_egui::egui::{RichText, Rounding};
+use bevy_egui::egui::{CornerRadius, RichText, Rounding};
 
 use enum_iterator::all;
 use tico::tico;
@@ -13,7 +13,7 @@ pub fn setup(mut ui: bevy_egui::EguiContexts) {
     let mut fonts = bevy_egui::egui::FontDefinitions::default();
     fonts.font_data.insert(
         "BerkeleyMonoTrial".to_owned(),
-        bevy_egui::egui::FontData::from_static(include_bytes!("../assets/BerkeleyMonoTrial-Regular.ttf")),
+        bevy_egui::egui::FontData::from_static(include_bytes!("../assets/BerkeleyMonoTrial-Regular.ttf")).into(),
     );
     fonts
         .families
@@ -31,12 +31,12 @@ pub fn setup(mut ui: bevy_egui::EguiContexts) {
     ui.ctx_mut().set_visuals(bevy_egui::egui::Visuals::dark());
 
     ui.ctx_mut().style_mut(|style| {
-        style.visuals.widgets.open.rounding = Rounding::same(0.);
-        style.visuals.menu_rounding = Rounding::same(0.);
-        style.visuals.window_rounding = Rounding::same(0.);
-        style.visuals.widgets.noninteractive.rounding = Rounding::same(0.);
-        style.visuals.widgets.hovered.rounding = Rounding::same(0.);
-        style.visuals.widgets.active.rounding = Rounding::same(0.);
+        style.visuals.widgets.open.corner_radius = CornerRadius::same(0);
+        style.visuals.menu_corner_radius = CornerRadius::same(0);
+        style.visuals.window_corner_radius = CornerRadius::same(0);
+        style.visuals.widgets.noninteractive.corner_radius = CornerRadius::same(0);
+        style.visuals.widgets.hovered.corner_radius = CornerRadius::same(0);
+        style.visuals.widgets.active.corner_radius = CornerRadius::same(0);
     });
 }
 
@@ -50,7 +50,7 @@ fn header(
 ) {
     ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
         Frame {
-            outer_margin: bevy_egui::egui::epaint::Margin::symmetric(15., 0.),
+            outer_margin: bevy_egui::egui::epaint::Margin::symmetric(15, 0),
             shadow: bevy_egui::egui::epaint::Shadow::NONE,
             ..default()
         }
@@ -439,7 +439,7 @@ pub fn update(
 
     bevy_egui::egui::CentralPanel::default()
         .frame(Frame {
-            outer_margin: bevy_egui::egui::epaint::Margin::same(10.),
+            outer_margin: bevy_egui::egui::epaint::Margin::same(10),
             stroke: bevy_egui::egui::epaint::Stroke {
                 width: 10.0,
                 color: Color32::from_rgb(27, 27, 27),
@@ -449,7 +449,7 @@ pub fn update(
         })
         .show(egui_ctx.ctx_mut(), |ui| {
             Frame {
-                outer_margin: bevy_egui::egui::epaint::Margin::same(1.),
+                outer_margin: bevy_egui::egui::epaint::Margin::same(1),
                 stroke: bevy_egui::egui::epaint::Stroke {
                     width: 1.0,
                     color: Color32::from_rgb(50, 50, 50),
@@ -466,7 +466,7 @@ pub fn update(
         let egui_handle = egui_ctx.add_image(image_handle.map.get(&CameraFor(conf.window_shows_object[i])).unwrap().clone());
         Window::new(format!("window {i}"))
             .frame(Frame {
-                outer_margin: bevy_egui::egui::epaint::Margin::same(2.),
+                outer_margin: bevy_egui::egui::epaint::Margin::same(2),
                 stroke: bevy_egui::egui::epaint::Stroke {
                     width: 1.0,
                     color: Color32::from_rgb(50, 50, 50),
@@ -481,7 +481,7 @@ pub fn update(
             .resizable([false, false])
             .show(egui_ctx.ctx_mut(), |ui| {
                 Frame {
-                    outer_margin: bevy_egui::egui::epaint::Margin::symmetric(15., 0.),
+                    outer_margin: bevy_egui::egui::epaint::Margin::symmetric(15, 0),
                     shadow: bevy_egui::egui::epaint::Shadow::NONE,
                     ..default()
                 }
@@ -611,6 +611,6 @@ pub fn sleek_button_unfocused(ui: &mut Ui, label: &str) -> bool {
 pub fn timer_animation(time: &Time) -> String {
     let frequency = 5.;
     let animation = ["◐", "◓", "◑", "◒"];
-    let index = (time.elapsed_seconds() * frequency) as usize % animation.len();
+    let index = (time.elapsed_secs() * frequency) as usize % animation.len();
     animation[index].to_string()
 }
