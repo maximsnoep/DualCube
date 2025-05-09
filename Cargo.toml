@@ -22,11 +22,11 @@ missing_errors_doc = "allow"
 
 [dependencies]
 # for local development:
-# douconel = { path = "../douconel"}
+douconel = { path = "../douconel"}
 # hutspot = { path = "../hutspot" }
 
 # else:
-douconel = { git = "https://github.com/maximsnoep/douconel" }
+# douconel = { git = "https://github.com/maximsnoep/douconel" }
 hutspot = { git = "https://github.com/maximsnoep/hutspot" }
 
 bevy = "0.16.0"
@@ -54,7 +54,11 @@ winit = "0.30.10"
 image = "0.25.6"
 priority-queue = "=2.3.1"
 enum-iterator = "2.1.0"
-ahash = "0.8.11"
+ahash = "0.8.12"
 ryu = "1.0.19"
 nalgebra = "0.33.2"
+sprs = "0.11.3"
+sprs-ldl = "0.10.0"
+faer = "0.22.6"
+faer_gmres = "0.3.1"
 

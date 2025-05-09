@@ -3,6 +3,7 @@ use crate::{
     graph::Graaf,
     layout::Layout,
     polycube::{Polycube, PolycubeFaceID},
+    quad::Quad,
     to_principal_direction, EdgeID, EmbeddedMesh, FaceID, PrincipalDirection,
 };
 use hutspot::geom::Vector3D;
@@ -87,6 +88,7 @@ pub struct Solution {
     pub dual: Result<Dual, PropertyViolationError>,
     pub polycube: Option<Polycube>,
     pub layout: Result<Layout, PropertyViolationError>,
+    pub quad: Option<Quad>,
 
     pub alignment_per_triangle: SecondaryMap<FaceID, f64>,
     pub alignment: Option<f64>,
@@ -105,6 +107,7 @@ impl Solution {
             dual: Err(PropertyViolationError::default()),
             polycube: None,
             layout: Err(PropertyViolationError::default()),
+            quad: None,
             alignment_per_triangle: SecondaryMap::new(),
             alignment: None,
             orthogonality_per_patch: SecondaryMap::new(),
@@ -466,6 +469,10 @@ impl Solution {
             return Err(e.clone());
         }
 
+        self.resize_polycube(unit);
+
+        self.quad = Some(Quad::from_layout(self.layout.as_ref().unwrap(), self.polycube.as_ref().unwrap()));
+
         self.compute_quality();
 
         Ok(())
@@ -474,10 +481,10 @@ impl Solution {
     pub fn resize_polycube(&mut self, unit: bool) {
         if let (Ok(dual), Some(polycube), Ok(layout)) = (&self.dual, &mut self.polycube, &mut self.layout) {
             if unit {
-                polycube.resize(dual, None)
+                polycube.resize(dual, None);
             } else {
-                polycube.resize(dual, Some(layout))
-            };
+                polycube.resize(dual, Some(layout));
+            }
         }
     }
 

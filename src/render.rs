@@ -32,6 +32,7 @@ pub enum Objects {
     MeshPolycubeLayout,
     MeshAlignmentScore,
     Flag,
+    PolycubeTriangle,
 }
 
 impl From<Objects> for String {
@@ -43,6 +44,7 @@ impl From<Objects> for String {
             Objects::MeshPolycubeLayout => "polycube segmentation",
             Objects::MeshAlignmentScore => "alignment (score)",
             Objects::Flag => "flag",
+            Objects::PolycubeTriangle => "polycube (triangles)",
         }
         .to_owned()
     }
@@ -57,6 +59,7 @@ impl From<Objects> for Vec3 {
             Objects::MeshPolycubeLayout => Self::new(1_000., 1_000., 1_000.),
             Objects::MeshAlignmentScore => Self::new(0., 1_000., 0.),
             Objects::Flag => Self::new(0., 0., 1_000.),
+            Objects::PolycubeTriangle => Self::new(0., 1_000., 1_000.),
         }
     }
 }
@@ -302,6 +305,29 @@ pub fn update(
                     scale,
                 );
             }
+        }
+    }
+
+    for object in [Objects::PolycubeTriangle] {
+        if let Some(quad) = solution.current_solution.quad.as_ref() {
+            let (mesh, translation, scale) = get_mesh(&quad.triangle_mesh_polycube, &HashMap::new());
+            for edge_id in quad.triangle_mesh_polycube.edge_ids() {
+                let (u_id, v_id) = quad.triangle_mesh_polycube.endpoints(edge_id);
+                let u = quad.triangle_mesh_polycube.position(u_id);
+                let v = quad.triangle_mesh_polycube.position(v_id);
+                let n = quad.triangle_mesh_polycube.edge_normal(edge_id);
+                add_line2(
+                    &mut gizmos_cache.wireframe_granulated,
+                    u,
+                    v,
+                    n * 0.005,
+                    hutspot::color::GRAY,
+                    translation + vec3_to_vector3d(Vec3::from(object)),
+                    scale,
+                );
+            }
+        } else {
+            warn!("No quad mesh found for {:?}", object);
         }
     }
 
@@ -832,6 +858,21 @@ pub fn update(
                             );
                         }
                     }
+                }
+            }
+            Objects::PolycubeTriangle => {
+                if let Some(quad) = &solution.current_solution.quad {
+                    let (mesh, translation, scale) = get_mesh(&quad.triangle_mesh_polycube, &HashMap::new());
+
+                    commands.spawn((
+                        get_pbrbundle(
+                            meshes.add(mesh),
+                            vector3d_to_vec3(translation) + Vec3::from(object),
+                            scale as f32,
+                            &standard_material,
+                        ),
+                        RenderedMesh,
+                    ));
                 }
             }
         }

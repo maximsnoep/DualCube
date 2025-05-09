@@ -3,6 +3,7 @@ mod graph;
 mod layout;
 mod nlr;
 mod polycube;
+pub mod quad;
 mod render;
 mod solutions;
 mod ui;
@@ -574,13 +575,6 @@ pub fn handle_events(
             ActionEvent::LoadFile(path) => {
                 match path.extension().unwrap().to_str() {
                     Some("obj" | "stl") => {
-                        let current_configuration = (
-                            configuration.window_has_position,
-                            configuration.window_has_size,
-                            configuration.window_shows_object,
-                            configuration.clear_color,
-                        );
-
                         *mesh_resmut = InputResource::default();
                         *solution = SolutionResource::default();
 
