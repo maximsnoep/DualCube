@@ -289,18 +289,11 @@ impl Quad {
                 triangle_mesh_polycube.verts[v].set_position(position);
             }
 
-            let too_many_faces = all_verts.iter().flat_map(|&v| layout.granulated_mesh.star(v)).collect::<HashSet<_>>();
-            let all_faces = too_many_faces
-                .iter()
-                .filter(|&&f| layout.granulated_mesh.corners(f).iter().all(|&v| all_verts.contains(&v)))
-                .copied()
-                .collect_vec();
-
-            let grid_m = 10;
+            let grid_m = 20;
             let grid_width = polycube.length(edge1);
             assert!(polycube.length(edge3) == grid_width);
 
-            let grid_n = 10;
+            let grid_n = 20;
             let grid_height = polycube.length(edge2);
             assert!(polycube.length(edge4) == grid_height);
 
@@ -489,6 +482,17 @@ impl Quad {
                 // Get the nearest triangle in the triangle mesh (polycube map)
                 let point = quad_mesh.position(vert_id);
                 let nearest_triangle = triangle_lookup.nearest(&[point.x, point.y, point.z]).1;
+
+                // check distance from point to triangle
+                let distance = hutspot::geom::distance_to_triangle(
+                    point,
+                    (
+                        triangle_mesh_polycube.position(triangle_mesh_polycube.corners(nearest_triangle)[0]),
+                        triangle_mesh_polycube.position(triangle_mesh_polycube.corners(nearest_triangle)[1]),
+                        triangle_mesh_polycube.position(triangle_mesh_polycube.corners(nearest_triangle)[2]),
+                    ),
+                );
+
                 // Calculate the barycentric coordinates of the point in the triangle
                 let (u, v, w) = hutspot::geom::calculate_barycentric_coordinates(
                     point,

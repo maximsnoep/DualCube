@@ -3459,7 +3459,7 @@ dependencies = [
 [[package]]
 name = "hutspot"
 version = "0.0.1"
-source = "git+https://github.com/maximsnoep/hutspot#1d699e40f5c916eaa885ee60dc0ec9898552efbe"
+source = "git+https://github.com/maximsnoep/hutspot#5c905c924dc104172017d1dd4ce908b038b53a51"
 dependencies = [
  "approx 0.5.1",
  "glam",
@@ -3782,9 +3782,9 @@ dependencies = [
 
 [[package]]
 name = "libm"
-version = "0.2.13"
+version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c9627da5196e5d8ed0b0495e61e518847578da83483c37288316d9b2e03a7f72"
+checksum = "a25169bd5913a4b437588a7e3d127cd6e90127b60e0ffbd834a38f1599e016b8"
 
 [[package]]
 name = "libredox"
@@ -5543,9 +5543,9 @@ dependencies = [
 
 [[package]]
 name = "ruzstd"
-version = "0.8.0"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c581601827da5c717bfae77d7b187e54293d23d8fb6b700b4b5e9b5828a13cc3"
+checksum = "3640bec8aad418d7d03c72ea2de10d5c646a598f9883c7babc160d91e3c1b26c"
 dependencies = [
  "twox-hash",
 ]
