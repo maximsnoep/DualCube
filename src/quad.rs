@@ -1,7 +1,7 @@
 use crate::dual::{Dual, LoopRegionID, Orientation};
 use crate::layout::Layout;
 use crate::polycube::Polycube;
-use crate::EmbeddedMesh;
+use crate::{Bhv, EmbeddedMesh, TriangleBvhShape};
 use bimap::BiHashMap;
 use douconel::douconel::{Douconel, Empty};
 use douconel::douconel_embedded::{EmbeddedVertex, HasPosition};
@@ -26,6 +26,8 @@ type QuadMesh = Douconel<QuadVertID, EmbeddedVertex, QuadEdgeID, Empty, QuadFace
 #[derive(Clone, Debug)]
 pub struct Quad {
     pub triangle_mesh_polycube: EmbeddedMesh,
+    pub quad_mesh_polycube: EmbeddedMesh,
+    pub quad_mesh: EmbeddedMesh,
     pub structure: QuadMesh,
 }
 
@@ -47,12 +49,36 @@ impl Quad {
     pub fn from_layout(layout: &Layout, polycube: &Polycube) -> Self {
         let mut triangle_mesh_polycube = layout.granulated_mesh.clone();
 
+        let mut edges_done: HashMap<crate::polycube::PolycubeEdgeID, Vec<usize>> = HashMap::new();
+        let mut corners_done: HashMap<crate::polycube::PolycubeVertID, usize> = HashMap::new();
+
+        let mut faces = vec![];
+        let mut vertex_positions = vec![];
+
         // For every patch in the layout (corresponding to a face in the polycube), we map this patch to a unit square
         // 1. Map the boundary of the patch to the boundary of a unit square via arc-length parameterization
         // 2. Map the interior of the patch to the interior of the unit square via mean-value coordinates (MVC)
         let polycube = &polycube.structure;
-        let patch_ids = polycube.face_ids();
-        for &patch_id in &patch_ids {
+
+        let mut queue = vec![];
+        queue.push(polycube.face_ids()[0]);
+
+        let mut patches_done = HashSet::new();
+
+        while let Some(patch_id) = queue.pop() {
+            if patches_done.contains(&patch_id) {
+                continue;
+            }
+            patches_done.insert(patch_id);
+            let neighboring_patches = polycube.fneighbors(patch_id);
+            for &neighbor in &neighboring_patches {
+                if !patches_done.contains(&neighbor) {
+                    queue.push(neighbor);
+                }
+            }
+
+            println!("Processing patch {:?}", patch_id);
+
             // A map for each vertex in the patch to its corresponding 2D coordinate in the unit square
             let mut map_to_2d = HashMap::new();
 
@@ -61,38 +87,22 @@ impl Quad {
             // Edge1 is mapped to unit edge (0,1) -> (1,1)
             let edge1 = patch_edges[0];
             let boundary1 = layout.edge_to_path.get(&edge1).unwrap();
-            let parameterization1 = Self::arc_length_parameterization(&boundary1.iter().map(|&v| layout.granulated_mesh.position(v)).collect_vec());
-            for (i, &v) in boundary1.iter().enumerate() {
-                let mapped_pos = Vector2D::new(parameterization1[i], 1.0);
-                map_to_2d.insert(v, mapped_pos);
-            }
+            let corner1 = polycube.endpoints(edge1).0;
 
             // Edge2 is mapped to unit edge (1,1) -> (1,0)
             let edge2 = patch_edges[1];
             let boundary2 = layout.edge_to_path.get(&edge2).unwrap();
-            let parameterization2 = Self::arc_length_parameterization(&boundary2.iter().map(|&v| layout.granulated_mesh.position(v)).collect_vec());
-            for (i, &v) in boundary2.iter().enumerate() {
-                let mapped_pos = Vector2D::new(1.0, 1.0 - parameterization2[i]);
-                map_to_2d.insert(v, mapped_pos);
-            }
+            let corner2 = polycube.endpoints(edge2).0;
 
             // Edge3 is mapped to unit edge (1,0) -> (0,0)
             let edge3 = patch_edges[2];
             let boundary3 = layout.edge_to_path.get(&edge3).unwrap();
-            let parameterization3 = Self::arc_length_parameterization(&boundary3.iter().map(|&v| layout.granulated_mesh.position(v)).collect_vec());
-            for (i, &v) in boundary3.iter().enumerate() {
-                let mapped_pos = Vector2D::new(1.0 - parameterization3[i], 0.0);
-                map_to_2d.insert(v, mapped_pos);
-            }
+            let corner3 = polycube.endpoints(edge3).0;
 
             // Edge4 is mapped to unit edge (0,0) -> (0,1)
             let edge4 = patch_edges[3];
             let boundary4 = layout.edge_to_path.get(&edge4).unwrap();
-            let parameterization4 = Self::arc_length_parameterization(&boundary4.iter().map(|&v| layout.granulated_mesh.position(v)).collect_vec());
-            for (i, &v) in boundary4.iter().enumerate() {
-                let mapped_pos = Vector2D::new(0.0, parameterization4[i]);
-                map_to_2d.insert(v, mapped_pos);
-            }
+            let corner4 = polycube.endpoints(edge4).0;
 
             // d3p1 = (x1, y1, z1)
             // d3p2 = (x2, y2, z2)
@@ -249,11 +259,11 @@ impl Quad {
             let a = SparseColMat::<usize, f64>::try_new_from_triplets(n, n, &faer_triplets).unwrap();
 
             if !interior_verts.is_empty() {
-                let (err_u, iter_u) = gmres(a.as_ref(), b_u.as_ref(), x_u.as_mut(), 100, 1e-8, None).unwrap();
-                let (err_v, iter_v) = gmres(a.as_ref(), b_v.as_ref(), x_v.as_mut(), 100, 1e-8, None).unwrap();
+                let (err_u, iter_u) = gmres(a.as_ref(), b_u.as_ref(), x_u.as_mut(), 1000, 1e-8, None).unwrap();
+                let (err_v, iter_v) = gmres(a.as_ref(), b_v.as_ref(), x_v.as_mut(), 1000, 1e-8, None).unwrap();
             }
 
-            for v in all_verts {
+            for &v in &all_verts {
                 let is_boundary = map_to_2d.contains_key(&v);
                 let position = if is_boundary {
                     let mapped_pos = map_to_2d.get(&v).unwrap().to_owned();
@@ -278,11 +288,242 @@ impl Quad {
 
                 triangle_mesh_polycube.verts[v].set_position(position);
             }
+
+            let too_many_faces = all_verts.iter().flat_map(|&v| layout.granulated_mesh.star(v)).collect::<HashSet<_>>();
+            let all_faces = too_many_faces
+                .iter()
+                .filter(|&&f| layout.granulated_mesh.corners(f).iter().all(|&v| all_verts.contains(&v)))
+                .copied()
+                .collect_vec();
+
+            let grid_m = 10;
+            let grid_width = polycube.length(edge1);
+            assert!(polycube.length(edge3) == grid_width);
+
+            let grid_n = 10;
+            let grid_height = polycube.length(edge2);
+            assert!(polycube.length(edge4) == grid_height);
+
+            let to_pos = |i: usize, j: usize| {
+                let u = i as f64 / (grid_m - 1) as f64;
+                let v = j as f64 / (grid_n - 1) as f64;
+                let e1_vector = d3p2 - d3p1;
+                let e2_vector = d3p3 - d3p2;
+                let pos = d3p1 + e1_vector * v + e2_vector * u;
+                pos
+            };
+
+            let mut vert_map = vec![vec![None; grid_n]; grid_m];
+            // Fill the vert_map with Some(v) for all boundary vertices that were already created
+
+            // First check if the 4 corners are already done
+            if corners_done.contains_key(&corner1) {
+                let corner1_pos = corners_done.get(&corner1).unwrap().to_owned();
+                vert_map[0][0] = Some(corner1_pos);
+            }
+            if corners_done.contains_key(&corner2) {
+                let corner2_pos = corners_done.get(&corner2).unwrap().to_owned();
+                vert_map[0][grid_n - 1] = Some(corner2_pos);
+            }
+            if corners_done.contains_key(&corner3) {
+                let corner3_pos = corners_done.get(&corner3).unwrap().to_owned();
+                vert_map[grid_m - 1][grid_n - 1] = Some(corner3_pos);
+            }
+            if corners_done.contains_key(&corner4) {
+                let corner4_pos = corners_done.get(&corner4).unwrap().to_owned();
+                vert_map[grid_m - 1][0] = Some(corner4_pos);
+            }
+
+            // Edge1 which is i=0 and j=0 to j=grid_n-1
+            if edges_done.contains_key(&edge1) {
+                let edge_verts = edges_done.get(&edge1).unwrap().to_owned();
+                assert!(edge_verts.len() == grid_n);
+                for j in 0..grid_n {
+                    vert_map[0][j] = Some(edge_verts[j]);
+                }
+            }
+
+            // Edge2 which is j=grid_n-1 and i=0 to i=grid_m-1
+            if edges_done.contains_key(&edge2) {
+                let edge_verts = edges_done.get(&edge2).unwrap().to_owned();
+                assert!(edge_verts.len() == grid_m);
+                for i in 0..grid_m {
+                    vert_map[i][grid_n - 1] = Some(edge_verts[i]);
+                }
+            }
+
+            // Edge3 which is i=grid_m-1 and j=grid_n-1 to j=0
+            if edges_done.contains_key(&edge3) {
+                let edge_verts = edges_done.get(&edge3).unwrap().to_owned();
+                assert!(edge_verts.len() == grid_n);
+                for j in (0..grid_n).rev() {
+                    vert_map[grid_m - 1][grid_n - 1 - j] = Some(edge_verts[j]);
+                }
+            }
+
+            // Edge4 which is j=0 and i=grid_m-1 to i=0
+            if edges_done.contains_key(&edge4) {
+                let edge_verts = edges_done.get(&edge4).unwrap().to_owned();
+                assert!(edge_verts.len() == grid_m);
+                for i in (0..grid_m).rev() {
+                    vert_map[grid_m - 1 - i][0] = Some(edge_verts[i]);
+                }
+            }
+
+            for i in 0..grid_m - 1 {
+                for j in 0..grid_n - 1 {
+                    // Define a quadrilateral face with vertices i,j, i,j+1, i+1,j+1, i+1,j
+                    // First check if a vertex already exists at this position, if not, create a new vertex (the counter is increased)
+                    if vert_map[i][j].is_none() {
+                        vert_map[i][j] = Some(vertex_positions.len());
+                        vertex_positions.push(to_pos(i, j));
+                    }
+
+                    if vert_map[i][j + 1].is_none() {
+                        vert_map[i][j + 1] = Some(vertex_positions.len());
+                        vertex_positions.push(to_pos(i, j + 1));
+                    }
+
+                    if vert_map[i + 1][j + 1].is_none() {
+                        vert_map[i + 1][j + 1] = Some(vertex_positions.len());
+                        vertex_positions.push(to_pos(i + 1, j + 1));
+                    }
+
+                    if vert_map[i + 1][j].is_none() {
+                        vert_map[i + 1][j] = Some(vertex_positions.len());
+                        vertex_positions.push(to_pos(i + 1, j));
+                    }
+
+                    // Now we have 4 vertices, we can create a face
+                    let (v0, v1, v2, v3) = (
+                        vert_map[i][j].unwrap(),
+                        vert_map[i][j + 1].unwrap(),
+                        vert_map[i + 1][j + 1].unwrap(),
+                        vert_map[i + 1][j].unwrap(),
+                    );
+
+                    faces.push(vec![v0, v1, v2, v3]);
+                }
+            }
+
+            // Add the boundary vertices to the edges_done map
+            corners_done.insert(corner1, vert_map[0][0].unwrap());
+            corners_done.insert(corner2, vert_map[0][grid_n - 1].unwrap());
+            corners_done.insert(corner3, vert_map[grid_m - 1][grid_n - 1].unwrap());
+            corners_done.insert(corner4, vert_map[grid_m - 1][0].unwrap());
+
+            // Edge1 which is i=0 and j=0 to j=grid_n-1
+            for i in [0] {
+                let mut vs = vec![];
+                // REVERSE
+                for j in (0..grid_n).rev() {
+                    vs.push(vert_map[i][j].unwrap());
+                }
+                // ADD FOR TWIN
+                edges_done.insert(polycube.twin(edge1), vs);
+            }
+            // Edge2 which is j=grid_n-1 and i=0 to i=grid_m-1
+            for j in [grid_n - 1] {
+                let mut vs = vec![];
+
+                // REVERSE
+                for i in (0..grid_m).rev() {
+                    vs.push(vert_map[i][j].unwrap());
+                }
+                // ADD FOR TWIN
+                edges_done.insert(polycube.twin(edge2), vs);
+            }
+            // Edge3 which is i=grid_m-1 and j=grid_n-1 to j=0
+            for i in [grid_m - 1] {
+                let mut vs = vec![];
+
+                // REVERSE
+                for j in (0..grid_n) {
+                    vs.push(vert_map[i][j].unwrap());
+                }
+                // ADD FOR TWIN
+                edges_done.insert(polycube.twin(edge3), vs);
+            }
+            // Edge4 which is j=0 and i=grid_m-1 to i=0
+            for j in [0] {
+                let mut vs = vec![];
+
+                for i in (0..grid_m) {
+                    vs.push(vert_map[i][j].unwrap());
+                }
+                // ADD FOR TWIN
+                edges_done.insert(polycube.twin(edge4), vs);
+            }
         }
 
-        Quad {
-            triangle_mesh_polycube,
-            structure: QuadMesh::default(),
+        assert!(patches_done.len() == polycube.face_ids().len(), "Not all patches were done!");
+
+        // Create the polycube quad mesh:
+        let res = EmbeddedMesh::from_embedded_faces(&faces, &vertex_positions);
+
+        if let Ok((quad_mesh_polycube, vertex_map, face_map)) = res {
+            let mut triangle_lookup = Bhv::default();
+
+            let mut triangles = triangle_mesh_polycube
+                .face_ids()
+                .iter()
+                .enumerate()
+                .map(|(i, &face_id)| TriangleBvhShape {
+                    corners: [
+                        triangle_mesh_polycube.position(triangle_mesh_polycube.corners(face_id)[0]),
+                        triangle_mesh_polycube.position(triangle_mesh_polycube.corners(face_id)[1]),
+                        triangle_mesh_polycube.position(triangle_mesh_polycube.corners(face_id)[2]),
+                    ],
+                    node_index: i,
+                    real_index: face_id,
+                })
+                .collect_vec();
+
+            triangle_lookup.overwrite(&mut triangles);
+
+            // Create the quad mesh
+            // First, create copy of quad_mesh_polycube
+            let mut quad_mesh = quad_mesh_polycube.clone();
+            // Now, we need to set the positions of the vertices in the quad mesh based on barycentric coordinates of the mapped triangles
+            for vert_id in quad_mesh.vert_ids() {
+                // Get the nearest triangle in the triangle mesh (polycube map)
+                let point = quad_mesh.position(vert_id);
+                let nearest_triangle = triangle_lookup.nearest(&[point.x, point.y, point.z]).1;
+                // Calculate the barycentric coordinates of the point in the triangle
+                let (u, v, w) = hutspot::geom::calculate_barycentric_coordinates(
+                    point,
+                    (
+                        triangle_mesh_polycube.position(triangle_mesh_polycube.corners(nearest_triangle)[0]),
+                        triangle_mesh_polycube.position(triangle_mesh_polycube.corners(nearest_triangle)[1]),
+                        triangle_mesh_polycube.position(triangle_mesh_polycube.corners(nearest_triangle)[2]),
+                    ),
+                );
+
+                // Do the inverse of the barycentric coordinates, with the original triangle in granulated mesh
+                let t = (
+                    layout.granulated_mesh.position(layout.granulated_mesh.corners(nearest_triangle)[0]),
+                    layout.granulated_mesh.position(layout.granulated_mesh.corners(nearest_triangle)[1]),
+                    layout.granulated_mesh.position(layout.granulated_mesh.corners(nearest_triangle)[2]),
+                );
+
+                assert!(triangle_mesh_polycube.corners(nearest_triangle)[0] == layout.granulated_mesh.corners(nearest_triangle)[0]);
+                assert!(triangle_mesh_polycube.corners(nearest_triangle)[1] == layout.granulated_mesh.corners(nearest_triangle)[1]);
+                assert!(triangle_mesh_polycube.corners(nearest_triangle)[2] == layout.granulated_mesh.corners(nearest_triangle)[2]);
+
+                let new_position = hutspot::geom::inverse_barycentric_coordinates(u, v, w, t);
+
+                quad_mesh.verts.get_mut(vert_id).unwrap().set_position(new_position);
+            }
+
+            Quad {
+                triangle_mesh_polycube,
+                quad_mesh_polycube,
+                quad_mesh,
+                structure: QuadMesh::default(),
+            }
+        } else {
+            println!("{:?}", res);
+            panic!("Failed to create quad mesh from faces and vertex positions");
         }
     }
 }

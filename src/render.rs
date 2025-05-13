@@ -257,6 +257,8 @@ pub fn update(
         return;
     }
 
+    println!("Gizmos bla0");
+
     let standard_material = materials.add(StandardMaterial { unlit: true, ..default() });
     let background_material = materials.add(StandardMaterial {
         base_color: bevy::prelude::Color::srgb(
@@ -267,6 +269,8 @@ pub fn update(
         unlit: true,
         ..default()
     });
+
+    println!("Gizmos bla1");
 
     for object in [Objects::MeshAlignmentScore, Objects::MeshDualLoops, Objects::MeshPolycubeLayout] {
         let (_, translation, scale) = get_mesh(&(*mesh_resmut.mesh).clone(), &HashMap::new());
@@ -286,6 +290,8 @@ pub fn update(
             );
         }
     }
+
+    println!("Gizmos bla2");
 
     for object in [Objects::MeshAlignmentScore, Objects::MeshDualLoops, Objects::MeshPolycubeLayout] {
         if let Ok(layout) = solution.current_solution.layout.as_ref() {
@@ -308,14 +314,16 @@ pub fn update(
         }
     }
 
+    println!("Gizmos bla3");
+
     for object in [Objects::PolycubeTriangle] {
         if let Some(quad) = solution.current_solution.quad.as_ref() {
-            let (mesh, translation, scale) = get_mesh(&quad.triangle_mesh_polycube, &HashMap::new());
-            for edge_id in quad.triangle_mesh_polycube.edge_ids() {
-                let (u_id, v_id) = quad.triangle_mesh_polycube.endpoints(edge_id);
-                let u = quad.triangle_mesh_polycube.position(u_id);
-                let v = quad.triangle_mesh_polycube.position(v_id);
-                let n = quad.triangle_mesh_polycube.edge_normal(edge_id);
+            let (mesh, translation, scale) = get_mesh(&quad.quad_mesh, &HashMap::new());
+            for edge_id in quad.quad_mesh.edge_ids() {
+                let (u_id, v_id) = quad.quad_mesh.endpoints(edge_id);
+                let u = quad.quad_mesh.position(u_id);
+                let v = quad.quad_mesh.position(v_id);
+                let n = quad.quad_mesh.edge_normal(edge_id);
                 add_line2(
                     &mut gizmos_cache.wireframe_granulated,
                     u,
@@ -330,6 +338,8 @@ pub fn update(
             warn!("No quad mesh found for {:?}", object);
         }
     }
+
+    println!("Gizmos cache filled.");
 
     for object in all::<Objects>() {
         match object {
@@ -862,7 +872,7 @@ pub fn update(
             }
             Objects::PolycubeTriangle => {
                 if let Some(quad) = &solution.current_solution.quad {
-                    let (mesh, translation, scale) = get_mesh(&quad.triangle_mesh_polycube, &HashMap::new());
+                    let (mesh, translation, scale) = get_mesh(&quad.quad_mesh, &HashMap::new());
 
                     commands.spawn((
                         get_pbrbundle(

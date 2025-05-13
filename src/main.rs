@@ -1013,7 +1013,7 @@ pub fn handle_events(
                     ActionEvent::Recompute,
                     AsyncComputeTaskPool::get().spawn(async move {
                         {
-                            cloned_solution.resize_polycube(unit);
+                            cloned_solution.reconstruct_solution(unit);
                             Some(cloned_solution)
                         }
                     }),
@@ -1150,35 +1150,35 @@ fn raycast(
     // If Shift + INSERT is pressed, we add the candidate loop to the current solution
     // If DELETE is pressed, we remove the loop from the current solution
 
-    if keyboard.pressed(KeyCode::Space) {
-        // Find closest loop.
-        let option_a = [edgepair[0], edgepair[1]];
-        let option_b = [edgepair[1], edgepair[0]];
+    // if keyboard.pressed(KeyCode::Space) {
+    //     // Find closest loop.
+    //     let option_a = [edgepair[0], edgepair[1]];
+    //     let option_b = [edgepair[1], edgepair[0]];
 
-        if let Some(loop_id) = solution.current_solution.loops.keys().find(|&loop_id| {
-            let edges = solution.current_solution.get_pairs_of_loop(loop_id);
-            edges.contains(&option_a) || edges.contains(&option_b)
-        }) {
-            if mouse.just_pressed(MouseButton::Left) || mouse.just_released(MouseButton::Left) {
-                mouse.clear_just_pressed(MouseButton::Left);
-                mouse.clear_just_released(MouseButton::Left);
+    //     if let Some(loop_id) = solution.current_solution.loops.keys().find(|&loop_id| {
+    //         let edges = solution.current_solution.get_pairs_of_loop(loop_id);
+    //         edges.contains(&option_a) || edges.contains(&option_b)
+    //     }) {
+    //         if mouse.just_pressed(MouseButton::Left) || mouse.just_released(MouseButton::Left) {
+    //             mouse.clear_just_pressed(MouseButton::Left);
+    //             mouse.clear_just_released(MouseButton::Left);
 
-                let mut new_sol = solution.current_solution.clone();
-                new_sol.del_loop(loop_id);
-                if new_sol.reconstruct_solution(configuration.unit_cubes).is_ok() {
-                    solution.current_solution = new_sol;
-                    solution.next[0].clear();
-                    solution.next[1].clear();
-                    solution.next[2].clear();
-                    cache.cache[0].clear();
-                    cache.cache[1].clear();
-                    cache.cache[2].clear();
-                }
-                return;
-            }
-        }
-        return;
-    }
+    //             let mut new_sol = solution.current_solution.clone();
+    //             new_sol.del_loop(loop_id);
+    //             if new_sol.reconstruct_solution(configuration.unit_cubes).is_ok() {
+    //                 solution.current_solution = new_sol;
+    //                 solution.next[0].clear();
+    //                 solution.next[1].clear();
+    //                 solution.next[2].clear();
+    //                 cache.cache[0].clear();
+    //                 cache.cache[1].clear();
+    //                 cache.cache[2].clear();
+    //             }
+    //             return;
+    //         }
+    //     }
+    //     return;
+    // }
 
     // If shift button is pressed, we want to show the closest solution to the current face vertex combination.
     if keyboard.pressed(KeyCode::ShiftLeft) {
@@ -1221,9 +1221,9 @@ fn raycast(
                 }
 
                 // If the right mouse button is pressed, we want to save the candidate solution as the current solution.
-                if mouse.just_pressed(MouseButton::Left) || mouse.just_released(MouseButton::Left) {
-                    mouse.clear_just_pressed(MouseButton::Left);
-                    mouse.clear_just_released(MouseButton::Left);
+                if keyboard.just_pressed(KeyCode::Insert) || keyboard.just_released(KeyCode::Insert) {
+                    keyboard.clear_just_pressed(KeyCode::Insert);
+                    keyboard.clear_just_released(KeyCode::Insert);
 
                     solution.current_solution = some_solution.clone();
                     solution.next[0].clear();
@@ -1237,10 +1237,6 @@ fn raycast(
             }
         }
 
-        return;
-    }
-
-    if !mouse.pressed(MouseButton::Left) {
         return;
     }
 
