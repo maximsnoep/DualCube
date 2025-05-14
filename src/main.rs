@@ -14,6 +14,7 @@ use bevy::picking::pointer::PointerInteraction;
 use bevy::platform::collections::HashSet;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{block_on, AsyncComputeTaskPool, Task};
+use bevy::time::common_conditions::on_timer;
 use bevy::window::WindowMode;
 use bevy::winit::WinitWindows;
 use bevy::{gizmos, prelude::*};
@@ -34,7 +35,7 @@ use kdtree::KdTree;
 use nalgebra::Const;
 use ordered_float::OrderedFloat;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use render::{add_line, add_line2, CameraFor, GizmosCache, MeshProperties, Objects};
+use render::{add_line2, CameraFor, GizmosCache, MeshProperties, Objects, RenderObjectStore};
 use serde::{Deserialize, Serialize};
 use slotmap::SecondaryMap;
 use smooth_bevy_cameras::controllers::orbit::OrbitCameraPlugin;
@@ -48,7 +49,7 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 // use winit::platform::windows::WindowExtWindows;
 use bvh::bvh::Bvh;
 use winit::window::Icon;
@@ -170,7 +171,7 @@ pub struct Configuration {
     pub interactive: bool,
 
     pub ui_is_hovered: [bool; 32],
-    pub window_shows_object: [Objects; 4],
+    pub window_shows_object: [Objects; 2],
     pub window_has_size: [f32; 4],
     pub window_has_position: [(f32, f32); 4],
 
@@ -216,12 +217,7 @@ impl Default for Configuration {
             automatic: false,
             interactive: false,
             ui_is_hovered: [false; 32],
-            window_shows_object: [
-                Objects::MeshPolycubeLayout,
-                Objects::PolycubePrimal,
-                Objects::MeshAlignmentScore,
-                Objects::PolycubeDual,
-            ],
+            window_shows_object: [Objects::PolycubeMap, Objects::QuadMesh],
             window_has_size: [256., 256., 256., 0.],
             window_has_position: [(0., 0.); 4],
             hex_mesh_status: HexMeshStatus::None,
@@ -278,6 +274,9 @@ pub struct SaveStateObjectBackwardscompatibility {
 
 #[derive(Component)]
 pub struct RenderedMesh;
+
+#[derive(Component)]
+pub struct Rendered;
 
 #[derive(Component)]
 pub struct MainMesh;
@@ -431,6 +430,7 @@ fn main() {
         .init_resource::<GizmosCache>()
         .init_resource::<SolutionResource>()
         .init_resource::<Configuration>()
+        .init_resource::<RenderObjectStore>()
         .init_resource::<Tasks>()
         .init_resource::<HexTasks>()
         .init_resource::<CameraHandles>()
@@ -466,6 +466,7 @@ fn main() {
         .add_systems(Update, ui::update)
         .add_systems(Update, render::update)
         .add_systems(Update, render::gizmos)
+        .add_systems(FixedUpdate, render::respawn_renders.run_if(on_timer(Duration::from_millis(100))))
         .add_systems(Update, handle_events)
         .add_systems(Update, handle_solution_tasks)
         .add_systems(Update, handle_hexmesh_tasks)

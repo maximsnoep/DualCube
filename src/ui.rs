@@ -1,4 +1,4 @@
-use crate::render::{CameraFor, Objects};
+use crate::render::{CameraFor, Objects, RenderObjectStore};
 use crate::{dual, to_color, ActionEvent, ActionEventStatus, CameraHandles, Configuration, InputResource, Perspective, SolutionResource};
 use crate::{HexMeshStatus, PrincipalDirection};
 use bevy::prelude::*;
@@ -46,6 +46,7 @@ fn header(
     mesh: &mut ResMut<InputResource>,
     solution: &Res<SolutionResource>,
     configuration: &mut ResMut<Configuration>,
+    render_object_store: &mut ResMut<RenderObjectStore>,
     time: &Res<Time>,
 ) {
     ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
@@ -146,33 +147,15 @@ fn header(
                 ui.separator();
 
                 menu_button(ui, "Rendering", |ui| {
-                    ui.checkbox(&mut configuration.show_gizmos_mesh, "Wireframe");
-                    ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
-                        ui.add_space(15.);
-                        if configuration.show_gizmos_mesh {
-                            ui.checkbox(&mut configuration.show_gizmos_mesh_granulated, "Wireframe granulated");
-                        } else {
-                            ui.checkbox(&mut false, "Wireframe granulated");
+                    for (&object, data) in &mut render_object_store.objects {
+                        ui.add_space(10.);
+                        ui.label(String::from(object));
+                        ui.add_space(5.);
+                        for render_feature in &mut data.features {
+                            ui.checkbox(&mut render_feature.visible, render_feature.label.clone());
                         }
-                    });
+                    }
 
-                    ui.add_space(5.);
-
-                    ui.checkbox(&mut configuration.show_gizmos_loops[0], "x-loops");
-                    ui.checkbox(&mut configuration.show_gizmos_loops[1], "y-loops");
-                    ui.checkbox(&mut configuration.show_gizmos_loops[2], "z-loops");
-
-                    ui.add_space(5.);
-
-                    ui.checkbox(&mut configuration.show_gizmos_paths, "paths");
-                    ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
-                        ui.add_space(15.);
-                        if configuration.show_gizmos_paths {
-                            ui.checkbox(&mut configuration.show_gizmos_flat_edges, "flat edges");
-                        } else {
-                            ui.checkbox(&mut false, "flat edges");
-                        }
-                    });
                     ui.add_space(5.);
 
                     ui.label("Background color (BUGGY: USE RIGHT or MIDDLE MOUSE BUTTON)");
@@ -303,6 +286,7 @@ pub fn update(
     mut conf: ResMut<Configuration>,
     mut mesh: ResMut<InputResource>,
     solution: Res<SolutionResource>,
+    mut render_object_store: ResMut<RenderObjectStore>,
     time: Res<Time>,
     image_handle: Res<CameraHandles>,
 ) {
@@ -312,7 +296,7 @@ pub fn update(
         ui.horizontal(|ui| {
             ui.with_layout(Layout::top_down(Align::TOP), |ui| {
                 // FIRST ROW
-                header(ui, &mut ev_w, &mut mesh, &solution, &mut conf, &time);
+                header(ui, &mut ev_w, &mut mesh, &solution, &mut conf, &mut render_object_store, &time);
 
                 ui.add_space(5.);
 
@@ -462,7 +446,7 @@ pub fn update(
             });
         });
 
-    for i in 0..3 {
+    for i in 0..2 {
         let egui_handle = egui_ctx.add_image(image_handle.map.get(&CameraFor(conf.window_shows_object[i])).unwrap().clone());
         Window::new(format!("window {i}"))
             .frame(Frame {

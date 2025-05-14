@@ -514,7 +514,23 @@ impl Quad {
                 assert!(triangle_mesh_polycube.corners(nearest_triangle)[1] == layout.granulated_mesh.corners(nearest_triangle)[1]);
                 assert!(triangle_mesh_polycube.corners(nearest_triangle)[2] == layout.granulated_mesh.corners(nearest_triangle)[2]);
 
+                if u == 0.0 && v == 0.0 && w == 0.0 {
+                    println!("Warning: barycentric coordinates are zero");
+                }
+
                 let new_position = hutspot::geom::inverse_barycentric_coordinates(u, v, w, t);
+
+                if new_position.x == 0.0 && new_position.y == 0.0 && new_position.z == 0.0 {
+                    println!("Warning: new position is zero vector");
+                }
+
+                if distance > 1e-6 {
+                    println!("Warning: distance to triangle is greater than 1e-6");
+
+                    println!("Distance to triangle: {}", distance);
+                    println!("Barycentric coordinates: ({}, {}, {})", u, v, w);
+                    println!("New position: {:?}", new_position);
+                }
 
                 quad_mesh.verts.get_mut(vert_id).unwrap().set_position(new_position);
             }
