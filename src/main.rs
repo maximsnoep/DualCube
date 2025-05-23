@@ -367,7 +367,7 @@ fn main() {
         // Load default plugins
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "Bloopy".to_string(),
+                title: "DualCube".to_string(),
                 mode: WindowMode::Windowed,
                 ..Default::default()
             }),
