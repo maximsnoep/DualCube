@@ -17,7 +17,7 @@ rustup update
 ## Cloning the Repository
 Clone the project from GitHub:
 ```bash
-git clone https://www.github.com/maximsnoep/bloopy
+git clone https://www.github.com/maximsnoep/DualCube
 ```
 If you already have the project, update it to the latest version:
 ```bash
