@@ -3,7 +3,7 @@ use crate::{dual, to_color, ActionEvent, ActionEventStatus, CameraHandles, Confi
 use crate::{HexMeshStatus, PrincipalDirection};
 use bevy::prelude::*;
 use bevy_egui::egui::{emath::Numeric, text::LayoutJob, Align, Color32, FontId, Frame, Layout, Slider, TextFormat, TopBottomPanel, Ui, Window};
-use bevy_egui::egui::{CornerRadius, RichText, Rounding};
+use bevy_egui::egui::{CornerRadius, RichText};
 
 use enum_iterator::all;
 use tico::tico;
@@ -63,22 +63,22 @@ fn header(
                             .add_filter("triangulated geometry", &["obj", "stl", "save", "flag"])
                             .pick_file()
                         {
-                            ev_w.send(ActionEvent::LoadFile(path));
+                            ev_w.write(ActionEvent::LoadFile(path));
                         }
                     }
                     ui.add_space(5.);
                     ui.separator();
                     ui.add_space(5.);
                     if sleek_button(ui, "Export SAVE") {
-                        ev_w.send(ActionEvent::ExportState);
+                        ev_w.write(ActionEvent::ExportState);
                     }
                     ui.add_space(5.);
                     if sleek_button(ui, "Export FLAG") {
-                        ev_w.send(ActionEvent::ExportSolution);
+                        ev_w.write(ActionEvent::ExportSolution);
                     }
                     ui.add_space(5.);
                     if sleek_button(ui, "Export NLR") {
-                        ev_w.send(ActionEvent::ExportNLR);
+                        ev_w.write(ActionEvent::ExportNLR);
                     }
                     ui.add_space(5.);
                     ui.separator();
@@ -163,7 +163,7 @@ fn header(
                     ui.color_edit_button_srgb(&mut configuration.clear_color);
 
                     if sleek_button(ui, "Confirm") {
-                        ev_w.send(ActionEvent::ResetCamera);
+                        ev_w.write(ActionEvent::ResetCamera);
                         mesh.as_mut();
                     }
                 });
@@ -174,7 +174,7 @@ fn header(
                     ui.checkbox(&mut configuration.unit_cubes, "Contrain to unit grid");
 
                     if sleek_button(ui, "Recompute") {
-                        ev_w.send(ActionEvent::Recompute);
+                        ev_w.write(ActionEvent::Recompute);
                     }
                 });
 
@@ -183,8 +183,8 @@ fn header(
                 menu_button(ui, "EXPERIMENTAL", |ui| {
                     ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
                         if sleek_button(ui, "Smoothening") && !matches!(&configuration.smoothen_status, ActionEventStatus::Loading) {
-                            ev_w.send(ActionEvent::Smoothen);
-                        };
+                            ev_w.write(ActionEvent::Smoothen);
+                        }
 
                         if matches!(configuration.smoothen_status, ActionEventStatus::Loading) {
                             ui.add_space(5.);
@@ -202,7 +202,7 @@ fn header(
 
                     ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
                         if sleek_button(ui, "Run hex-mesh pipeline") && !matches!(&configuration.hex_mesh_status, HexMeshStatus::Loading) {
-                            ev_w.send(ActionEvent::ToHexmesh);
+                            ev_w.write(ActionEvent::ToHexmesh);
                         };
                         if matches!(configuration.hex_mesh_status, HexMeshStatus::Loading) {
                             ui.add_space(5.);
@@ -232,10 +232,12 @@ fn header(
 fn footer(egui_ctx: &mut bevy_egui::EguiContexts, conf: &mut Configuration, solution: &SolutionResource, time: &Time) {
     TopBottomPanel::bottom("footer").show_separator_line(false).show(egui_ctx.ctx_mut(), |ui| {
         ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
-            // Left side: Display FPS and loading animation
+            // Left side: Display FPS
             ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
                 ui.add_space(15.);
-                display_fps_and_loading(ui, conf.fps, time);
+                let mut job = LayoutJob::default();
+                job.append(&format!("{:.0}", conf.fps), 0.0, text_format(9.0, Color32::WHITE));
+                ui.label(job);
             });
 
             // Center: Display status of dual, embd, alignment, and orthogonality
@@ -253,19 +255,13 @@ fn footer(egui_ctx: &mut bevy_egui::EguiContexts, conf: &mut Configuration, solu
             ui.with_layout(Layout::right_to_left(Align::TOP), |ui| {
                 ui.add_space(15.);
                 let mut job = LayoutJob::default();
-                display_label(&mut job, "bloopy - maxim snoep");
+                display_label(&mut job, "maxim snoep");
                 ui.label(job);
             });
         });
 
         conf.ui_is_hovered[1] = ui.ui_contains_pointer();
     });
-}
-
-fn display_fps_and_loading(ui: &mut Ui, fps: f64, time: &Time) {
-    let mut job = LayoutJob::default();
-    job.append(&format!("{fps:.0}"), 0.0, text_format(9.0, Color32::WHITE));
-    ui.label(job);
 }
 
 fn append_status<T>(job: &mut LayoutJob, label: &str, result: &Result<T, dual::PropertyViolationError>) {
@@ -351,11 +347,11 @@ pub fn update(
 
                         if conf.automatic {
                             if sleek_button(ui, "initialize") {
-                                ev_w.send(ActionEvent::Initialize);
+                                ev_w.write(ActionEvent::Initialize);
                             }
 
                             if sleek_button(ui, "mutate") {
-                                ev_w.send(ActionEvent::Mutate);
+                                ev_w.write(ActionEvent::Mutate);
                             }
                         }
 
@@ -423,22 +419,18 @@ pub fn update(
 
     bevy_egui::egui::CentralPanel::default()
         .frame(Frame {
-            outer_margin: bevy_egui::egui::epaint::Margin::same(10),
             stroke: bevy_egui::egui::epaint::Stroke {
                 width: 10.0,
                 color: Color32::from_rgb(27, 27, 27),
             },
-            shadow: bevy_egui::egui::epaint::Shadow::NONE,
             ..default()
         })
         .show(egui_ctx.ctx_mut(), |ui| {
             Frame {
-                outer_margin: bevy_egui::egui::epaint::Margin::same(1),
                 stroke: bevy_egui::egui::epaint::Stroke {
                     width: 1.0,
                     color: Color32::from_rgb(50, 50, 50),
                 },
-                shadow: bevy_egui::egui::epaint::Shadow::NONE,
                 ..default()
             }
             .show(ui, |ui| {

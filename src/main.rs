@@ -11,28 +11,23 @@ mod ui;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::picking::pointer::PointerInteraction;
-use bevy::platform::collections::HashSet;
+use bevy::prelude::*;
+use bevy::render::render_resource::AsBindGroup;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{block_on, AsyncComputeTaskPool, Task};
 use bevy::time::common_conditions::on_timer;
 use bevy::window::WindowMode;
 use bevy::winit::WinitWindows;
-use bevy::{gizmos, prelude::*};
+use bevy::{reflect::TypePath, render::render_resource::ShaderRef};
 use bevy_egui::EguiPlugin;
-use bvh::aabb::{Aabb, Bounded};
-use bvh::bounding_hierarchy::BHShape;
-// use bevy_mod_raycast::prelude::*;
 use douconel::douconel::Douconel;
+use douconel::douconel_embedded::{Bhv, TreeD};
 use douconel::{douconel::Empty, douconel_embedded::EmbeddedVertex};
 use dual::Orientation;
 use graph::Graaf;
-use hutspot::consts::{EPS, PI};
+use hutspot::color::RED;
 use hutspot::geom::Vector3D;
-use image::imageops::FilterType::Triangle;
 use itertools::Itertools;
-use kdtree::distance::squared_euclidean;
-use kdtree::KdTree;
-use nalgebra::Const;
 use ordered_float::OrderedFloat;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use render::{add_line2, CameraFor, GizmosCache, MeshProperties, Objects, RenderObjectStore};
@@ -50,9 +45,10 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-// use winit::platform::windows::WindowExtWindows;
-use bvh::bvh::Bvh;
 use winit::window::Icon;
+
+/// This example uses a shader source file from the assets subdirectory
+const SHADER_ASSET_PATH: &str = "flat.wgsl";
 
 slotmap::new_key_type! {
     pub struct VertID;
@@ -303,83 +299,9 @@ pub enum ActionEventStatus {
     Done(String),
 }
 
-// implement default for KdTree using the New Type Idiom
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct TreeD(KdTree<f64, VertID, [f64; 3]>);
-impl TreeD {
-    fn nearest(&self, point: &[f64; 3]) -> (f64, VertID) {
-        let neighbors = self.0.nearest(point, 1, &squared_euclidean).unwrap();
-        let (d, i) = neighbors.first().unwrap();
-        (*d, **i)
-    }
-
-    fn add(&mut self, point: [f64; 3], index: VertID) {
-        self.0.add(point, index).unwrap();
-    }
-}
-impl Default for TreeD {
-    fn default() -> Self {
-        Self(KdTree::new(3))
-    }
-}
-
-// implement default for Bvh using the New Type Idiom
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Bhv((Bvh<f32, 3>, Vec<TriangleBvhShape>));
-impl Bhv {
-    fn nearest(&self, point: &[f64; 3]) -> (f32, FaceID) {
-        let neighbor = self
-            .0
-             .0
-            .nearest_to(nalgebra::Point3::new(point[0] as f32, point[1] as f32, point[2] as f32), &self.0 .1);
-        let (t, d) = neighbor.unwrap();
-        (d, t.real_index)
-    }
-    fn overwrite(&mut self, shapes: &mut [TriangleBvhShape]) {
-        self.0 .0 = Bvh::build(shapes);
-        self.0 .1 = shapes.to_vec();
-    }
-}
-impl Default for Bhv {
-    fn default() -> Self {
-        Self((Bvh::build::<TriangleBvhShape>(&mut []), Vec::new()))
-    }
-}
-
 #[derive(Default, Resource)]
 pub struct CacheResource {
     cache: [HashMap<[EdgeID; 2], Vec<([EdgeID; 2], OrderedFloat<f64>)>>; 3],
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct TriangleBvhShape {
-    corners: [Vector3D; 3],
-    node_index: usize,
-    real_index: FaceID,
-}
-
-impl Bounded<f32, 3> for TriangleBvhShape {
-    fn aabb(&self) -> Aabb<f32, 3> {
-        let min_x = self.corners.iter().map(|v| v.x).fold(f64::MAX, |a, b| a.min(b));
-        let min_y = self.corners.iter().map(|v| v.y).fold(f64::MAX, |a, b| a.min(b));
-        let min_z = self.corners.iter().map(|v| v.z).fold(f64::MAX, |a, b| a.min(b));
-        let max_x = self.corners.iter().map(|v| v.x).fold(f64::MIN, |a, b| a.max(b));
-        let max_y = self.corners.iter().map(|v| v.y).fold(f64::MIN, |a, b| a.max(b));
-        let max_z = self.corners.iter().map(|v| v.z).fold(f64::MIN, |a, b| a.max(b));
-        let min = nalgebra::Point3::new(min_x as f32, min_y as f32, min_z as f32);
-        let max = nalgebra::Point3::new(max_x as f32, max_y as f32, max_z as f32);
-        Aabb::with_bounds(min, max)
-    }
-}
-
-impl BHShape<f32, 3> for TriangleBvhShape {
-    fn set_bh_node_index(&mut self, index: usize) {
-        self.node_index = index;
-    }
-
-    fn bh_node_index(&self) -> usize {
-        self.node_index
-    }
 }
 
 #[derive(Default, Debug, Clone, Resource, Serialize, Deserialize)]
@@ -387,25 +309,9 @@ pub struct InputResource {
     mesh: Arc<EmbeddedMesh>,
     properties: MeshProperties,
     properties2: MeshProperties,
-    vertex_lookup: TreeD,
-    triangle_lookup: Bhv,
+    vertex_lookup: TreeD<VertID>,
+    triangle_lookup: Bhv<FaceID>,
     flow_graphs: [Graaf<EdgeID, f64>; 3],
-}
-
-impl bvh::point_query::PointDistance<f32, 3> for TriangleBvhShape {
-    fn distance_squared(&self, query_point: nalgebra::Point<f32, 3>) -> f32 {
-        let a = nalgebra::Point3::new(self.corners[0].x as f32, self.corners[0].y as f32, self.corners[0].z as f32);
-        let b = nalgebra::Point3::new(self.corners[1].x as f32, self.corners[1].y as f32, self.corners[1].z as f32);
-        let c = nalgebra::Point3::new(self.corners[2].x as f32, self.corners[2].y as f32, self.corners[2].z as f32);
-        hutspot::geom::distance_to_triangle(
-            Vector3D::new(query_point[0] as f64, query_point[1] as f64, query_point[2] as f64),
-            (
-                Vector3D::new(a[0] as f64, a[1] as f64, a[2] as f64),
-                Vector3D::new(b[0] as f64, b[1] as f64, b[2] as f64),
-                Vector3D::new(c[0] as f64, c[1] as f64, c[2] as f64),
-            ),
-        ) as f32
-    }
 }
 
 #[derive(Debug, Clone, Resource)]
@@ -420,6 +326,25 @@ impl Default for SolutionResource {
             current_solution: Solution::new(Arc::new(Douconel::default())),
             next: [HashMap::new(), HashMap::new(), HashMap::new()],
         }
+    }
+}
+
+// This struct defines the data that will be passed to your shader
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+struct FlatMaterial {
+    #[uniform(0)]
+    pub view_dir: Vec3,
+}
+
+/// The Material trait is very configurable, but comes with sensible defaults for all methods.
+/// You only need to implement functions for features that need non-default behavior. See the Material api docs for details!
+impl Material for FlatMaterial {
+    fn fragment_shader() -> ShaderRef {
+        SHADER_ASSET_PATH.into()
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        AlphaMode::Opaque
     }
 }
 
@@ -458,11 +383,14 @@ fn main() {
         .add_plugins((LookTransformPlugin, OrbitCameraPlugin::default()))
         // Plugin for raycast cursor picking
         .add_plugins(MeshPickingPlugin)
+        // Material
+        .add_plugins(MaterialPlugin::<FlatMaterial>::default())
         // Setups
         .add_systems(Startup, ui::setup)
         .add_systems(Startup, render::setup)
         .add_systems(Startup, set_window_icon)
         // Updates
+        .add_systems(Update, press_hack)
         .add_systems(Update, ui::update)
         .add_systems(Update, render::update)
         .add_systems(Update, render::gizmos)
@@ -650,31 +578,14 @@ pub fn handle_events(
                     return;
                 }
 
+                mesh_resmut.properties = MeshProperties::default();
+                (mesh_resmut.properties.scale, mesh_resmut.properties.translation) = mesh_resmut.mesh.scale_translation();
+
                 configuration.hex_mesh_status = HexMeshStatus::None;
 
-                let mut patterns = TreeD::default();
-                for v_id in mesh_resmut.mesh.vert_ids() {
-                    patterns.add(mesh_resmut.mesh.position(v_id).into(), v_id);
-                }
-                mesh_resmut.vertex_lookup = patterns;
+                mesh_resmut.vertex_lookup = mesh_resmut.mesh.kdtree();
 
-                let mut triangles = mesh_resmut
-                    .mesh
-                    .face_ids()
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &face_id)| TriangleBvhShape {
-                        corners: [
-                            mesh_resmut.mesh.position(mesh_resmut.mesh.corners(face_id)[0]),
-                            mesh_resmut.mesh.position(mesh_resmut.mesh.corners(face_id)[1]),
-                            mesh_resmut.mesh.position(mesh_resmut.mesh.corners(face_id)[2]),
-                        ],
-                        node_index: i,
-                        real_index: face_id,
-                    })
-                    .collect_vec();
-
-                mesh_resmut.triangle_lookup.overwrite(&mut triangles);
+                mesh_resmut.triangle_lookup = mesh_resmut.mesh.bvh();
 
                 mesh_resmut.properties.source = String::from(path.to_str().unwrap());
 
@@ -1037,6 +948,8 @@ fn vector3d_to_vec3(v: Vector3D) -> Vec3 {
     Vec3::new(v.x as f32, v.y as f32, v.z as f32)
 }
 
+fn press_hack(mut mouse: ResMut<ButtonInput<MouseButton>>) {}
+
 fn raycast(
     pointers: Query<&PointerInteraction>,
     mut mouse: ResMut<ButtonInput<MouseButton>>,
@@ -1054,6 +967,7 @@ fn raycast(
     configuration.raycasted = None;
     configuration.selected = None;
     gizmos_cache.raycaster.clear();
+
     if !configuration.interactive {
         return;
     }
@@ -1081,13 +995,11 @@ fn raycast(
     if configuration.ui_is_hovered.iter().any(|&x| x) || keyboard.pressed(KeyCode::ControlLeft) || mouse.just_pressed(MouseButton::Left) {
         return;
     }
-
     for ev in evr_motion.read() {
         if (ev.delta.x.abs() + ev.delta.y.abs()) > 2. {
             return;
         }
     }
-
     for ev in evr_scroll.read() {
         if (ev.x.abs() + ev.y.abs()) > 0. {
             return;
@@ -1104,12 +1016,13 @@ fn raycast(
         return;
     }
 
-    let intersection = intersections[0];
+    let position = hutspot::draw::invert_transform_coordinates(
+        vec3_to_vector3d(intersections[0]),
+        mesh_resmut.properties.translation,
+        mesh_resmut.properties.scale,
+    );
 
-    let position =
-        hutspot::draw::invert_transform_coordinates(vec3_to_vector3d(intersection), mesh_resmut.properties.translation, mesh_resmut.properties.scale);
-
-    let nearest_face = mesh_resmut.triangle_lookup.nearest(&position.into()).1;
+    let nearest_face = mesh_resmut.triangle_lookup.nearest(&position.into());
     // get the nearest_vert (one of 3 corners of nearest_face)
     let nearest_vert = mesh_resmut
         .mesh
@@ -1146,122 +1059,143 @@ fn raycast(
         mesh_resmut.properties.scale,
     );
 
+    let lmb = mouse.pressed(MouseButton::Left);
+    let shift = keyboard.pressed(KeyCode::ShiftLeft);
+
+    let rmb = mouse.just_pressed(MouseButton::Right) || mouse.just_released(MouseButton::Right);
+    mouse.clear_just_pressed(MouseButton::Right);
+    let delete = keyboard.just_pressed(KeyCode::Delete) || keyboard.just_released(KeyCode::Delete);
+    keyboard.clear_just_pressed(KeyCode::Delete);
+
+    let closest_solution = solution.next[configuration.direction as usize]
+        .iter()
+        .map(|(&edgepair, sol)| {
+            (
+                ((mesh_resmut.mesh.midpoint(edgepair[0]) + mesh_resmut.mesh.midpoint(edgepair[1])) / 2.).metric_distance(&position),
+                sol,
+                edgepair,
+            )
+        })
+        .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
     // Controls:
-    // If INSERT is pressed, we add a loop to the list of candidate loops
-    // If Shift + INSERT is pressed, we add the candidate loop to the current solution
-    // If DELETE is pressed, we remove the loop from the current solution
+    // Hold LMB to shoot rays and to do any interaction
+    //
+    // 1) + LMB to calculate a solution at current position
+    //
+    // 2) + Shift to show closest solution
+    // 3) + Shift + LMB to add the closest solution to the current solution
+    //
+    // 4) + DELETE to remove the closest loop from the current solution (only if valid)
+    // 5) + Shift + DELETE to remove the closest loop from the current solution (also if invalid)
 
-    // if keyboard.pressed(KeyCode::Space) {
-    //     // Find closest loop.
-    //     let option_a = [edgepair[0], edgepair[1]];
-    //     let option_b = [edgepair[1], edgepair[0]];
+    println!("lmb: {lmb}, rmb: {rmb}, delete: {delete}, shift: {shift}");
 
-    //     if let Some(loop_id) = solution.current_solution.loops.keys().find(|&loop_id| {
-    //         let edges = solution.current_solution.get_pairs_of_loop(loop_id);
-    //         edges.contains(&option_a) || edges.contains(&option_b)
-    //     }) {
-    //         if mouse.just_pressed(MouseButton::Left) || mouse.just_released(MouseButton::Left) {
-    //             mouse.clear_just_pressed(MouseButton::Left);
-    //             mouse.clear_just_released(MouseButton::Left);
+    if lmb {
+        match (rmb, delete, shift) {
+            // Action 1)
+            (true, false, false) => {
+                let selected_edges = mesh_resmut.mesh.edges_in_face_with_vert(nearest_face, nearest_vert).unwrap();
 
-    //             let mut new_sol = solution.current_solution.clone();
-    //             new_sol.del_loop(loop_id);
-    //             if new_sol.reconstruct_solution(configuration.unit_cubes).is_ok() {
-    //                 solution.current_solution = new_sol;
-    //                 solution.next[0].clear();
-    //                 solution.next[1].clear();
-    //                 solution.next[2].clear();
-    //                 cache.cache[0].clear();
-    //                 cache.cache[1].clear();
-    //                 cache.cache[2].clear();
-    //             }
-    //             return;
-    //         }
-    //     }
-    //     return;
-    // }
+                if let Some((candidate_loop, _)) = solution.current_solution.construct_unbounded_loop(
+                    selected_edges,
+                    configuration.direction,
+                    &mesh_resmut.flow_graphs[configuration.direction as usize],
+                    |a: f64| a.powi(10),
+                ) {
+                    let mut candidate_solution = solution.current_solution.clone();
+                    candidate_solution.add_loop(Loop {
+                        edges: candidate_loop,
+                        direction: configuration.direction,
+                    });
 
-    // If shift button is pressed, we want to show the closest solution to the current face vertex combination.
-    if keyboard.pressed(KeyCode::ShiftLeft) {
-        keyboard.clear_just_pressed(KeyCode::ShiftLeft);
+                    candidate_solution.reconstruct_solution(configuration.unit_cubes);
 
-        // Find the closest face vertex combination to the current face vertex combination.
-        // Map to distance. Then get the solution with the smallest distance.
-        let closest_solution = solution.next[configuration.direction as usize]
-            .iter()
-            .map(|(&edgepair, sol)| {
-                (
-                    ((mesh_resmut.mesh.midpoint(edgepair[0]) + mesh_resmut.mesh.midpoint(edgepair[1])) / 2.).metric_distance(&position),
-                    sol,
-                    edgepair,
-                )
-            })
-            .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+                    solution.next[configuration.direction as usize].insert([selected_edges[0], selected_edges[1]], Some(candidate_solution));
+                } else {
+                    solution.next[configuration.direction as usize].insert([selected_edges[0], selected_edges[1]], None);
+                }
+            }
+            // Action 2)
+            (false, false, true) => {
+                if let Some((_, Some(some_solution), signature)) = closest_solution {
+                    configuration.selected = Some(signature);
 
-        if let Some((_, closest_solution, signature)) = closest_solution {
-            configuration.selected = Some(signature);
-
-            if let Some(some_solution) = closest_solution {
-                for loop_id in some_solution.loops.keys() {
-                    let direction = some_solution.loop_to_direction(loop_id);
-                    let color = to_color(direction, Perspective::Dual, None);
-                    for &edgepair in &some_solution.get_pairs_of_loop(loop_id) {
-                        let u = mesh_resmut.mesh.midpoint(edgepair[0]);
-                        let v = mesh_resmut.mesh.midpoint(edgepair[1]);
-                        let n = mesh_resmut.mesh.edge_normal(edgepair[0]);
-                        add_line2(
-                            &mut gizmos_cache.raycaster,
-                            u,
-                            v,
-                            n * 0.05,
-                            color,
-                            mesh_resmut.properties.translation,
-                            mesh_resmut.properties.scale,
-                        );
+                    for loop_id in some_solution.loops.keys() {
+                        let direction = some_solution.loop_to_direction(loop_id);
+                        let color = to_color(direction, Perspective::Dual, None);
+                        for &edgepair in &some_solution.get_pairs_of_loop(loop_id) {
+                            let u = mesh_resmut.mesh.midpoint(edgepair[0]);
+                            let v = mesh_resmut.mesh.midpoint(edgepair[1]);
+                            let n = mesh_resmut.mesh.edge_normal(edgepair[0]);
+                            add_line2(
+                                &mut gizmos_cache.raycaster,
+                                u,
+                                v,
+                                n * 0.05,
+                                color,
+                                mesh_resmut.properties.translation,
+                                mesh_resmut.properties.scale,
+                            );
+                        }
                     }
                 }
-
-                // If the right mouse button is pressed, we want to save the candidate solution as the current solution.
-                if keyboard.just_pressed(KeyCode::Insert) || keyboard.just_released(KeyCode::Insert) {
-                    keyboard.clear_just_pressed(KeyCode::Insert);
-                    keyboard.clear_just_released(KeyCode::Insert);
-
-                    solution.current_solution = some_solution.clone();
+            }
+            // Action 3)
+            (true, false, true) => {
+                // Map to distance. Then get the solution with the smallest distance.
+                if let Some((_, Some(sol), _)) = closest_solution {
+                    solution.current_solution = sol.clone();
                     solution.next[0].clear();
                     solution.next[1].clear();
                     solution.next[2].clear();
                     cache.cache[0].clear();
                     cache.cache[1].clear();
                     cache.cache[2].clear();
-                    return;
                 }
             }
-        }
+            // Action 4)
+            (false, true, false) => {
+                let option_a = [edgepair[0], edgepair[1]];
+                let option_b = [edgepair[1], edgepair[0]];
 
-        return;
-    }
+                if let Some(loop_id) = solution.current_solution.loops.keys().find(|&loop_id| {
+                    let edges = solution.current_solution.get_pairs_of_loop(loop_id);
+                    edges.contains(&option_a) || edges.contains(&option_b)
+                }) {
+                    let mut new_sol = solution.current_solution.clone();
+                    new_sol.del_loop(loop_id);
+                    if new_sol.reconstruct_solution(configuration.unit_cubes).is_ok() {
+                        solution.current_solution = new_sol;
+                        solution.next[0].clear();
+                        solution.next[1].clear();
+                        solution.next[2].clear();
+                        cache.cache[0].clear();
+                        cache.cache[1].clear();
+                        cache.cache[2].clear();
+                    }
+                }
+            }
+            // Action 5)
+            (false, true, true) => {
+                let option_a = [edgepair[0], edgepair[1]];
+                let option_b = [edgepair[1], edgepair[0]];
 
-    if mouse.just_pressed(MouseButton::Left) || mouse.just_released(MouseButton::Left) {
-        let selected_edges = mesh_resmut.mesh.edges_in_face_with_vert(nearest_face, nearest_vert).unwrap();
-        let measure = |a: f64| a.powi(10);
-
-        if let Some((candidate_loop, _)) = solution.current_solution.construct_unbounded_loop(
-            selected_edges,
-            configuration.direction,
-            &mesh_resmut.flow_graphs[configuration.direction as usize],
-            measure,
-        ) {
-            let mut candidate_solution = solution.current_solution.clone();
-            candidate_solution.add_loop(Loop {
-                edges: candidate_loop,
-                direction: configuration.direction,
-            });
-
-            candidate_solution.reconstruct_solution(configuration.unit_cubes);
-
-            solution.next[configuration.direction as usize].insert([selected_edges[0], selected_edges[1]], Some(candidate_solution));
-        } else {
-            solution.next[configuration.direction as usize].insert([selected_edges[0], selected_edges[1]], None);
+                if let Some(loop_id) = solution.current_solution.loops.keys().find(|&loop_id| {
+                    let edges = solution.current_solution.get_pairs_of_loop(loop_id);
+                    edges.contains(&option_a) || edges.contains(&option_b)
+                }) {
+                    solution.current_solution.del_loop(loop_id);
+                    solution.current_solution.reconstruct_solution(configuration.unit_cubes);
+                    solution.next[0].clear();
+                    solution.next[1].clear();
+                    solution.next[2].clear();
+                    cache.cache[0].clear();
+                    cache.cache[1].clear();
+                    cache.cache[2].clear();
+                }
+            }
+            _ => {}
         }
     }
 

@@ -65,6 +65,8 @@ impl Polycube {
             vert_to_coord.insert(vert_id, [0., 0., 0.]);
         }
 
+        let mut levels = [Vec::new(), Vec::new(), Vec::new()];
+
         // Fix the positions of the vertices that are in the same level
         for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
             for (level, zones) in dual.level_graphs.levels[direction as usize].iter().enumerate() {
@@ -86,6 +88,28 @@ impl Polycube {
                     hutspot::math::calculate_average_f64(verts_in_mesh.into_iter())
                 });
 
+                levels[direction as usize].push((value, verts_in_level.clone()));
+            }
+        }
+
+        // scale the coordinates s.t. smallest edge is 1, and all other edges are multiples of 1 (integer lengths)
+        let mut min_distance = f64::MAX;
+        for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
+            let direction_levels = &levels[direction as usize];
+            for (level1, level2) in direction_levels.iter().tuple_windows() {
+                let distance = level2.0 - level1.0;
+                if distance < min_distance {
+                    min_distance = distance;
+                }
+            }
+        }
+        assert!(!(min_distance == 0.), "The distance between two levels is 0. This should not happen.");
+        let scale = 1. / min_distance;
+        for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
+            for (level, verts_in_level) in levels[direction as usize].iter() {
+                let value = level * scale;
+                // round to nearest integer
+                let value = value.round();
                 for vert in verts_in_level {
                     vert_to_coord.get_mut(&vert).unwrap()[direction as usize] = value;
                 }

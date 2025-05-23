@@ -1,40 +1,28 @@
-use crate::dual::{Dual, LoopRegionID, Orientation};
 use crate::layout::Layout;
 use crate::polycube::Polycube;
-use crate::{Bhv, EmbeddedMesh, TriangleBvhShape};
+use crate::{Bhv, EmbeddedMesh};
 use bimap::BiHashMap;
 use douconel::douconel::{Douconel, Empty};
 use douconel::douconel_embedded::{EmbeddedVertex, HasPosition};
 use faer::sparse::{SparseColMat, Triplet};
-use faer::{mat, Mat};
+use faer::Mat;
 use faer_gmres::gmres;
 use hutspot::geom::{Vector2D, Vector3D};
 use itertools::Itertools;
-use sprs::{CsMat, CsVec, TriMat};
-use sprs_ldl::Ldl;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
-
-slotmap::new_key_type! {
-    pub struct QuadVertID;
-    pub struct QuadEdgeID;
-    pub struct QuadFaceID;
-}
-
-type QuadMesh = Douconel<QuadVertID, EmbeddedVertex, QuadEdgeID, Empty, QuadFaceID, Empty>;
 
 #[derive(Clone, Debug)]
 pub struct Quad {
     pub triangle_mesh_polycube: EmbeddedMesh,
     pub quad_mesh_polycube: EmbeddedMesh,
     pub quad_mesh: EmbeddedMesh,
-    pub structure: QuadMesh,
 }
 
 impl Quad {
     fn arc_length_parameterization(verts: &[Vector3D]) -> Vec<f64> {
         // Arc-length parameterization of list of points to [0, 1] interval
-        let distances = [0.0].into_iter().chain(verts.windows(2).map(|w| (w[1] - w[0]).norm())).collect_vec();
+        let distances = std::iter::once(0.0).chain(verts.windows(2).map(|w| (w[1] - w[0]).norm())).collect_vec();
         let total_length = distances.iter().sum::<f64>();
 
         distances
@@ -46,6 +34,7 @@ impl Quad {
             .collect_vec()
     }
 
+    #[must_use]
     pub fn from_layout(layout: &Layout, polycube: &Polycube) -> Self {
         let mut triangle_mesh_polycube = layout.granulated_mesh.clone();
 
@@ -76,8 +65,6 @@ impl Quad {
                     queue.push(neighbor);
                 }
             }
-
-            println!("Processing patch {:?}", patch_id);
 
             // A map for each vertex in the patch to its corresponding 2D coordinate in the unit square
             let mut map_to_2d = HashMap::new();
@@ -218,13 +205,7 @@ impl Quad {
                     .collect_vec();
 
                 let sum_w = w.iter().sum::<f64>();
-
                 let weights = w.iter().map(|&wi| wi / sum_w).collect_vec();
-
-                let sum_weights: f64 = weights.iter().sum();
-                if (sum_weights - 1.0).abs() > 1e-6 {
-                    println!("Warning: weights sum to {} instead of 1.0", sum_weights);
-                }
 
                 for i in 0..k {
                     let vi = neighbors[i];
@@ -251,16 +232,10 @@ impl Quad {
             let mut x_v = Mat::from_fn(n, 1, |_, _| 0.0);
 
             let faer_triplets = triplets.into_iter().map(|(i, j, v)| Triplet::new(i, j, v)).collect::<Vec<_>>();
-
-            for triplet in &faer_triplets {
-                assert!(triplet.val.is_finite(), "Triplet contains NaN or Inf: {:?}", triplet);
-            }
-
             let a = SparseColMat::<usize, f64>::try_new_from_triplets(n, n, &faer_triplets).unwrap();
-
             if !interior_verts.is_empty() {
-                let (err_u, iter_u) = gmres(a.as_ref(), b_u.as_ref(), x_u.as_mut(), 1000, 1e-8, None).unwrap();
-                let (err_v, iter_v) = gmres(a.as_ref(), b_v.as_ref(), x_v.as_mut(), 1000, 1e-8, None).unwrap();
+                gmres(a.as_ref(), b_u.as_ref(), x_u.as_mut(), 1000, 1e-8, None).unwrap();
+                gmres(a.as_ref(), b_v.as_ref(), x_v.as_mut(), 1000, 1e-8, None).unwrap();
             }
 
             for &v in &all_verts {
@@ -289,21 +264,20 @@ impl Quad {
                 triangle_mesh_polycube.verts[v].set_position(position);
             }
 
-            let grid_m = 20;
             let grid_width = polycube.length(edge1);
             assert!(polycube.length(edge3) == grid_width);
+            let grid_n = grid_width as usize * 3;
 
-            let grid_n = 20;
             let grid_height = polycube.length(edge2);
             assert!(polycube.length(edge4) == grid_height);
+            let grid_m = grid_height as usize * 3;
 
             let to_pos = |i: usize, j: usize| {
                 let u = i as f64 / (grid_m - 1) as f64;
                 let v = j as f64 / (grid_n - 1) as f64;
                 let e1_vector = d3p2 - d3p1;
                 let e2_vector = d3p3 - d3p2;
-                let pos = d3p1 + e1_vector * v + e2_vector * u;
-                pos
+                d3p1 + e1_vector * v + e2_vector * u
             };
 
             let mut vert_map = vec![vec![None; grid_n]; grid_m];
@@ -331,8 +305,8 @@ impl Quad {
             if edges_done.contains_key(&edge1) {
                 let edge_verts = edges_done.get(&edge1).unwrap().to_owned();
                 assert!(edge_verts.len() == grid_n);
-                for j in 0..grid_n {
-                    vert_map[0][j] = Some(edge_verts[j]);
+                for (j, &vert) in edge_verts.iter().enumerate() {
+                    vert_map[0][j] = Some(vert);
                 }
             }
 
@@ -340,8 +314,8 @@ impl Quad {
             if edges_done.contains_key(&edge2) {
                 let edge_verts = edges_done.get(&edge2).unwrap().to_owned();
                 assert!(edge_verts.len() == grid_m);
-                for i in 0..grid_m {
-                    vert_map[i][grid_n - 1] = Some(edge_verts[i]);
+                for (i, &vert) in edge_verts.iter().enumerate() {
+                    vert_map[i][grid_n - 1] = Some(vert);
                 }
             }
 
@@ -349,8 +323,8 @@ impl Quad {
             if edges_done.contains_key(&edge3) {
                 let edge_verts = edges_done.get(&edge3).unwrap().to_owned();
                 assert!(edge_verts.len() == grid_n);
-                for j in (0..grid_n).rev() {
-                    vert_map[grid_m - 1][grid_n - 1 - j] = Some(edge_verts[j]);
+                for (j, &vert) in edge_verts.iter().enumerate() {
+                    vert_map[grid_m - 1][grid_n - 1 - j] = Some(vert);
                 }
             }
 
@@ -358,8 +332,8 @@ impl Quad {
             if edges_done.contains_key(&edge4) {
                 let edge_verts = edges_done.get(&edge4).unwrap().to_owned();
                 assert!(edge_verts.len() == grid_m);
-                for i in (0..grid_m).rev() {
-                    vert_map[grid_m - 1 - i][0] = Some(edge_verts[i]);
+                for (i, &vert) in edge_verts.iter().enumerate() {
+                    vert_map[grid_m - 1 - i][0] = Some(vert);
                 }
             }
 
@@ -431,7 +405,7 @@ impl Quad {
                 let mut vs = vec![];
 
                 // REVERSE
-                for j in (0..grid_n) {
+                for j in 0..grid_n {
                     vs.push(vert_map[i][j].unwrap());
                 }
                 // ADD FOR TWIN
@@ -441,7 +415,7 @@ impl Quad {
             for j in [0] {
                 let mut vs = vec![];
 
-                for i in (0..grid_m) {
+                for i in 0..grid_m {
                     vs.push(vert_map[i][j].unwrap());
                 }
                 // ADD FOR TWIN
@@ -452,27 +426,8 @@ impl Quad {
         assert!(patches_done.len() == polycube.face_ids().len(), "Not all patches were done!");
 
         // Create the polycube quad mesh:
-        let res = EmbeddedMesh::from_embedded_faces(&faces, &vertex_positions);
-
-        if let Ok((quad_mesh_polycube, vertex_map, face_map)) = res {
-            let mut triangle_lookup = Bhv::default();
-
-            let mut triangles = triangle_mesh_polycube
-                .face_ids()
-                .iter()
-                .enumerate()
-                .map(|(i, &face_id)| TriangleBvhShape {
-                    corners: [
-                        triangle_mesh_polycube.position(triangle_mesh_polycube.corners(face_id)[0]),
-                        triangle_mesh_polycube.position(triangle_mesh_polycube.corners(face_id)[1]),
-                        triangle_mesh_polycube.position(triangle_mesh_polycube.corners(face_id)[2]),
-                    ],
-                    node_index: i,
-                    real_index: face_id,
-                })
-                .collect_vec();
-
-            triangle_lookup.overwrite(&mut triangles);
+        if let Ok((quad_mesh_polycube, _, _)) = EmbeddedMesh::from_embedded_faces(&faces, &vertex_positions) {
+            let triangle_lookup = triangle_mesh_polycube.bvh();
 
             // Create the quad mesh
             // First, create copy of quad_mesh_polycube
@@ -481,15 +436,16 @@ impl Quad {
             for vert_id in quad_mesh.vert_ids() {
                 // Get the nearest triangle in the triangle mesh (polycube map)
                 let point = quad_mesh.position(vert_id);
-                let nearest_triangle = triangle_lookup.nearest(&[point.x, point.y, point.z]).1;
+                let triangle = triangle_lookup.nearest(&[point.x, point.y, point.z]);
+                let corners = triangle_mesh_polycube.corners(triangle);
 
                 // check distance from point to triangle
-                let distance = hutspot::geom::distance_to_triangle(
+                let distance1 = hutspot::geom::distance_to_triangle(
                     point,
                     (
-                        triangle_mesh_polycube.position(triangle_mesh_polycube.corners(nearest_triangle)[0]),
-                        triangle_mesh_polycube.position(triangle_mesh_polycube.corners(nearest_triangle)[1]),
-                        triangle_mesh_polycube.position(triangle_mesh_polycube.corners(nearest_triangle)[2]),
+                        triangle_mesh_polycube.position(corners[0]),
+                        triangle_mesh_polycube.position(corners[1]),
+                        triangle_mesh_polycube.position(corners[2]),
                     ),
                 );
 
@@ -497,52 +453,49 @@ impl Quad {
                 let (u, v, w) = hutspot::geom::calculate_barycentric_coordinates(
                     point,
                     (
-                        triangle_mesh_polycube.position(triangle_mesh_polycube.corners(nearest_triangle)[0]),
-                        triangle_mesh_polycube.position(triangle_mesh_polycube.corners(nearest_triangle)[1]),
-                        triangle_mesh_polycube.position(triangle_mesh_polycube.corners(nearest_triangle)[2]),
+                        triangle_mesh_polycube.position(corners[0]),
+                        triangle_mesh_polycube.position(corners[1]),
+                        triangle_mesh_polycube.position(corners[2]),
                     ),
                 );
 
                 // Do the inverse of the barycentric coordinates, with the original triangle in granulated mesh
-                let t = (
-                    layout.granulated_mesh.position(layout.granulated_mesh.corners(nearest_triangle)[0]),
-                    layout.granulated_mesh.position(layout.granulated_mesh.corners(nearest_triangle)[1]),
-                    layout.granulated_mesh.position(layout.granulated_mesh.corners(nearest_triangle)[2]),
+                let new_position = hutspot::geom::inverse_barycentric_coordinates(
+                    u,
+                    v,
+                    w,
+                    (
+                        layout.granulated_mesh.position(corners[0]),
+                        layout.granulated_mesh.position(corners[1]),
+                        layout.granulated_mesh.position(corners[2]),
+                    ),
                 );
 
-                assert!(triangle_mesh_polycube.corners(nearest_triangle)[0] == layout.granulated_mesh.corners(nearest_triangle)[0]);
-                assert!(triangle_mesh_polycube.corners(nearest_triangle)[1] == layout.granulated_mesh.corners(nearest_triangle)[1]);
-                assert!(triangle_mesh_polycube.corners(nearest_triangle)[2] == layout.granulated_mesh.corners(nearest_triangle)[2]);
+                let distance2 = hutspot::geom::distance_to_triangle(
+                    new_position,
+                    (
+                        layout.granulated_mesh.position(corners[0]),
+                        layout.granulated_mesh.position(corners[1]),
+                        layout.granulated_mesh.position(corners[2]),
+                    ),
+                );
 
-                if u == 0.0 && v == 0.0 && w == 0.0 {
-                    println!("Warning: barycentric coordinates are zero");
-                }
-
-                let new_position = hutspot::geom::inverse_barycentric_coordinates(u, v, w, t);
-
-                if new_position.x == 0.0 && new_position.y == 0.0 && new_position.z == 0.0 {
-                    println!("Warning: new position is zero vector");
-                }
-
-                if distance > 1e-6 {
-                    println!("Warning: distance to triangle is greater than 1e-6");
-
-                    println!("Distance to triangle: {}", distance);
-                    println!("Barycentric coordinates: ({}, {}, {})", u, v, w);
-                    println!("New position: {:?}", new_position);
+                if distance1 > 0.001 {
+                    println!("\n\nDistance: {distance1}");
+                    println!("distance2: {distance2}");
+                    println!("Point: {point:?}");
+                    println!("u v w: {u} {v} {w}");
                 }
 
                 quad_mesh.verts.get_mut(vert_id).unwrap().set_position(new_position);
             }
 
-            Quad {
+            Self {
                 triangle_mesh_polycube,
                 quad_mesh_polycube,
                 quad_mesh,
-                structure: QuadMesh::default(),
             }
         } else {
-            println!("{:?}", res);
             panic!("Failed to create quad mesh from faces and vertex positions");
         }
     }

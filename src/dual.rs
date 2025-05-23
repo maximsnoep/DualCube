@@ -5,7 +5,6 @@ use crate::{
 };
 use douconel::douconel::Douconel;
 use itertools::Itertools;
-use log::error;
 use slotmap::{SecondaryMap, SlotMap};
 use std::{
     collections::{HashMap, HashSet},
