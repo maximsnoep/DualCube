@@ -773,8 +773,8 @@ pub fn handle_events(
                         .args([
                             "python3",
                             "~/polycube-to-hexmesh/seg_eval.py",
-                            &format!("/mnt/c/Users/20182085/Documents/douconel-test-env/out/temp/{n}_{t}.obj"),
-                            &format!("/mnt/c/Users/20182085/Documents/douconel-test-env/out/temp/{n}_{t}.flag"),
+                            &format!("/mnt/c/Users/20182085/Documents/DualCube/out/temp/{n}_{t}.obj"),
+                            &format!("/mnt/c/Users/20182085/Documents/DualCube/out/temp/{n}_{t}.flag"),
                         ])
                         .output()
                         .expect("failed to execute process");
@@ -784,9 +784,9 @@ pub fn handle_events(
                     let out = Command::new("wsl")
                         .args([
                             "~/polycube-to-hexmesh/pipeline.sh",
-                            &format!("/mnt/c/Users/20182085/Documents/douconel-test-env/out/temp/{n}_{t}.obj"),
+                            &format!("/mnt/c/Users/20182085/Documents/DualCube/out/temp/{n}_{t}.obj"),
                             "-algo",
-                            &format!("/mnt/c/Users/20182085/Documents/douconel-test-env/out/temp/{n}_{t}.flag"),
+                            &format!("/mnt/c/Users/20182085/Documents/DualCube/out/temp/{n}_{t}.flag"),
                         ])
                         .output()
                         .expect("failed to execute process");

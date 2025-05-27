@@ -553,7 +553,7 @@ pub fn update(
                 let mut color_map_segmentation = HashMap::new();
                 let mut color_map_alignment = HashMap::new();
 
-                let color = hutspot::color::GRAY;
+                let color = hutspot::color::WHITE;
                 let c = Color::srgb(color[0], color[1], color[2]);
 
                 for (lewp_id, lewp) in &solution.current_solution.loops {

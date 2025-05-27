@@ -396,12 +396,6 @@ pub fn update(
                                         ui.label(format!("{alignment:.3}"));
                                         ui.label("]");
                                     }
-
-                                    if let Some(orthogonality) = sol.orthogonality {
-                                        ui.label("ORTH[");
-                                        ui.label(format!("{orthogonality:.3}"));
-                                        ui.label("]");
-                                    }
                                 }
                             }
                         }

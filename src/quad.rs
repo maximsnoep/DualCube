@@ -1,18 +1,16 @@
 use crate::layout::Layout;
 use crate::polycube::Polycube;
-use crate::{Bhv, EmbeddedMesh};
+use crate::EmbeddedMesh;
 use bimap::BiHashMap;
-use douconel::douconel::{Douconel, Empty};
-use douconel::douconel_embedded::{EmbeddedVertex, HasPosition};
+use douconel::douconel_embedded::HasPosition;
 use faer::sparse::{SparseColMat, Triplet};
 use faer::Mat;
 use faer_gmres::gmres;
 use hutspot::geom::{Vector2D, Vector3D};
 use itertools::Itertools;
 use std::collections::{HashMap, HashSet};
-use std::hash::Hash;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Quad {
     pub triangle_mesh_polycube: EmbeddedMesh,
     pub quad_mesh_polycube: EmbeddedMesh,

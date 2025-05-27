@@ -92,8 +92,6 @@ pub struct Solution {
 
     pub alignment_per_triangle: SecondaryMap<FaceID, f64>,
     pub alignment: Option<f64>,
-    pub orthogonality_per_patch: SecondaryMap<PolycubeFaceID, f64>,
-    pub orthogonality: Option<f64>,
 
     pub external_flag: Option<SecondaryMap<FaceID, usize>>,
 }
@@ -110,8 +108,6 @@ impl Solution {
             quad: None,
             alignment_per_triangle: SecondaryMap::new(),
             alignment: None,
-            orthogonality_per_patch: SecondaryMap::new(),
-            orthogonality: None,
             external_flag: None,
         }
     }
@@ -122,8 +118,6 @@ impl Solution {
         self.layout = Err(PropertyViolationError::default());
         self.alignment_per_triangle.clear();
         self.alignment = None;
-        self.orthogonality_per_patch.clear();
-        self.orthogonality = None;
     }
 
     pub fn del_loop(&mut self, loop_id: LoopID) {
@@ -471,9 +465,9 @@ impl Solution {
 
         self.resize_polycube(unit);
 
-        self.quad = Some(Quad::from_layout(self.layout.as_ref().unwrap(), self.polycube.as_ref().unwrap()));
-
         self.compute_quality();
+
+        self.quad = Some(Quad::from_layout(self.layout.as_ref().unwrap(), self.polycube.as_ref().unwrap()));
 
         Ok(())
     }
@@ -507,44 +501,12 @@ impl Solution {
             }
             self.alignment = Some(total_score);
         }
-
-        self.orthogonality_per_patch.clear();
-        self.orthogonality = None;
-
-        if let (Ok(layout), Some(polycube)) = (&self.layout, &self.polycube) {
-            let total_area: f64 = layout.granulated_mesh.faces.keys().map(|f| layout.granulated_mesh.area(f)).sum();
-            let mut total_score = 0.0;
-
-            for (&patch, patch_faces) in &layout.face_to_patch {
-                let patch_score: f64 = polycube
-                    .structure
-                    .edges(patch)
-                    .iter()
-                    .map(|&patch_edge| {
-                        let path = &layout.edge_to_path[&patch_edge];
-                        let next_path = &layout.edge_to_path[&polycube.structure.next(patch_edge)];
-                        let a = layout.granulated_mesh.position(*path.first().unwrap());
-                        let b = layout.granulated_mesh.position(*path.last().unwrap());
-                        let c = layout.granulated_mesh.position(*next_path.last().unwrap());
-                        (a - b).angle(&(c - b)).sin().powi(2)
-                    })
-                    .sum::<f64>()
-                    / 4.;
-                self.orthogonality_per_patch.insert(patch, patch_score);
-                let patch_area: f64 = patch_faces.faces.iter().map(|&f| layout.granulated_mesh.area(f)).sum();
-                total_score += patch_score * (patch_area / total_area);
-            }
-            self.orthogonality = Some(total_score);
-        }
     }
 
     pub fn get_quality(&self) -> Option<f64> {
         let beta = 0.001;
 
-        if let (Some(align), Some(ortho)) = (self.alignment, self.orthogonality) {
-            // println!("Alignment: {}, Orthogonality: {}", align, ortho);
-            // println!("Loops: {}", self.loops.len());
-            // println!("w1 * align + w3 * loops: {}", w1 * align + w3 * self.loops.len() as f64);
+        if let Some(align) = self.alignment {
             Some(align - beta * self.loops.len() as f64)
         } else {
             None
@@ -562,7 +524,7 @@ impl Solution {
 
         let mut mutated = false;
         let mut mutated_solution = self.clone();
-        let mut case = (rand::random::<u8>() % 3) + 1;
+        let mut case = (rand::random::<u8>() % 2) + 1;
 
         if self.loops.len() == 0 {
             return None;
@@ -614,27 +576,6 @@ impl Solution {
                 let loop_id = self.loops.keys().choose(&mut rand::thread_rng()).unwrap();
                 let mut candidate_solution = mutated_solution.clone();
                 candidate_solution.del_loop(loop_id);
-
-                // Check solution
-                if candidate_solution.dual_is_ok() {
-                    mutated_solution = candidate_solution;
-                    mutated = true;
-                }
-            }
-            3 => {
-                // Replace loop(s)
-                let loop_id = self.loops.keys().choose(&mut rand::thread_rng()).unwrap();
-                let loop_to_replace = self.loops[loop_id].clone();
-                let direction = loop_to_replace.direction;
-                let e1 = loop_to_replace.edges[0];
-                let e2 = self.mesh_ref.next(e1);
-                let measure = |b: f64| b.powi(10);
-                let (new_loop, _) = self
-                    .construct_unbounded_loop([e1, e2], direction, &flow_graphs[direction as usize], measure)
-                    .unwrap_or_default();
-                let mut candidate_solution = mutated_solution.clone();
-                candidate_solution.del_loop(loop_id);
-                candidate_solution.add_loop(Loop { edges: new_loop, direction });
 
                 // Check solution
                 if candidate_solution.dual_is_ok() {
