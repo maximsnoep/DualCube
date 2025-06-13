@@ -8,7 +8,6 @@ lto = true
 codgen-units = 1
 opt-level = 3
 
-
 [profile.dev]
 opt-level = 3
 
@@ -21,13 +20,10 @@ missing_panics_doc = "allow"
 missing_errors_doc = "allow"
 
 [dependencies]
-# for local development:
-douconel = { path = "../douconel"}
-hutspot = { path = "../hutspot" }
+# replaces douconel:
+mehsh = { path = "../mehsh", features = ["bevy", "obj", "stl", "petgraph"] }
 
-# else:
-# douconel = { git = "https://github.com/maximsnoep/douconel" }
-# hutspot = { git = "https://github.com/maximsnoep/hutspot" }
+hutspot = { git = "https://github.com/maximsnoep/hutspot" }
 
 bevy = "0.16.0"
 bevy_egui = "0.34.1"

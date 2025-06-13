@@ -3,9 +3,10 @@ use crate::{
     solutions::{Loop, LoopID},
     EdgeID, EmbeddedMesh, PrincipalDirection, VertID,
 };
-use douconel::douconel::Douconel;
 use itertools::Itertools;
-use slotmap::{SecondaryMap, SlotMap};
+use mehsh::prelude::*;
+use serde::{Deserialize, Serialize};
+use slotmap::SlotMap;
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
@@ -23,11 +24,12 @@ pub enum Orientation {
 // the edges correspond to loop segments,
 // and the faces correspond to loop regions.
 slotmap::new_key_type! {
-    pub struct LoopIntersectionID;
-    pub struct LoopSegmentID;
-    pub struct LoopRegionID;
     pub struct ZoneID;
 }
+
+pub type LoopIntersectionID = mehsh::prelude::VertKey<LOOP_STRUCTURE>;
+pub type LoopSegmentID = mehsh::prelude::EdgeKey<LOOP_STRUCTURE>;
+pub type LoopRegionID = mehsh::prelude::FaceKey<LOOP_STRUCTURE>;
 
 #[derive(Default, Copy, Clone, Debug)]
 pub struct LoopSegment {
@@ -58,12 +60,14 @@ pub struct LevelGraphs {
     //
     pub graphs: [Graaf<ZoneID, LoopID>; 3],
     //
-    pub region_to_zones: [SecondaryMap<LoopRegionID, ZoneID>; 3],
+    pub region_to_zones: [HashMap<LoopRegionID, ZoneID>; 3],
     //
     pub levels: [Vec<HashSet<ZoneID>>; 3],
 }
 
-pub type LoopStructure = Douconel<LoopIntersectionID, EdgeID, LoopSegmentID, LoopSegment, LoopRegionID, LoopRegion>;
+mehsh::prelude::define_tag!(LOOP_STRUCTURE);
+
+pub type LoopStructure = mehsh::prelude::Mesh<LOOP_STRUCTURE>;
 
 // Dual structure (of a polycube)
 #[derive(Debug, Clone)]
@@ -74,6 +78,13 @@ pub struct Dual {
 
     pub loop_structure: LoopStructure,
     pub level_graphs: LevelGraphs,
+
+    // intersections to edges
+    intersection_to_edge: HashMap<LoopIntersectionID, EdgeID>,
+
+    loop_segments: HashMap<LoopSegmentID, LoopSegment>,
+
+    loop_regions: HashMap<LoopRegionID, LoopRegion>,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -93,8 +104,11 @@ impl Dual {
         let mut dual = Self {
             mesh_ref,
             loops_ref: loops_ref.clone(),
-            loop_structure: Douconel::default(),
+            loop_structure: mehsh::prelude::Mesh::default(),
             level_graphs: LevelGraphs::default(),
+            intersection_to_edge: HashMap::new(),
+            loop_segments: HashMap::new(),
+            loop_regions: HashMap::new(),
         };
 
         // Find all intersections and loop regions induced by the loops, and compute the loop structure
@@ -116,24 +130,28 @@ impl Dual {
     }
 
     pub fn intersection_to_edge(&self, intersection: LoopIntersectionID) -> EdgeID {
-        self.loop_structure.verts[intersection]
+        *self.intersection_to_edge.get(&intersection).unwrap()
     }
 
     pub fn segment_to_loop(&self, segment: LoopSegmentID) -> LoopID {
-        self.loop_structure.edges[segment].loop_id
+        self.loop_segments.get(&segment).unwrap().loop_id
     }
 
     pub fn segment_to_orientation(&self, segment: LoopSegmentID) -> Orientation {
-        self.loop_structure.edges[segment].orientation
+        self.loop_segments.get(&segment).unwrap().orientation
     }
 
     pub fn segment_to_endpoints(&self, segment: LoopSegmentID) -> (EdgeID, EdgeID) {
-        let endpoints = &self.loop_structure.endpoints(segment);
-        (self.intersection_to_edge(endpoints.0), self.intersection_to_edge(endpoints.1))
+        let endpoints = &self.loop_structure.vertices(segment);
+        (self.intersection_to_edge(endpoints[0]), self.intersection_to_edge(endpoints[1]))
+    }
+
+    pub fn region_to_verts(&self, region: LoopRegionID) -> HashSet<VertID> {
+        self.loop_regions[&region].verts.clone()
     }
 
     pub fn region_to_zone(&self, region: LoopRegionID, direction: PrincipalDirection) -> ZoneID {
-        self.level_graphs.region_to_zones[direction as usize][region]
+        self.level_graphs.region_to_zones[direction as usize][&region]
     }
 
     pub fn segment_to_edges_excl(&self, segment: LoopSegmentID) -> Vec<EdgeID> {
@@ -394,17 +412,23 @@ impl Dual {
             faces.push(face.iter().map(|&x| edge_id_to_index[&x]).collect_vec());
         }
 
-        if let Ok((mut douconel, vmap, _)) = LoopStructure::from_faces(&faces) {
+        if let Ok((mut douconel, vmap, _)) = LoopStructure::from(&faces, &vec![Vector3D::new(0., 0., 0.); intersections.len()]) {
             assert!(4 * douconel.vert_ids().len() == douconel.edge_ids().len());
+
             let intersection_ids = intersections.keys().copied().collect_vec();
-            for vertex_id in douconel.vert_ids() {
-                douconel.verts[vertex_id] = intersection_ids[vmap.get_by_right(&vertex_id).unwrap().to_owned()];
+            let vert_ids = douconel.vert_ids();
+            for vertex_id in vert_ids {
+                self.intersection_to_edge
+                    .insert(vertex_id, intersection_ids[vmap.id(&vertex_id).unwrap().to_owned()]);
             }
             for edge_id in douconel.edge_ids() {
-                let this = douconel.verts[douconel.root(edge_id)];
-                let next = douconel.verts[douconel.toor(edge_id)];
+                let endpoints = douconel.vertices(edge_id);
+                let this = self.intersection_to_edge(endpoints[0]);
+                let next = self.intersection_to_edge(endpoints[1]);
+
                 let (loop_id, _, orientation) = intersections[&this].iter().find(|&(_, x, _)| *x == next).unwrap().to_owned();
-                douconel.edges[edge_id] = LoopSegment { loop_id, orientation }
+
+                self.loop_segments.insert(edge_id, LoopSegment { loop_id, orientation });
             }
 
             self.loop_structure = douconel;
@@ -420,8 +444,8 @@ impl Dual {
         // All edges contained in loops can be considered blocked
         let blocked = self.loops_ref.values().flat_map(|lewp| lewp.edges.iter().copied()).collect::<HashSet<_>>();
         // Then all connected components of the mesh that are not blocked are loop regions
-        let loop_regions = hutspot::graph::find_ccs(&self.mesh_ref.verts.keys().collect_vec(), |vertex| {
-            let mut neighbors = self.mesh_ref.vneighbors(vertex);
+        let loop_regions = hutspot::graph::find_ccs(&self.mesh_ref.vert_ids(), |vertex| {
+            let mut neighbors = self.mesh_ref.neighbors(vertex);
             neighbors.retain(|&neighbor| !blocked.contains(&self.mesh_ref.edge_between_verts(vertex, neighbor).unwrap().0));
             neighbors
         });
@@ -441,9 +465,9 @@ impl Dual {
             // Loop segment should simply have only two connected components (one for each side)
             // We do not check all its edges, but only the first one (since they should all be the same)
             let arbitrary_edge = self.segment_to_edges_excl(segment_id)[0];
-            let (vert1, vert2) = self.mesh_ref.endpoints(arbitrary_edge);
-            let component1 = loop_regions.iter().position(|cc| cc.contains(&vert1)).unwrap();
-            let component2 = loop_regions.iter().position(|cc| cc.contains(&vert2)).unwrap();
+            let endpoints = self.mesh_ref.vertices(arbitrary_edge);
+            let component1 = loop_regions.iter().position(|cc| cc.contains(&endpoints[0])).unwrap();
+            let component2 = loop_regions.iter().position(|cc| cc.contains(&endpoints[1])).unwrap();
             segment_to_components.insert(segment_id, [component1, component2]);
         }
 
@@ -455,13 +479,17 @@ impl Dual {
             // Check whether all loop segments share the same connected component
             let component1_is_shared = loop_segments.iter().all(|&segment| segment_to_components[&segment].contains(&component1));
             let component2_is_shared = loop_segments.iter().all(|&segment| segment_to_components[&segment].contains(&component2));
-            self.loop_structure.faces[face_id] = LoopRegion {
-                verts: match (component1_is_shared, component2_is_shared) {
-                    (true, false) => loop_regions[component1].clone(),
-                    (false, true) => loop_regions[component2].clone(),
-                    _ => panic!(),
+
+            self.loop_regions.insert(
+                face_id,
+                LoopRegion {
+                    verts: match (component1_is_shared, component2_is_shared) {
+                        (true, false) => loop_regions[component1].clone(),
+                        (false, true) => loop_regions[component2].clone(),
+                        _ => panic!(),
+                    },
                 },
-            };
+            );
         }
 
         Ok(())
@@ -482,7 +510,7 @@ impl Dual {
 
             // Then all connected components of the loop structure that are not blocked are zones
             let zones = hutspot::graph::find_ccs(&self.loop_structure.face_ids(), |loop_region_id| {
-                let mut neighbors = self.loop_structure.fneighbors(loop_region_id);
+                let mut neighbors = self.loop_structure.neighbors(loop_region_id);
                 neighbors.retain(|&neighbor_id| !blocked.contains(&self.loop_structure.edge_between_faces(loop_region_id, neighbor_id).unwrap().0));
                 neighbors
             });
@@ -507,7 +535,7 @@ impl Dual {
             let region_to_zone = zone_ids
                 .iter()
                 .flat_map(|&zone_id| self.level_graphs.zones[zone_id].regions.iter().map(move |&region_id| (region_id, zone_id)))
-                .collect::<SecondaryMap<_, _>>();
+                .collect::<HashMap<_, _>>();
             self.level_graphs.region_to_zones[direction as usize] = region_to_zone;
 
             for &zone_id in &zone_ids {
@@ -604,7 +632,7 @@ impl Dual {
             for edge in edges {
                 let loop_id = self.segment_to_loop(edge);
                 let direction = self.loops_ref[loop_id].direction;
-                let orientation = self.loop_structure.edges[edge].orientation;
+                let orientation = self.segment_to_orientation(edge);
                 match (direction, orientation) {
                     (PrincipalDirection::X, Orientation::Forwards) => label_count[0] += 1,
                     (PrincipalDirection::X, Orientation::Backwards) => label_count[1] += 1,

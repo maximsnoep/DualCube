@@ -1,5 +1,7 @@
 use crate::dual::Orientation;
-use crate::{to_color, to_principal_direction, Configuration, FlatMaterial, InputResource, Perspective, Rendered, SolutionResource};
+use crate::{
+    to_color, to_principal_direction, vector3d_to_vec3, Configuration, FlatMaterial, InputResource, Perspective, PrincipalDirection, Rendered, SolutionResource,
+};
 use crate::{CameraHandles, EmbeddedMesh};
 use bevy::color::palettes::css::RED;
 use bevy::core_pipeline::tonemapping::Tonemapping;
@@ -10,6 +12,7 @@ use enum_iterator::{all, Sequence};
 use hutspot::draw::DrawableLine;
 use hutspot::geom::Vector3D;
 use itertools::Itertools;
+use mehsh::prelude::*;
 use serde::{Deserialize, Serialize};
 use smooth_bevy_cameras::controllers::orbit::{OrbitCameraBundle, OrbitCameraController};
 use std::collections::{HashMap, HashSet};
@@ -36,7 +39,7 @@ pub enum RenderAsset {
 #[derive(Clone)]
 pub struct MeshBundle(Mesh3d);
 impl MeshBundle {
-    pub const fn new(handle: Handle<Mesh>) -> Self {
+    pub const fn new(handle: Handle<bevy::render::mesh::Mesh>) -> Self {
         Self(Mesh3d(handle))
     }
 }
@@ -48,7 +51,11 @@ impl GizmoBundle {
     pub fn new(handle: Handle<GizmoAsset>, width: f32, depth: f32) -> Self {
         Self(Gizmo {
             handle,
-            line_config: GizmoLineConfig { width, ..Default::default() },
+            line_config: GizmoLineConfig {
+                width,
+                joints: GizmoLineJoint::Round(4),
+                ..Default::default()
+            },
             depth_bias: depth,
         })
     }
@@ -229,7 +236,7 @@ pub struct MeshProperties {
 
 pub fn respawn_renders(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
+    mut meshes: ResMut<Assets<bevy::render::mesh::Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut custom_materials: ResMut<Assets<FlatMaterial>>,
     configuration: Res<Configuration>,
@@ -318,7 +325,7 @@ pub fn respawn_renders(
 }
 
 pub fn update(
-    mut meshes: ResMut<Assets<Mesh>>,
+    mut meshes: ResMut<Assets<bevy::render::mesh::Mesh>>,
     mut gizmo_assets: ResMut<Assets<GizmoAsset>>,
 
     mut render_object_store: ResMut<RenderObjectStore>,
@@ -383,12 +390,12 @@ pub fn update(
                     let mut gizmos_flat_paths = GizmoAsset::new();
                     if let (Ok(lay), Some(polycube)) = (&solution.current_solution.layout, &solution.current_solution.polycube) {
                         let color = hutspot::color::GRAY;
-                        let c = Color::srgb(color[0], color[1], color[2]);
+                        let c = bevy::color::Color::srgb(color[0], color[1], color[2]);
 
                         let mut irregular_vertices = HashSet::new();
                         for vert_id in quad.quad_mesh.vert_ids() {
                             // Get the faces around the vertex
-                            let faces = quad.quad_mesh.star(vert_id);
+                            let faces = quad.quad_mesh.faces(vert_id);
                             // Get the labels of the faces around
                             let labels = faces
                                 .iter()
@@ -403,7 +410,7 @@ pub fn update(
                         // Get all edges going out irregular vertices
                         let mut irregular_edges = HashSet::new();
                         for &vert_id in &irregular_vertices {
-                            let edges = quad.quad_mesh.outgoing(vert_id);
+                            let edges = quad.quad_mesh.edges(vert_id);
                             for &edge_id in &edges {
                                 let mut next_twin_next = quad.quad_mesh.next(quad.quad_mesh.twin(quad.quad_mesh.next(edge_id)));
                                 while !irregular_edges.contains(&next_twin_next) {
@@ -415,12 +422,12 @@ pub fn update(
 
                         // Draw all irregular edges
                         for edge_id in irregular_edges {
-                            let [f1, f2] = quad.quad_mesh.faces(edge_id);
-                            let n1 = quad.quad_mesh_polycube.normal(f1);
-                            let n2 = quad.quad_mesh_polycube.normal(f2);
-                            let (u_id, v_id) = quad.quad_mesh.endpoints(edge_id);
-                            let u = quad.quad_mesh.position(u_id);
-                            let v = quad.quad_mesh.position(v_id);
+                            let faces = quad.quad_mesh.faces(edge_id);
+                            let n1 = quad.quad_mesh_polycube.normal(faces[0]);
+                            let n2 = quad.quad_mesh_polycube.normal(faces[1]);
+                            let endpoints = quad.quad_mesh.vertices(edge_id);
+                            let u = quad.quad_mesh.position(endpoints[0]);
+                            let v = quad.quad_mesh.position(endpoints[1]);
                             let line = DrawableLine::from_line(u, v, Vector3D::new(0., 0., 0.), translation, scale);
                             if n1 == n2 {
                                 gizmos_flat_paths.line(line.u, line.v, c);
@@ -482,14 +489,14 @@ pub fn update(
                     let mut gizmos_flat_paths = GizmoAsset::new();
                     if let (Ok(lay), Some(polycube)) = (&solution.current_solution.layout, &solution.current_solution.polycube) {
                         let color = hutspot::color::GRAY;
-                        let c = Color::srgb(color[0], color[1], color[2]);
+                        let c = bevy::color::Color::srgb(color[0], color[1], color[2]);
 
                         for (&pedge_id, path) in &lay.edge_to_path {
                             let f1 = polycube.structure.normal(polycube.structure.face(pedge_id));
                             let f2 = polycube.structure.normal(polycube.structure.face(polycube.structure.twin(pedge_id)));
-                            let (u_id, v_id) = polycube.structure.endpoints(pedge_id);
-                            let u = polycube.structure.position(u_id);
-                            let v = polycube.structure.position(v_id);
+                            let endpoints = polycube.structure.vertices(pedge_id);
+                            let u = polycube.structure.position(endpoints[0]);
+                            let v = polycube.structure.position(endpoints[1]);
                             let line = DrawableLine::from_line(u, v, Vector3D::new(0., 0., 0.), translation, scale);
                             gizmos_flat_paths.line(line.u, line.v, c);
                             if f1 != f2 {
@@ -546,37 +553,39 @@ pub fn update(
             Objects::InputMesh => {
                 let input = solution.current_solution.mesh_ref.as_ref();
                 let (scale, translation) = input.scale_translation();
-                let mut gizmos_loop = GizmoAsset::new();
+                let mut gizmos_xloops = GizmoAsset::new();
+                let mut gizmos_yloops = GizmoAsset::new();
+                let mut gizmos_zloops = GizmoAsset::new();
                 let mut gizmos_paths = GizmoAsset::new();
                 let mut gizmos_flat_paths = GizmoAsset::new();
-                let mut granulated_mesh = EmbeddedMesh::default();
+                let mut granulated_mesh = &EmbeddedMesh::default();
                 let mut color_map_segmentation = HashMap::new();
                 let mut color_map_alignment = HashMap::new();
 
                 let color = hutspot::color::WHITE;
-                let c = Color::srgb(color[0], color[1], color[2]);
+                let c = bevy::color::Color::srgb(color[0], color[1], color[2]);
 
                 for (lewp_id, lewp) in &solution.current_solution.loops {
                     let direction = solution.current_solution.loop_to_direction(lewp_id);
+
+                    let mut positions = vec![];
+                    for u in [lewp.edges.clone(), vec![lewp.edges[0]], vec![lewp.edges[1]]].concat() {
+                        let ut = hutspot::draw::transform_coordinates(mesh_resmut.mesh.position(u), translation, scale);
+                        // gizmos_loop.line(line.u, line.v, c);
+                        positions.push(vector3d_to_vec3(ut));
+                    }
+
                     let color = to_color(direction, Perspective::Dual, Some(Orientation::Forwards));
-                    let c = Color::srgb(color[0], color[1], color[2]);
-
-                    let edges = [lewp.edges.clone(), vec![lewp.edges[0]]].concat();
-
-                    for [u, v] in solution.current_solution.get_pairs_of_sequence(&edges) {
-                        let line = DrawableLine::from_line(
-                            mesh_resmut.mesh.midpoint(u),
-                            mesh_resmut.mesh.midpoint(v),
-                            Vector3D::new(0., 0., 0.),
-                            translation,
-                            scale,
-                        );
-                        gizmos_loop.line(line.u, line.v, c);
+                    let c = bevy::color::Color::srgb(color[0], color[1], color[2]);
+                    match direction {
+                        PrincipalDirection::X => gizmos_xloops.linestrip(positions, c),
+                        PrincipalDirection::Y => gizmos_yloops.linestrip(positions, c),
+                        PrincipalDirection::Z => gizmos_zloops.linestrip(positions, c),
                     }
                 }
 
                 if let (Ok(lay), Some(polycube)) = (&solution.current_solution.layout, &solution.current_solution.polycube) {
-                    granulated_mesh = lay.granulated_mesh.clone();
+                    granulated_mesh = &lay.granulated_mesh;
 
                     for (&pedge_id, path) in &lay.edge_to_path {
                         let f1 = polycube.structure.normal(polycube.structure.face(pedge_id));
@@ -587,9 +596,9 @@ pub fn update(
                                 continue;
                             }
                             let edge_id = granulated_mesh.edge_between_verts(vertexpair[0], vertexpair[1]).unwrap().0;
-                            let (u_id, v_id) = granulated_mesh.endpoints(edge_id);
-                            let u = granulated_mesh.position(u_id);
-                            let v = granulated_mesh.position(v_id);
+                            let endpoints = granulated_mesh.vertices(edge_id);
+                            let u = granulated_mesh.position(endpoints[0]);
+                            let v = granulated_mesh.position(endpoints[1]);
                             let line = DrawableLine::from_line(u, v, Vector3D::new(0., 0., 0.), translation, scale);
                             gizmos_flat_paths.line(line.u, line.v, c);
                             if f1 != f2 {
@@ -608,7 +617,7 @@ pub fn update(
                     }
 
                     for &triangle_id in &granulated_mesh.face_ids() {
-                        let score = solution.current_solution.alignment_per_triangle[triangle_id];
+                        let score = *solution.current_solution.alignment_per_triangle.get_or_panic(triangle_id);
                         let color = hutspot::color::map(score as f32, &hutspot::color::SCALE_MAGMA);
                         color_map_alignment.insert(triangle_id, color);
                     }
@@ -617,7 +626,7 @@ pub fn update(
                 let mut color_map_flag = HashMap::new();
                 let mut gizmos_flag_paths = GizmoAsset::new();
                 if let Some(flags) = &solution.current_solution.external_flag {
-                    for (face_id, label) in flags {
+                    for (face_id, label) in flags.iter() {
                         let color = match label {
                             0 => hutspot::color::RED,
                             1 => hutspot::color::RED,
@@ -631,12 +640,12 @@ pub fn update(
                     }
 
                     for edge_id in input.edge_ids() {
-                        let f1 = flags[input.face(edge_id)];
-                        let f2 = flags[input.face(input.twin(edge_id))];
+                        let f1 = flags.get(input.face(edge_id));
+                        let f2 = flags.get(input.face(input.twin(edge_id)));
                         if f1 != f2 {
-                            let (u_id, v_id) = input.endpoints(edge_id);
-                            let u = input.position(u_id);
-                            let v = input.position(v_id);
+                            let endpoints = input.vertices(edge_id);
+                            let u = input.position(endpoints[0]);
+                            let v = input.position(endpoints[1]);
                             let line = DrawableLine::from_line(u, v, Vector3D::new(0., 0., 0.), translation, scale);
                             gizmos_flag_paths.line(line.u, line.v, c);
                         }
@@ -667,9 +676,19 @@ pub fn update(
                             RenderAsset::Gizmo(GizmoBundle::new(gizmo_assets.add(input.gizmos(hutspot::color::GRAY)), 0.5, -1e-3)),
                         ))
                         .add(RenderFeature::new(
-                            "loops",
+                            "X-loops",
                             true,
-                            RenderAsset::Gizmo(GizmoBundle::new(gizmo_assets.add(gizmos_loop), 4., -1e-3)),
+                            RenderAsset::Gizmo(GizmoBundle::new(gizmo_assets.add(gizmos_xloops), 3., -0.0001)),
+                        ))
+                        .add(RenderFeature::new(
+                            "Y-loops",
+                            true,
+                            RenderAsset::Gizmo(GizmoBundle::new(gizmo_assets.add(gizmos_yloops), 3., -0.00011)),
+                        ))
+                        .add(RenderFeature::new(
+                            "Z-loops",
+                            true,
+                            RenderAsset::Gizmo(GizmoBundle::new(gizmo_assets.add(gizmos_zloops), 3., -0.000111)),
                         ))
                         .add(RenderFeature::new(
                             "paths",
@@ -712,7 +731,7 @@ pub fn gizmos(mut gizmos: Gizmos, gizmos_cache: Res<GizmosCache>, configuration:
     // println!("Gizmos cache: {:?}", gizmos_cache.raycaster);
     if configuration.interactive {
         for &(u, v, c) in &gizmos_cache.raycaster {
-            gizmos.line(u, v, Color::srgb(c[0], c[1], c[2]));
+            gizmos.line(u, v, bevy::color::Color::srgb(c[0], c[1], c[2]));
         }
     }
 }

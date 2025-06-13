@@ -2,12 +2,12 @@ use crate::layout::Layout;
 use crate::polycube::Polycube;
 use crate::EmbeddedMesh;
 use bimap::BiHashMap;
-use douconel::douconel_embedded::HasPosition;
 use faer::sparse::{SparseColMat, Triplet};
 use faer::Mat;
 use faer_gmres::gmres;
 use hutspot::geom::{Vector2D, Vector3D};
 use itertools::Itertools;
+use mehsh::prelude::*;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug, Default)]
@@ -57,7 +57,7 @@ impl Quad {
                 continue;
             }
             patches_done.insert(patch_id);
-            let neighboring_patches = polycube.fneighbors(patch_id);
+            let neighboring_patches = polycube.neighbors(patch_id);
             for &neighbor in &neighboring_patches {
                 if !patches_done.contains(&neighbor) {
                     queue.push(neighbor);
@@ -72,22 +72,22 @@ impl Quad {
             // Edge1 is mapped to unit edge (0,1) -> (1,1)
             let edge1 = patch_edges[0];
             let boundary1 = layout.edge_to_path.get(&edge1).unwrap();
-            let corner1 = polycube.endpoints(edge1).0;
+            let corner1 = polycube.vertices(edge1)[0];
 
             // Edge2 is mapped to unit edge (1,1) -> (1,0)
             let edge2 = patch_edges[1];
             let boundary2 = layout.edge_to_path.get(&edge2).unwrap();
-            let corner2 = polycube.endpoints(edge2).0;
+            let corner2 = polycube.vertices(edge2)[0];
 
             // Edge3 is mapped to unit edge (1,0) -> (0,0)
             let edge3 = patch_edges[2];
             let boundary3 = layout.edge_to_path.get(&edge3).unwrap();
-            let corner3 = polycube.endpoints(edge3).0;
+            let corner3 = polycube.vertices(edge3)[0];
 
             // Edge4 is mapped to unit edge (0,0) -> (0,1)
             let edge4 = patch_edges[3];
             let boundary4 = layout.edge_to_path.get(&edge4).unwrap();
-            let corner4 = polycube.endpoints(edge4).0;
+            let corner4 = polycube.vertices(edge4)[0];
 
             // d3p1 = (x1, y1, z1)
             // d3p2 = (x2, y2, z2)
@@ -99,13 +99,13 @@ impl Quad {
             // d2p2 = (u2, v1)
             // d2p3 = (u2, v2)
             // d2p4 = (u1, v2)
-            let p1 = polycube.endpoints(edge1).0;
+            let p1 = polycube.vertices(edge1)[0];
             let d3p1 = polycube.position(p1);
-            let p2 = polycube.endpoints(edge2).0;
+            let p2 = polycube.vertices(edge2)[0];
             let d3p2 = polycube.position(p2);
-            let p3 = polycube.endpoints(edge3).0;
+            let p3 = polycube.vertices(edge3)[0];
             let d3p3 = polycube.position(p3);
-            let p4 = polycube.endpoints(edge4).0;
+            let p4 = polycube.vertices(edge4)[0];
             let d3p4 = polycube.position(p4);
 
             let coordinates = if d3p1.x == d3p2.x && d3p1.x == d3p3.x && d3p1.x == d3p4.x {
@@ -160,7 +160,7 @@ impl Quad {
                 .unwrap()
                 .faces
                 .iter()
-                .flat_map(|&face_id| layout.granulated_mesh.corners(face_id))
+                .flat_map(|&face_id| layout.granulated_mesh.vertices(face_id))
                 .collect::<HashSet<_>>();
 
             let interior_verts = all_verts.iter().filter(|&&v| !map_to_2d.contains_key(&v)).copied().collect_vec();
@@ -182,7 +182,7 @@ impl Quad {
                 let row = vert_to_id.get_by_left(&v0).unwrap().to_owned();
                 // For vi (all neighbors of v0), we calculate weight wi, where wi = tan(alpha_{i-1} / 2) + tan(alpha_i / 2) / || vi - v0 ||
 
-                let neighbors = layout.granulated_mesh.vneighbors(v0);
+                let neighbors = layout.granulated_mesh.neighbors(v0);
                 let k = neighbors.len();
 
                 let w = (0..k)
@@ -259,15 +259,15 @@ impl Quad {
                     }
                 };
 
-                triangle_mesh_polycube.verts[v].set_position(position);
+                triangle_mesh_polycube.set_position(v, position);
             }
 
-            let grid_width = polycube.length(edge1);
-            assert!(polycube.length(edge3) == grid_width);
+            let grid_width = polycube.size(edge1);
+            assert!(polycube.size(edge3) == grid_width);
             let grid_n = grid_width as usize * 3;
 
-            let grid_height = polycube.length(edge2);
-            assert!(polycube.length(edge4) == grid_height);
+            let grid_height = polycube.size(edge2);
+            assert!(polycube.size(edge4) == grid_height);
             let grid_m = grid_height as usize * 3;
 
             let to_pos = |i: usize, j: usize| {
@@ -424,7 +424,7 @@ impl Quad {
         assert!(patches_done.len() == polycube.face_ids().len(), "Not all patches were done!");
 
         // Create the polycube quad mesh:
-        if let Ok((quad_mesh_polycube, _, _)) = EmbeddedMesh::from_embedded_faces(&faces, &vertex_positions) {
+        if let Ok((quad_mesh_polycube, _, _)) = EmbeddedMesh::from(&faces, &vertex_positions) {
             let triangle_lookup = triangle_mesh_polycube.bvh();
 
             // Create the quad mesh
@@ -435,7 +435,7 @@ impl Quad {
                 // Get the nearest triangle in the triangle mesh (polycube map)
                 let point = quad_mesh.position(vert_id);
                 let triangle = triangle_lookup.nearest(&[point.x, point.y, point.z]);
-                let corners = triangle_mesh_polycube.corners(triangle);
+                let corners = triangle_mesh_polycube.vertices(triangle);
 
                 // check distance from point to triangle
                 let distance1 = hutspot::geom::distance_to_triangle(
@@ -485,7 +485,7 @@ impl Quad {
                     println!("u v w: {u} {v} {w}");
                 }
 
-                quad_mesh.verts.get_mut(vert_id).unwrap().set_position(new_position);
+                quad_mesh.set_position(vert_id, new_position);
             }
 
             Self {

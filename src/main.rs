@@ -20,14 +20,12 @@ use bevy::window::WindowMode;
 use bevy::winit::WinitWindows;
 use bevy::{reflect::TypePath, render::render_resource::ShaderRef};
 use bevy_egui::EguiPlugin;
-use douconel::douconel::Douconel;
-use douconel::douconel_embedded::{Bhv, TreeD};
-use douconel::{douconel::Empty, douconel_embedded::EmbeddedVertex};
 use dual::Orientation;
 use graph::Graaf;
 use hutspot::color::RED;
 use hutspot::geom::Vector3D;
 use itertools::Itertools;
+use mehsh::prelude::*;
 use ordered_float::OrderedFloat;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use render::{add_line2, CameraFor, GizmosCache, MeshProperties, Objects, RenderObjectStore};
@@ -50,11 +48,9 @@ use winit::window::Icon;
 /// This example uses a shader source file from the assets subdirectory
 const SHADER_ASSET_PATH: &str = "flat.wgsl";
 
-slotmap::new_key_type! {
-    pub struct VertID;
-    pub struct EdgeID;
-    pub struct FaceID;
-}
+pub type VertID = VertKey<MESH>;
+pub type EdgeID = EdgeKey<MESH>;
+pub type FaceID = FaceKey<MESH>;
 
 // Principal directions, used to characterize a polycube (each edge and face is associated with a principal direction)
 #[derive(Copy, Clone, Default, PartialEq, Eq, Debug, Hash, Serialize, Deserialize)]
@@ -150,7 +146,8 @@ pub fn to_principal_direction(v: Vector3D) -> (PrincipalDirection, Orientation) 
     }
 }
 
-pub type EmbeddedMesh = Douconel<VertID, EmbeddedVertex, EdgeID, Empty, FaceID, Empty>;
+mehsh::prelude::define_tag!(MESH);
+pub type EmbeddedMesh = mehsh::prelude::Mesh<MESH>;
 
 #[derive(Resource, Debug, Clone, Serialize, Deserialize)]
 pub struct Configuration {
@@ -309,8 +306,8 @@ pub struct InputResource {
     mesh: Arc<EmbeddedMesh>,
     properties: MeshProperties,
     properties2: MeshProperties,
-    vertex_lookup: TreeD<VertID>,
-    triangle_lookup: Bhv<FaceID>,
+    vertex_lookup: mehsh::prelude::VertLocation<MESH>,
+    triangle_lookup: mehsh::prelude::FaceLocation<MESH>,
     flow_graphs: [Graaf<EdgeID, f64>; 3],
 }
 
@@ -323,7 +320,7 @@ pub struct SolutionResource {
 impl Default for SolutionResource {
     fn default() -> Self {
         Self {
-            current_solution: Solution::new(Arc::new(Douconel::default())),
+            current_solution: Solution::new(Arc::new(mehsh::mesh::connectivity::Mesh::default())),
             next: [HashMap::new(), HashMap::new(), HashMap::new()],
         }
     }
@@ -360,7 +357,7 @@ fn main() {
         .init_resource::<HexTasks>()
         .init_resource::<CameraHandles>()
         .insert_resource(AmbientLight {
-            color: Color::WHITE,
+            color: bevy::color::Color::WHITE,
             brightness: 1.0,
             affects_lightmapped_meshes: true,
         })
@@ -503,11 +500,27 @@ pub fn handle_events(
         match ev {
             ActionEvent::LoadFile(path) => {
                 match path.extension().unwrap().to_str() {
-                    Some("obj" | "stl") => {
+                    Some("obj") => {
                         *mesh_resmut = InputResource::default();
                         *solution = SolutionResource::default();
 
-                        mesh_resmut.mesh = match Douconel::from_file(path) {
+                        mesh_resmut.mesh = match mehsh::mesh::connectivity::Mesh::from_obj(path) {
+                            Ok(res) => {
+                                let mut mesh = res.0;
+                                Arc::new(mesh)
+                            }
+                            Err(err) => {
+                                panic!("Error while parsing STL file {path:?}: {err:?}");
+                            }
+                        };
+
+                        solution.current_solution = Solution::new(mesh_resmut.mesh.clone());
+                    }
+                    Some("stl") => {
+                        *mesh_resmut = InputResource::default();
+                        *solution = SolutionResource::default();
+
+                        mesh_resmut.mesh = match mehsh::mesh::connectivity::Mesh::from_stl(path) {
                             Ok(res) => {
                                 let mut mesh = res.0;
                                 Arc::new(mesh)
@@ -526,6 +539,8 @@ pub fn handle_events(
                             configuration.window_shows_object,
                             configuration.clear_color,
                         );
+
+                        println!("Loading save file {path:?}");
 
                         *mesh_resmut = InputResource::default();
                         *solution = SolutionResource::default();
@@ -558,7 +573,7 @@ pub fn handle_events(
                         }
                     }
                     Some("flag") => {
-                        let mut flags = SecondaryMap::new();
+                        let mut flags = ids::SecMap::new();
 
                         for (i, line) in BufReader::new(File::open(path).unwrap()).lines().flatten().enumerate() {
                             let label = line.parse::<usize>().unwrap();
@@ -604,8 +619,8 @@ pub fn handle_events(
 
                                     if face1 == face2 {
                                         let normal = mesh_resmut.mesh.normal(face1);
-                                        let m1 = mesh_resmut.mesh.midpoint(node);
-                                        let m2 = mesh_resmut.mesh.midpoint(neighbor);
+                                        let m1 = mesh_resmut.mesh.position(node);
+                                        let m2 = mesh_resmut.mesh.position(neighbor);
                                         let direction = m2 - m1;
                                         let cross = direction.cross(&normal);
                                         let angle = cross.angle(&axis.into());
@@ -974,8 +989,8 @@ fn raycast(
 
     // Render all current solutions  (for currently selected direction)
     for (&edgepair, sol) in &solution.next[configuration.direction as usize] {
-        let u = mesh_resmut.mesh.midpoint(edgepair[0]);
-        let v = mesh_resmut.mesh.midpoint(edgepair[1]);
+        let u = mesh_resmut.mesh.position(edgepair[0]);
+        let v = mesh_resmut.mesh.position(edgepair[1]);
         let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edgepair[0]));
         let color = match sol {
             Some(_) => to_color(configuration.direction, Perspective::Dual, None),
@@ -1026,7 +1041,7 @@ fn raycast(
     // get the nearest_vert (one of 3 corners of nearest_face)
     let nearest_vert = mesh_resmut
         .mesh
-        .corners(nearest_face)
+        .vertices(nearest_face)
         .iter()
         .min_by_key(|&v| OrderedFloat(position.metric_distance(&mesh_resmut.mesh.position(*v))))
         .unwrap()
@@ -1034,8 +1049,8 @@ fn raycast(
 
     let edgepair = mesh_resmut.mesh.edges_in_face_with_vert(nearest_face, nearest_vert).unwrap();
 
-    let u = mesh_resmut.mesh.midpoint(edgepair[0]);
-    let v = mesh_resmut.mesh.midpoint(edgepair[1]);
+    let u = mesh_resmut.mesh.position(edgepair[0]);
+    let v = mesh_resmut.mesh.position(edgepair[1]);
     let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edgepair[0]));
     let color = to_color(configuration.direction, Perspective::Dual, None);
 
@@ -1071,7 +1086,7 @@ fn raycast(
         .iter()
         .map(|(&edgepair, sol)| {
             (
-                ((mesh_resmut.mesh.midpoint(edgepair[0]) + mesh_resmut.mesh.midpoint(edgepair[1])) / 2.).metric_distance(&position),
+                ((mesh_resmut.mesh.position(edgepair[0]) + mesh_resmut.mesh.position(edgepair[1])) / 2.).metric_distance(&position),
                 sol,
                 edgepair,
             )
@@ -1125,9 +1140,9 @@ fn raycast(
                         let direction = some_solution.loop_to_direction(loop_id);
                         let color = to_color(direction, Perspective::Dual, None);
                         for &edgepair in &some_solution.get_pairs_of_loop(loop_id) {
-                            let u = mesh_resmut.mesh.midpoint(edgepair[0]);
-                            let v = mesh_resmut.mesh.midpoint(edgepair[1]);
-                            let n = mesh_resmut.mesh.edge_normal(edgepair[0]);
+                            let u = mesh_resmut.mesh.position(edgepair[0]);
+                            let v = mesh_resmut.mesh.position(edgepair[1]);
+                            let n = mesh_resmut.mesh.normal(edgepair[0]);
                             add_line2(
                                 &mut gizmos_cache.raycaster,
                                 u,

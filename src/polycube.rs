@@ -2,19 +2,17 @@ use crate::dual::{Dual, LoopRegionID, Orientation};
 use crate::layout::Layout;
 use crate::PrincipalDirection;
 use bimap::BiHashMap;
-use douconel::douconel::{Douconel, Empty};
-use douconel::douconel_embedded::{EmbeddedVertex, HasPosition};
 use hutspot::geom::Vector3D;
 use itertools::Itertools;
+use mehsh::prelude::*;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-slotmap::new_key_type! {
-    pub struct PolycubeVertID;
-    pub struct PolycubeEdgeID;
-    pub struct PolycubeFaceID;
-}
-
-type PolycubeMesh = Douconel<PolycubeVertID, EmbeddedVertex, PolycubeEdgeID, Empty, PolycubeFaceID, (PrincipalDirection, Orientation)>;
+mehsh::prelude::define_tag!(POLYCUBE);
+pub type PolycubeVertID = mehsh::prelude::VertKey<POLYCUBE>;
+pub type PolycubeEdgeID = mehsh::prelude::EdgeKey<POLYCUBE>;
+pub type PolycubeFaceID = mehsh::prelude::FaceKey<POLYCUBE>;
+type PolycubeMesh = mehsh::prelude::Mesh<POLYCUBE>;
 
 #[derive(Clone, Debug)]
 pub struct Polycube {
@@ -38,14 +36,14 @@ impl Polycube {
         // By creating the primal faces
         let faces = primal_faces
             .iter()
-            .map(|&dual_vert_id| dual.loop_structure.star(dual_vert_id).into_iter().rev().collect_vec())
+            .map(|&dual_vert_id| dual.loop_structure.faces(dual_vert_id).into_iter().rev().collect_vec())
             .collect_vec();
         let int_faces = faces.iter().map(|face| face.iter().map(|vert| vert_to_int[vert]).collect_vec()).collect_vec();
 
-        let (primal, vert_map, _) = PolycubeMesh::from_embedded_faces(&int_faces, &vec![Vector3D::new(0., 0., 0.); primal_vertices.len()]).unwrap();
+        let (primal, vert_map, _) = PolycubeMesh::from(&int_faces, &vec![Vector3D::new(0., 0., 0.); primal_vertices.len()]).unwrap();
 
         for vert_id in &primal.vert_ids() {
-            let region_id = primal_vertices[vert_map.get_by_right(vert_id).unwrap().to_owned()];
+            let region_id = primal_vertices[vert_map.id(vert_id).unwrap().to_owned()];
             region_to_vertex.insert(region_id, vert_id.to_owned());
         }
 
@@ -119,8 +117,7 @@ impl Polycube {
         // Assign the positions to the vertices
         for vert_id in self.structure.vert_ids() {
             let [x, y, z] = vert_to_coord[&vert_id];
-            let position = Vector3D::new(x, y, z);
-            self.structure.verts[vert_id].set_position(position);
+            self.structure.set_position(vert_id, Vector3D::new(x, y, z));
         }
     }
 }

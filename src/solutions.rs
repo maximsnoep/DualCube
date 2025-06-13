@@ -4,10 +4,11 @@ use crate::{
     layout::Layout,
     polycube::{Polycube, PolycubeFaceID},
     quad::Quad,
-    to_principal_direction, EdgeID, EmbeddedMesh, FaceID, PrincipalDirection,
+    to_principal_direction, EdgeID, EmbeddedMesh, FaceID, PrincipalDirection, MESH,
 };
 use hutspot::geom::Vector3D;
 use itertools::Itertools;
+use mehsh::prelude::*;
 use ordered_float::OrderedFloat;
 use rand::{seq::IteratorRandom, thread_rng};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -20,6 +21,15 @@ use std::{
     path::PathBuf,
     sync::Arc,
 };
+
+macro_rules! match_slice {
+    ([$($var:ident),+] <- $expr:expr) => {
+        let ($($var),+) = match &$expr[..] {
+            [$($var),+] => ($($var),+),
+            _ => unreachable!(),
+        };
+    };
+}
 
 slotmap::new_key_type! {
     pub struct LoopID;
@@ -65,8 +75,8 @@ impl Loop {
         seq
     }
 
-    pub fn occupied(loops: &SlotMap<LoopID, Self>) -> SecondaryMap<EdgeID, Vec<LoopID>> {
-        let mut occupied: SecondaryMap<EdgeID, Vec<LoopID>> = SecondaryMap::new();
+    pub fn occupied(loops: &SlotMap<LoopID, Self>) -> ids::SecMap<EDGE, MESH, Vec<LoopID>> {
+        let mut occupied = ids::SecMap::new();
         for loop_id in loops.keys() {
             for &edge in &loops[loop_id].edges {
                 if !occupied.contains_key(edge) {
@@ -83,17 +93,17 @@ impl Loop {
 pub struct Solution {
     pub mesh_ref: Arc<EmbeddedMesh>,
     pub loops: SlotMap<LoopID, Loop>,
-    occupied: SecondaryMap<EdgeID, Vec<LoopID>>,
+    occupied: ids::SecMap<EDGE, MESH, Vec<LoopID>>,
 
     pub dual: Result<Dual, PropertyViolationError>,
     pub polycube: Option<Polycube>,
     pub layout: Result<Layout, PropertyViolationError>,
     pub quad: Option<Quad>,
 
-    pub alignment_per_triangle: SecondaryMap<FaceID, f64>,
+    pub alignment_per_triangle: ids::SecMap<FACE, MESH, f64>,
     pub alignment: Option<f64>,
 
-    pub external_flag: Option<SecondaryMap<FaceID, usize>>,
+    pub external_flag: Option<ids::SecMap<FACE, MESH, usize>>,
 }
 
 impl Solution {
@@ -101,12 +111,12 @@ impl Solution {
         Self {
             mesh_ref,
             loops: SlotMap::with_key(),
-            occupied: SecondaryMap::new(),
+            occupied: ids::SecMap::new(),
             dual: Err(PropertyViolationError::default()),
             polycube: None,
             layout: Err(PropertyViolationError::default()),
             quad: None,
-            alignment_per_triangle: SecondaryMap::new(),
+            alignment_per_triangle: ids::SecMap::new(),
             alignment: None,
             external_flag: None,
         }
@@ -165,9 +175,10 @@ impl Solution {
         let n = loops_in_edge.len() as f64;
         let offset = (i + 1.) / (n + 1.);
         // define the loop segment, starting point is p, ending point is q
-        let (startpoint, endpoint) = self.mesh_ref.endpoints(e);
-        let p = self.mesh_ref.position(startpoint);
-        let q = self.mesh_ref.position(endpoint);
+
+        let endpoints = self.mesh_ref.vertices(e);
+        let p = self.mesh_ref.position(endpoints[0]);
+        let q = self.mesh_ref.position(endpoints[1]);
         // compute the coordinates
         p + offset * (q - p)
     }
@@ -228,7 +239,7 @@ impl Solution {
             .iter()
             .flat_map(|(edge_id, loops_on_edge)| {
                 self.mesh_ref
-                    .nexts(edge_id)
+                    .edges(self.mesh_ref.face(edge_id))
                     .iter()
                     .flat_map(|&neighbor_id| {
                         if loops_on_edge.iter().any(|loop_on_edge| self.loops_on_edge(neighbor_id).contains(loop_on_edge)) {
@@ -359,7 +370,7 @@ impl Solution {
     ) -> Vec<Vec<EdgeID>> {
         (0..n.pow(4))
             .map(|_| {
-                let e1 = self.mesh_ref.edges.keys().choose(&mut thread_rng()).unwrap();
+                let e1 = self.mesh_ref.edge_ids().into_iter().choose(&mut thread_rng()).unwrap();
                 let e2 = self.mesh_ref.next(e1);
                 [e1, e2]
             })
@@ -437,20 +448,38 @@ impl Solution {
     pub fn reconstruct_solution(&mut self, unit: bool) -> Result<(), PropertyViolationError> {
         self.clear();
 
+        println!("[Solution] Reconstructing solution with {} loops", self.loops.len());
+
         self.dual = Dual::from(self.mesh_ref.clone(), &self.loops);
         if let Err(e) = &self.dual {
             return Err(e.clone());
         }
 
+        println!(
+            "[Solution] Dual structure created with {} faces",
+            self.dual.as_ref().unwrap().loop_structure.nr_faces()
+        );
+
         self.polycube = Some(Polycube::from_dual(self.dual.as_ref().unwrap()));
 
+        println!(
+            "[Solution] Polycube created with {} faces",
+            self.polycube.as_ref().unwrap().structure.nr_faces()
+        );
+
         // check all faces of the polycube have a normal
-        for face in self.polycube.as_ref().unwrap().structure.faces.keys() {
+        for face in self.polycube.as_ref().unwrap().structure.face_ids() {
             let normal = self.polycube.as_ref().unwrap().structure.normal(face);
             if normal.x.is_nan() || normal.y.is_nan() || normal.z.is_nan() {
+                println!("[Solution] Face {:?} has an invalid normal: {:?}", face, normal);
                 return Err(PropertyViolationError::UnknownError);
             }
         }
+
+        println!(
+            "[Solution] Polycube normals computed for {} faces",
+            self.polycube.as_ref().unwrap().structure.nr_faces()
+        );
 
         for _ in 0..10 {
             self.layout = Layout::embed(self.dual.as_ref().unwrap(), self.polycube.as_ref().unwrap());
@@ -459,13 +488,22 @@ impl Solution {
             }
         }
 
+        println!(
+            "[Solution] Layout created with {} faces",
+            self.layout.as_ref().unwrap().granulated_mesh.face_ids().len()
+        );
+
         if let Err(e) = &self.layout {
             return Err(e.clone());
         }
 
         self.resize_polycube(unit);
 
+        println!("[Solution] Polycube resized to {} faces", self.polycube.as_ref().unwrap().structure.nr_faces());
+
         self.compute_quality();
+
+        println!("[Solution] Quality computed with alignment score: {:?}", self.get_quality());
 
         self.quad = Some(Quad::from_layout(self.layout.as_ref().unwrap(), self.polycube.as_ref().unwrap()));
 
@@ -487,7 +525,7 @@ impl Solution {
         self.alignment = None;
 
         if let (Ok(layout), Some(polycube)) = (&self.layout, &self.polycube) {
-            let total_area: f64 = layout.granulated_mesh.faces.keys().map(|f| layout.granulated_mesh.area(f)).sum();
+            let total_area: f64 = layout.granulated_mesh.face_ids().into_iter().map(|f| layout.granulated_mesh.size(f)).sum();
             let mut total_score = 0.0;
 
             for (&patch, patch_faces) in &layout.face_to_patch {
@@ -496,7 +534,7 @@ impl Solution {
                     let actual_normal = layout.granulated_mesh.normal(triangle_id);
                     let score = actual_normal.dot(&mapped_normal);
                     self.alignment_per_triangle.insert(triangle_id, score);
-                    total_score += score * layout.granulated_mesh.area(triangle_id) / total_area;
+                    total_score += score * layout.granulated_mesh.size(triangle_id) / total_area;
                 }
             }
             self.alignment = Some(total_score);
@@ -1501,7 +1539,7 @@ impl Solution {
 
     pub fn write_to_obj(&self, path: &PathBuf) -> std::io::Result<()> {
         if let Ok(layout) = &self.layout {
-            layout.granulated_mesh.write_to_obj(path)?;
+            layout.granulated_mesh.to_obj(path)?;
             return Ok(());
         }
         Err(std::io::Error::new(std::io::ErrorKind::Other, "No layout available"))

@@ -7,6 +7,7 @@ use bimap::BiHashMap;
 use hutspot::geom::Vector3D;
 use itertools::Itertools;
 use log::info;
+use mehsh::prelude::*;
 use ordered_float::OrderedFloat;
 use std::io::Write;
 use std::path::Path;
@@ -27,11 +28,10 @@ impl Solution {
             // Find the most front vertex (reference vertex), which is the vertex with the smallest x-coordinate
             let refv = polycube
                 .structure
-                .verts
-                .iter()
-                .min_by_key(|vert| OrderedFloat(polycube.structure.position(vert.0).x))
-                .unwrap()
-                .0;
+                .vert_ids()
+                .into_iter()
+                .min_by_key(|&vert| OrderedFloat(polycube.structure.position(vert).x))
+                .unwrap();
 
             let (min_x, max_x, min_y, max_y, min_z, max_z) = (
                 dual.mesh_ref
@@ -245,9 +245,9 @@ impl Solution {
                     .iter()
                     .filter_map(|edge_id| {
                         edge_to_id.get_by_left(edge_id).map(|edge_int| {
-                            let verts = polycube.structure.endpoints(*edge_id);
-                            let vert_int1 = vert_to_id.get_by_left(&verts.0).unwrap();
-                            let vert_int2 = vert_to_id.get_by_left(&verts.1).unwrap();
+                            let verts = polycube.structure.vertices(*edge_id);
+                            let vert_int1 = vert_to_id.get_by_left(&verts[0]).unwrap();
+                            let vert_int2 = vert_to_id.get_by_left(&verts[1]).unwrap();
                             format!("       {edge_int}       {vert_int1}       {vert_int2}       'EDGE'")
                         })
                     })
@@ -297,7 +297,7 @@ impl Solution {
                     .vert_ids()
                     .iter()
                     .map(|vert_id| {
-                        let edge_id = polycube.structure.outgoing(*vert_id)[0];
+                        let edge_id = polycube.structure.edges(*vert_id)[0];
                         let path = layout.edge_to_path.get(&edge_id).unwrap();
                         let first_vertex = path[0];
                         let vert_int = vert_to_id.get_by_left(vert_id).unwrap();
@@ -429,6 +429,7 @@ impl Solution {
                         .unwrap()
                 })
                 .map(|segment_id| dual.loop_structure.faces(segment_id))
+                .map(|face| [face[0], face[1]])
                 .map(|[region1, region2]| {
                     (
                         polycube.region_to_vertex.get_by_left(&region1).unwrap().to_owned(),
@@ -451,7 +452,7 @@ impl Solution {
                             .get_by_left(&edge_id)
                             .or_else(|| edge_to_id.get_by_left(&polycube.structure.twin(edge_id)))
                             .unwrap();
-                        let length = polycube.structure.length(edge_id) as usize;
+                        let length = polycube.structure.size(edge_id) as usize;
                         format!("       {edge_int}       {length}")
                     })
                     .collect::<Vec<_>>()
@@ -563,9 +564,9 @@ impl Solution {
                 "{}",
                 polycube
                     .structure
-                    .faces
-                    .iter()
-                    .map(|face_id| format!("  {}", face_to_id.get_by_left(&face_id.0).unwrap()))
+                    .face_ids()
+                    .into_iter()
+                    .map(|face_id| format!("  {}", face_to_id.get_by_left(&face_id).unwrap()))
                     .collect::<Vec<_>>()
                     .join("  ")
             )?;
