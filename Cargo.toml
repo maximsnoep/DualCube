@@ -21,8 +21,9 @@ missing_errors_doc = "allow"
 
 [dependencies]
 # replaces douconel:
-mehsh = { path = "../mehsh", features = ["bevy", "obj", "stl", "petgraph"] }
+# mehsh = { path = "../mehsh", features = ["bevy", "obj", "stl", "petgraph"] }
 
+mehsh = { git = "https://github.com/maximsnoep/mehsh", features = ["bevy", "obj", "stl", "petgraph"] }
 hutspot = { git = "https://github.com/maximsnoep/hutspot" }
 
 bevy = "0.16.0"
