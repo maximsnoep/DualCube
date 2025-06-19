@@ -19,7 +19,7 @@ impl Solution {
         let path_cdim = path.with_extension("cdim");
         let path_bcdat = path.with_extension("bcdat");
 
-        if let (Ok(dual), Ok(layout), Some(polycube)) = (&self.dual, &self.layout, &self.polycube) {
+        if let (Ok(dual), Ok(layout), Some(polycube), Some(quad)) = (&self.dual, &self.layout, &self.polycube, &self.quad) {
             let signature = " -- automatically generated via the DualLoops algorithm";
 
             // Also add farfield description (box around the model) with size mult*a x mult*b x mult*c (if whole model is a x b x c)
@@ -287,7 +287,7 @@ impl Solution {
             write!(
                 file_geom,
                 "\n NUMBER OF VERTICES:\n       {}\n        VERT       X Y Z                     IDENT\n",
-                polycube.structure.vert_ids().len() + 8
+                polycube.structure.nr_verts() + 8
             )?;
             write!(
                 file_geom,
@@ -374,7 +374,7 @@ impl Solution {
             write!(
                 file_geom,
                 "\n NUMBER OF EDGES:\n       {}\n        EDGE       CONTROL POINTS\n",
-                polycube.structure.edge_ids().len() / 2
+                polycube.structure.nr_edges() / 2
             )?;
             write!(
                 file_geom,
@@ -406,7 +406,42 @@ impl Solution {
                     .join("\n")
             )?;
 
-            write!(file_geom, "\n NUMBER OF FACES:\n       0")?;
+            // Write all faces
+            write!(file_geom, "\n NUMBER OF FACES:\n       {}", polycube.structure.nr_faces())?;
+
+            write!(file_geom, "\n FACE        X  Y\n")?;
+            write!(
+                file_geom,
+                "{}",
+                polycube
+                    .structure
+                    .face_ids()
+                    .iter()
+                    .map(|face_id| {
+                        let verts = quad.face_to_verts.get(face_id).unwrap();
+                        let mut lines = vec![];
+                        let width = verts.len();
+                        let height = verts[0].len();
+                        lines.push(format!("       {}       {}  {}", face_to_id.get_by_left(face_id).unwrap(), width, height));
+                        for i in 0..width {
+                            for j in 0..height {
+                                let vert_id = verts[i][j];
+                                let pos = quad.quad_mesh.position(vert_id);
+                                let line = format!(
+                                    "  {}  {}  {}",
+                                    ryu::Buffer::new().format(pos.x),
+                                    ryu::Buffer::new().format(pos.y),
+                                    ryu::Buffer::new().format(pos.z)
+                                );
+                                lines.push(line);
+                            }
+                        }
+                        lines.join("\n")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )?;
+
             info!("Finished writing GEOM file");
 
             // -----------------------

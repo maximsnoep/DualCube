@@ -1,5 +1,5 @@
 use crate::layout::Layout;
-use crate::polycube::Polycube;
+use crate::polycube::{Polycube, POLYCUBE};
 use crate::EmbeddedMesh;
 use bimap::BiHashMap;
 use faer::sparse::{SparseColMat, Triplet};
@@ -7,14 +7,19 @@ use faer::Mat;
 use faer_gmres::gmres;
 use hutspot::geom::{Vector2D, Vector3D};
 use itertools::Itertools;
+use mehsh::mesh::algo::location::face;
 use mehsh::prelude::*;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+
+mehsh::prelude::define_tag!(QUAD);
 
 #[derive(Clone, Debug, Default)]
 pub struct Quad {
     pub triangle_mesh_polycube: EmbeddedMesh,
-    pub quad_mesh_polycube: EmbeddedMesh,
-    pub quad_mesh: EmbeddedMesh,
+    pub quad_mesh_polycube: Mesh<QUAD>,
+    pub quad_mesh: Mesh<QUAD>,
+    pub face_to_verts: HashMap<FaceKey<POLYCUBE>, Vec<Vec<VertKey<QUAD>>>>,
 }
 
 impl Quad {
@@ -51,6 +56,9 @@ impl Quad {
         queue.push(polycube.face_ids()[0]);
 
         let mut patches_done = HashSet::new();
+
+        let mut face_to_verts_usize: HashMap<FaceKey<POLYCUBE>, Vec<Vec<usize>>> = HashMap::new();
+        let mut face_to_verts: HashMap<FaceKey<POLYCUBE>, Vec<Vec<VertKey<QUAD>>>> = HashMap::new();
 
         while let Some(patch_id) = queue.pop() {
             if patches_done.contains(&patch_id) {
@@ -262,13 +270,15 @@ impl Quad {
                 triangle_mesh_polycube.set_position(v, position);
             }
 
+            let omega = 5;
+
             let grid_width = polycube.size(edge1);
             assert!(polycube.size(edge3) == grid_width);
-            let grid_n = grid_width as usize * 3;
+            let grid_n = grid_width as usize * omega;
 
             let grid_height = polycube.size(edge2);
             assert!(polycube.size(edge4) == grid_height);
-            let grid_m = grid_height as usize * 3;
+            let grid_m = grid_height as usize * omega;
 
             let to_pos = |i: usize, j: usize| {
                 let u = i as f64 / (grid_m - 1) as f64;
@@ -371,6 +381,8 @@ impl Quad {
                 }
             }
 
+            face_to_verts_usize.insert(patch_id, vert_map.iter().map(|row| row.iter().filter_map(|&v| v).collect_vec()).collect_vec());
+
             // Add the boundary vertices to the edges_done map
             corners_done.insert(corner1, vert_map[0][0].unwrap());
             corners_done.insert(corner2, vert_map[0][grid_n - 1].unwrap());
@@ -424,8 +436,17 @@ impl Quad {
         assert!(patches_done.len() == polycube.face_ids().len(), "Not all patches were done!");
 
         // Create the polycube quad mesh:
-        if let Ok((quad_mesh_polycube, _, _)) = EmbeddedMesh::from(&faces, &vertex_positions) {
+        if let Ok((quad_mesh_polycube, vert_id_map, _)) = Mesh::<QUAD>::from(&faces, &vertex_positions) {
             let triangle_lookup = triangle_mesh_polycube.bvh();
+
+            for (face_id, vert_ids) in &face_to_verts_usize {
+                // Convert usize to VertKey<QUAD>
+                let vert_keys = vert_ids
+                    .iter()
+                    .map(|row| row.iter().map(|&v| vert_id_map.key(v).unwrap().to_owned()).collect_vec())
+                    .collect_vec();
+                face_to_verts.insert(face_id.to_owned(), vert_keys);
+            }
 
             // Create the quad mesh
             // First, create copy of quad_mesh_polycube
@@ -492,6 +513,7 @@ impl Quad {
                 triangle_mesh_polycube,
                 quad_mesh_polycube,
                 quad_mesh,
+                face_to_verts,
             }
         } else {
             panic!("Failed to create quad mesh from faces and vertex positions");
