@@ -1,9 +1,10 @@
+mod color;
 mod dual;
 mod graph;
 mod layout;
 mod nlr;
 mod polycube;
-pub mod quad;
+mod quad;
 mod render;
 mod solutions;
 mod ui;

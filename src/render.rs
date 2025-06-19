@@ -1,22 +1,20 @@
+use crate::color;
 use crate::dual::Orientation;
 use crate::{
     to_color, to_principal_direction, vector3d_to_vec3, Configuration, FlatMaterial, InputResource, Perspective, PrincipalDirection, Rendered, SolutionResource,
 };
 use crate::{CameraHandles, EmbeddedMesh};
-use bevy::color::palettes::css::RED;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::prelude::*;
 use bevy::render::camera::ScalingMode;
 use bevy::render::render_resource::{Extent3d, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages};
 use enum_iterator::{all, Sequence};
 use hutspot::draw::DrawableLine;
-use hutspot::geom::Vector3D;
 use itertools::Itertools;
 use mehsh::prelude::*;
 use serde::{Deserialize, Serialize};
 use smooth_bevy_cameras::controllers::orbit::{OrbitCameraBundle, OrbitCameraController};
 use std::collections::{HashMap, HashSet};
-use std::f32::consts::PI;
 
 const DEFAULT_CAMERA_EYE: Vec3 = Vec3::new(25.0, 25.0, 35.0);
 const DEFAULT_CAMERA_TARGET: Vec3 = Vec3::new(0., 0., 0.);
@@ -378,6 +376,11 @@ pub fn update(
             // wireframe (the quads)
             Objects::QuadMesh => {
                 if let Some(quad) = &solution.current_solution.quad {
+                    let mut default_color_map = HashMap::new();
+                    for face_id in quad.quad_mesh.face_ids() {
+                        default_color_map.insert(face_id, color::LIGHT_GRAY);
+                    }
+
                     let (scale, translation) = quad.quad_mesh.scale_translation();
                     let mut color_map = HashMap::new();
                     for face_id in quad.quad_mesh.face_ids() {
@@ -389,7 +392,7 @@ pub fn update(
                     let mut gizmos_paths = GizmoAsset::new();
                     let mut gizmos_flat_paths = GizmoAsset::new();
                     if let (Ok(lay), Some(polycube)) = (&solution.current_solution.layout, &solution.current_solution.polycube) {
-                        let color = hutspot::color::GRAY;
+                        let color = color::GRAY;
                         let c = bevy::color::Color::srgb(color[0], color[1], color[2]);
 
                         let mut irregular_vertices = HashSet::new();
@@ -441,9 +444,9 @@ pub fn update(
                         object,
                         RenderObject::default()
                             .add(RenderFeature::new(
-                                "black",
+                                "default",
                                 false,
-                                RenderAsset::Mesh(MeshBundle::new(meshes.add(quad.quad_mesh.bevy(&HashMap::new()).0))),
+                                RenderAsset::Mesh(MeshBundle::new(meshes.add(quad.quad_mesh.bevy(&default_color_map).0))),
                             ))
                             .add(RenderFeature::new(
                                 "colored",
@@ -453,7 +456,7 @@ pub fn update(
                             .add(RenderFeature::new(
                                 "wireframe",
                                 true,
-                                RenderAsset::Gizmo(GizmoBundle::new(gizmo_assets.add(quad.quad_mesh.gizmos(hutspot::color::GRAY)), 0.5, -1e-3)),
+                                RenderAsset::Gizmo(GizmoBundle::new(gizmo_assets.add(quad.quad_mesh.gizmos(color::GRAY)), 0.5, -1e-3)),
                             ))
                             .add(RenderFeature::new(
                                 "paths",
@@ -476,6 +479,11 @@ pub fn update(
             // triangles mapped on the polycube
             Objects::PolycubeMap => {
                 if let Some(quad) = &solution.current_solution.quad {
+                    let mut default_color_map = HashMap::new();
+                    for face_id in quad.quad_mesh_polycube.face_ids() {
+                        default_color_map.insert(face_id, color::LIGHT_GRAY);
+                    }
+
                     let (scale, translation) = quad.quad_mesh_polycube.scale_translation();
 
                     let mut color_map = HashMap::new();
@@ -488,7 +496,7 @@ pub fn update(
                     let mut gizmos_paths = GizmoAsset::new();
                     let mut gizmos_flat_paths = GizmoAsset::new();
                     if let (Ok(lay), Some(polycube)) = (&solution.current_solution.layout, &solution.current_solution.polycube) {
-                        let color = hutspot::color::GRAY;
+                        let color = color::GRAY;
                         let c = bevy::color::Color::srgb(color[0], color[1], color[2]);
 
                         for (&pedge_id, path) in &lay.edge_to_path {
@@ -511,7 +519,7 @@ pub fn update(
                             .add(RenderFeature::new(
                                 "black",
                                 false,
-                                RenderAsset::Mesh(MeshBundle::new(meshes.add(quad.quad_mesh_polycube.bevy(&HashMap::new()).0))),
+                                RenderAsset::Mesh(MeshBundle::new(meshes.add(quad.quad_mesh_polycube.bevy(&default_color_map).0))),
                             ))
                             .add(RenderFeature::new(
                                 "colored",
@@ -521,20 +529,12 @@ pub fn update(
                             .add(RenderFeature::new(
                                 "quads",
                                 false,
-                                RenderAsset::Gizmo(GizmoBundle::new(
-                                    gizmo_assets.add(quad.quad_mesh_polycube.gizmos(hutspot::color::GRAY)),
-                                    0.5,
-                                    -1e-3,
-                                )),
+                                RenderAsset::Gizmo(GizmoBundle::new(gizmo_assets.add(quad.quad_mesh_polycube.gizmos(color::GRAY)), 0.5, -1e-3)),
                             ))
                             .add(RenderFeature::new(
                                 "triangles",
                                 false,
-                                RenderAsset::Gizmo(GizmoBundle::new(
-                                    gizmo_assets.add(quad.triangle_mesh_polycube.gizmos(hutspot::color::GRAY)),
-                                    2.,
-                                    -1e-3,
-                                )),
+                                RenderAsset::Gizmo(GizmoBundle::new(gizmo_assets.add(quad.triangle_mesh_polycube.gizmos(color::GRAY)), 2., -1e-3)),
                             ))
                             .add(RenderFeature::new(
                                 "paths",
@@ -559,10 +559,14 @@ pub fn update(
                 let mut gizmos_paths = GizmoAsset::new();
                 let mut gizmos_flat_paths = GizmoAsset::new();
                 let mut granulated_mesh = &EmbeddedMesh::default();
+                let mut default_color_map = HashMap::new();
+                for face_id in input.face_ids() {
+                    default_color_map.insert(face_id, color::LIGHT_GRAY);
+                }
                 let mut color_map_segmentation = HashMap::new();
                 let mut color_map_alignment = HashMap::new();
 
-                let color = hutspot::color::WHITE;
+                let color = color::WHITE;
                 let c = bevy::color::Color::srgb(color[0], color[1], color[2]);
 
                 for (lewp_id, lewp) in &solution.current_solution.loops {
@@ -618,7 +622,7 @@ pub fn update(
 
                     for &triangle_id in &granulated_mesh.face_ids() {
                         let score = *solution.current_solution.alignment_per_triangle.get_or_panic(triangle_id);
-                        let color = hutspot::color::map(score as f32, &hutspot::color::SCALE_MAGMA);
+                        let color = color::map(score as f32, &color::SCALE_MAGMA);
                         color_map_alignment.insert(triangle_id, color);
                     }
                 }
@@ -628,13 +632,13 @@ pub fn update(
                 if let Some(flags) = &solution.current_solution.external_flag {
                     for (face_id, label) in flags.iter() {
                         let color = match label {
-                            0 => hutspot::color::RED,
-                            1 => hutspot::color::RED,
-                            4 => hutspot::color::YELLOW,
-                            5 => hutspot::color::YELLOW,
-                            2 => hutspot::color::BLUE,
-                            3 => hutspot::color::BLUE,
-                            _ => hutspot::color::BLACK,
+                            0 => color::RED,
+                            1 => color::RED,
+                            4 => color::YELLOW,
+                            5 => color::YELLOW,
+                            2 => color::BLUE,
+                            3 => color::BLUE,
+                            _ => color::BLACK,
                         };
                         color_map_flag.insert(face_id, color);
                     }
@@ -658,7 +662,7 @@ pub fn update(
                         .add(RenderFeature::new(
                             "black",
                             true,
-                            RenderAsset::Mesh(MeshBundle::new(meshes.add(input.bevy(&HashMap::new()).0))),
+                            RenderAsset::Mesh(MeshBundle::new(meshes.add(input.bevy(&default_color_map).0))),
                         ))
                         .add(RenderFeature::new(
                             "segmentation",
@@ -673,7 +677,7 @@ pub fn update(
                         .add(RenderFeature::new(
                             "wireframe",
                             false,
-                            RenderAsset::Gizmo(GizmoBundle::new(gizmo_assets.add(input.gizmos(hutspot::color::GRAY)), 0.5, -1e-3)),
+                            RenderAsset::Gizmo(GizmoBundle::new(gizmo_assets.add(input.gizmos(color::GRAY)), 0.5, -1e-3)),
                         ))
                         .add(RenderFeature::new(
                             "X-loops",
@@ -723,7 +727,7 @@ pub struct GizmosCache {
     pub raycaster: Vec<Line>,
 }
 
-type Line = (Vec3, Vec3, hutspot::color::Color);
+type Line = (Vec3, Vec3, color::Color);
 
 // Draws the gizmos. This includes all wireframes, vertices, normals, raycasts, etc.
 pub fn gizmos(mut gizmos: Gizmos, gizmos_cache: Res<GizmosCache>, configuration: Res<Configuration>) {
@@ -736,15 +740,7 @@ pub fn gizmos(mut gizmos: Gizmos, gizmos_cache: Res<GizmosCache>, configuration:
     }
 }
 
-pub fn add_line2(
-    lines: &mut Vec<Line>,
-    position_a: Vector3D,
-    position_b: Vector3D,
-    offset: Vector3D,
-    color: hutspot::color::Color,
-    translation: Vector3D,
-    scale: f64,
-) {
+pub fn add_line2(lines: &mut Vec<Line>, position_a: Vector3D, position_b: Vector3D, offset: Vector3D, color: color::Color, translation: Vector3D, scale: f64) {
     let line = DrawableLine::from_line(position_a, position_b, offset, translation, scale);
     lines.push((line.u, line.v, color));
 }
