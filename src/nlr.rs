@@ -19,12 +19,25 @@ impl Solution {
         let path_bcdat = path.with_extension("bcdat");
 
         if let (Ok(dual), Ok(layout), Some(polycube), Some(quad)) = (&self.dual, &self.layout, &self.polycube, &self.quad) {
-            let signature = " -- automatically generated via the DualLoops algorithm";
+            let signature = " -- automatically generated via DualCube (Maxim Snoep)";
 
-            // Also add farfield description (box around the model) with size mult*a x mult*b x mult*c (if whole model is a x b x c)
-            let mult = 10.;
+            // Minimum dimension of smallest edge in polycube (cartesian representation)
+            let min_dim = 5;
+            // Scale S of farfield box. Given that polycube is W x H x D, and let the largest dimension by MAX (of W, H, D), then the farfield box will have dimensions 2*S*MAX x 2*S*MAX x 2*S*MAX.
+            let s = 10.;
+            let ff_mult = min_dim as f64 * s;
 
-            // Find the most front vertex (reference vertex), which is the vertex with the smallest x-coordinate
+            // Center coordinate of the input (real)
+            let real_center = dual.mesh_ref.center();
+            // Scale of the input (real)
+            let real_scale = dual.mesh_ref.max_dim();
+
+            // Center coordinate of the polycube (cartesian)
+            let cartesian_center = polycube.structure.center();
+            // Scale of the polycube (cartesian)
+            let cartesian_scale = polycube.structure.max_dim();
+
+            // Find a reference vertex. We use the vertex with the smallest x-coordinate
             let refv = polycube
                 .structure
                 .vert_ids()
@@ -32,125 +45,15 @@ impl Solution {
                 .min_by_key(|&vert| OrderedFloat(polycube.structure.position(vert).x))
                 .unwrap();
 
-            let (min_x, max_x, min_y, max_y, min_z, max_z) = (
-                dual.mesh_ref
-                    .vert_ids()
-                    .into_iter()
-                    .map(|v| OrderedFloat(dual.mesh_ref.position(v).x))
-                    .min()
-                    .unwrap()
-                    .0,
-                dual.mesh_ref
-                    .vert_ids()
-                    .into_iter()
-                    .map(|v| OrderedFloat(dual.mesh_ref.position(v).x))
-                    .max()
-                    .unwrap()
-                    .0,
-                dual.mesh_ref
-                    .vert_ids()
-                    .into_iter()
-                    .map(|v| OrderedFloat(dual.mesh_ref.position(v).y))
-                    .min()
-                    .unwrap()
-                    .0,
-                dual.mesh_ref
-                    .vert_ids()
-                    .into_iter()
-                    .map(|v| OrderedFloat(dual.mesh_ref.position(v).y))
-                    .max()
-                    .unwrap()
-                    .0,
-                dual.mesh_ref
-                    .vert_ids()
-                    .into_iter()
-                    .map(|v| OrderedFloat(dual.mesh_ref.position(v).z))
-                    .min()
-                    .unwrap()
-                    .0,
-                dual.mesh_ref
-                    .vert_ids()
-                    .into_iter()
-                    .map(|v| OrderedFloat(dual.mesh_ref.position(v).z))
-                    .max()
-                    .unwrap()
-                    .0,
-            );
+            let v1 = real_center - Vector3D::new(ff_mult * real_scale, ff_mult * real_scale, ff_mult * real_scale);
+            let v2 = v1 + 2. * Vector3D::new(0., 0., ff_mult * real_scale);
+            let v3 = v2 + 2. * Vector3D::new(0., ff_mult * real_scale, 0.);
+            let v4 = v3 - 2. * Vector3D::new(0., 0., ff_mult * real_scale);
 
-            let delta_x = Vector3D::new(max_x - min_x, 0., 0.);
-            let mid_x = (min_x + max_x) / 2.;
-            let delta_y = Vector3D::new(0., max_y - min_y, 0.);
-            let mid_y = (min_y + max_y) / 2.;
-            let delta_z = Vector3D::new(0., 0., max_z - min_z);
-            let mid_z = (min_z + max_z) / 2.;
-
-            let (p_min_x, p_max_x, p_min_y, p_max_y, p_min_z, p_max_z) = (
-                polycube
-                    .structure
-                    .vert_ids()
-                    .into_iter()
-                    .map(|v| OrderedFloat(polycube.structure.position(v).x))
-                    .min()
-                    .unwrap()
-                    .0,
-                polycube
-                    .structure
-                    .vert_ids()
-                    .into_iter()
-                    .map(|v| OrderedFloat(polycube.structure.position(v).x))
-                    .max()
-                    .unwrap()
-                    .0,
-                polycube
-                    .structure
-                    .vert_ids()
-                    .into_iter()
-                    .map(|v| OrderedFloat(polycube.structure.position(v).y))
-                    .min()
-                    .unwrap()
-                    .0,
-                polycube
-                    .structure
-                    .vert_ids()
-                    .into_iter()
-                    .map(|v| OrderedFloat(polycube.structure.position(v).y))
-                    .max()
-                    .unwrap()
-                    .0,
-                polycube
-                    .structure
-                    .vert_ids()
-                    .into_iter()
-                    .map(|v| OrderedFloat(polycube.structure.position(v).z))
-                    .min()
-                    .unwrap()
-                    .0,
-                polycube
-                    .structure
-                    .vert_ids()
-                    .into_iter()
-                    .map(|v| OrderedFloat(polycube.structure.position(v).z))
-                    .max()
-                    .unwrap()
-                    .0,
-            );
-
-            let p_delta_x = p_max_x - p_min_x;
-            let p_mid_x = (p_min_x + p_max_x) / 2.;
-            let p_delta_y = p_max_y - p_min_y;
-            let p_mid_y = (p_min_y + p_max_y) / 2.;
-            let p_delta_z = p_max_z - p_min_z;
-            let p_mid_z = (p_min_z + p_max_z) / 2.;
-
-            let v1 = Vector3D::new(mid_x, mid_y, mid_z) - mult * delta_x - mult * delta_y - mult * delta_z;
-            let v2 = v1 + 2. * mult * delta_z;
-            let v3 = v2 + 2. * mult * delta_y;
-            let v4 = v3 - 2. * mult * delta_z;
-
-            let v5 = v1 + 2. * mult * delta_x;
-            let v6 = v5 + 2. * mult * delta_z;
-            let v7 = v6 + 2. * mult * delta_y;
-            let v8 = v7 - 2. * mult * delta_z;
+            let v5 = v1 + 2. * Vector3D::new(ff_mult * real_scale, 0., 0.);
+            let v6 = v5 + 2. * Vector3D::new(0., 0., ff_mult * real_scale);
+            let v7 = v6 + 2. * Vector3D::new(0., ff_mult * real_scale, 0.);
+            let v8 = v7 - 2. * Vector3D::new(0., 0., ff_mult * real_scale);
 
             assert!(polycube.structure.verts.len() < 10000);
             let vert_to_id: BiHashMap<PolycubeVertID, usize> = polycube.structure.vert_ids().iter().enumerate().map(|(i, &id)| (id, 10001 + i)).collect();
@@ -220,12 +123,13 @@ impl Solution {
                     .join("\n")
             )?;
             // Add the bounding box faces
-            write!(file_topol, "\n       39001       29012       29034       29023       29041       'FACE'")?;
-            write!(file_topol, "\n       39002       29056       29078       29067       29085       'FACE'")?;
-            write!(file_topol, "\n       39003       29015       29048       29041       29085       'FACE'")?;
-            write!(file_topol, "\n       39004       29026       29037       29023       29067       'FACE'")?;
-            write!(file_topol, "\n       39005       29012       29056       29015       29026       'FACE'")?;
-            write!(file_topol, "\n       39006       29048       29037       29078       29034       'FACE'")?;
+
+            write!(file_topol, "\n       91234       80102       80304       80203       80401       'FACE'")?;
+            write!(file_topol, "\n       97658       80506       80708       80805       80607       'FACE'")?;
+            write!(file_topol, "\n       91485       80105       80408       80401       80805       'FACE'")?;
+            write!(file_topol, "\n       97326       80206       80307       80607       80203       'FACE'")?;
+            write!(file_topol, "\n       91562       80102       80506       80105       80206       'FACE'")?;
+            write!(file_topol, "\n       97843       80304       80708       80307       80408       'FACE'")?;
 
             write!(file_topol, "\n NUMBER OF COMPOUND FACES:\n       0\n")?;
 
@@ -254,20 +158,20 @@ impl Solution {
                     .join("\n")
             )?;
             // Add the bounding box edges
-            write!(file_topol, "\n       29012       19001       19002       'EDGE'")?;
-            write!(file_topol, "\n       29023       19002       19003       'EDGE'")?;
-            write!(file_topol, "\n       29034       19003       19004       'EDGE'")?;
-            write!(file_topol, "\n       29041       19004       19001       'EDGE'")?;
+            write!(file_topol, "\n       80102       70001       70002       'EDGE'")?;
+            write!(file_topol, "\n       80203       70002       70003       'EDGE'")?;
+            write!(file_topol, "\n       80304       70003       70004       'EDGE'")?;
+            write!(file_topol, "\n       80401       70004       70001       'EDGE'")?;
 
-            write!(file_topol, "\n       29056       19005       19006       'EDGE'")?;
-            write!(file_topol, "\n       29067       19006       19007       'EDGE'")?;
-            write!(file_topol, "\n       29078       19007       19008       'EDGE'")?;
-            write!(file_topol, "\n       29085       19008       19005       'EDGE'")?;
+            write!(file_topol, "\n       80506       70005       70006       'EDGE'")?;
+            write!(file_topol, "\n       80607       70006       70007       'EDGE'")?;
+            write!(file_topol, "\n       80708       70007       70008       'EDGE'")?;
+            write!(file_topol, "\n       80805       70008       70005       'EDGE'")?;
 
-            write!(file_topol, "\n       29015       19001       19005       'EDGE'")?;
-            write!(file_topol, "\n       29026       19002       19006       'EDGE'")?;
-            write!(file_topol, "\n       29037       19003       19007       'EDGE'")?;
-            write!(file_topol, "\n       29048       19004       19008       'EDGE'")?;
+            write!(file_topol, "\n       80105       70001       70005       'EDGE'")?;
+            write!(file_topol, "\n       80206       70002       70006       'EDGE'")?;
+            write!(file_topol, "\n       80307       70003       70007       'EDGE'")?;
+            write!(file_topol, "\n       80408       70004       70008       'EDGE'")?;
 
             write!(file_topol, "\n NUMBER OF COMPOUND EDGES:\n       0")?;
 
@@ -314,56 +218,56 @@ impl Solution {
             )?;
             write!(
                 file_geom,
-                "\n       19001       {}  {}  {}       'VERTEX'",
+                "\n       70001       {}  {}  {}       'VERTEX'",
                 ryu::Buffer::new().format(v1.x),
                 ryu::Buffer::new().format(v1.y),
                 ryu::Buffer::new().format(v1.z)
             )?;
             write!(
                 file_geom,
-                "\n       19002       {}  {}  {}       'VERTEX'",
+                "\n       70002       {}  {}  {}       'VERTEX'",
                 ryu::Buffer::new().format(v2.x),
                 ryu::Buffer::new().format(v2.y),
                 ryu::Buffer::new().format(v2.z)
             )?;
             write!(
                 file_geom,
-                "\n       19003       {}  {}  {}       'VERTEX'",
+                "\n       70003       {}  {}  {}       'VERTEX'",
                 ryu::Buffer::new().format(v3.x),
                 ryu::Buffer::new().format(v3.y),
                 ryu::Buffer::new().format(v3.z)
             )?;
             write!(
                 file_geom,
-                "\n       19004       {}  {}  {}       'VERTEX'",
+                "\n       70004       {}  {}  {}       'VERTEX'",
                 ryu::Buffer::new().format(v4.x),
                 ryu::Buffer::new().format(v4.y),
                 ryu::Buffer::new().format(v4.z)
             )?;
             write!(
                 file_geom,
-                "\n       19005       {}  {}  {}       'VERTEX'",
+                "\n       70005       {}  {}  {}       'VERTEX'",
                 ryu::Buffer::new().format(v5.x),
                 ryu::Buffer::new().format(v5.y),
                 ryu::Buffer::new().format(v5.z)
             )?;
             write!(
                 file_geom,
-                "\n       19006       {}  {}  {}       'VERTEX'",
+                "\n       70006       {}  {}  {}       'VERTEX'",
                 ryu::Buffer::new().format(v6.x),
                 ryu::Buffer::new().format(v6.y),
                 ryu::Buffer::new().format(v6.z)
             )?;
             write!(
                 file_geom,
-                "\n       19007       {}  {}  {}       'VERTEX'",
+                "\n       70007       {}  {}  {}       'VERTEX'",
                 ryu::Buffer::new().format(v7.x),
                 ryu::Buffer::new().format(v7.y),
                 ryu::Buffer::new().format(v7.z)
             )?;
             write!(
                 file_geom,
-                "\n       19008       {}  {}  {}       'VERTEX'",
+                "\n       70008       {}  {}  {}       'VERTEX'",
                 ryu::Buffer::new().format(v8.x),
                 ryu::Buffer::new().format(v8.y),
                 ryu::Buffer::new().format(v8.z)
@@ -486,16 +390,16 @@ impl Solution {
                             .get_by_left(&edge_id)
                             .or_else(|| edge_to_id.get_by_left(&polycube.structure.twin(edge_id)))
                             .unwrap();
-                        let length = polycube.structure.size(edge_id) as usize;
+                        let length = polycube.structure.size(edge_id) as usize * min_dim;
                         format!("       {edge_int}       {length}")
                     })
                     .collect::<Vec<_>>()
                     .join("\n")
             )?;
-            let (cartesian_x, cartesian_y, cartesian_z) = ((mult * p_delta_x) as usize, (mult * p_delta_y) as usize, (mult * p_delta_z) as usize);
-            write!(file_cdim, "\n       29015       {}", cartesian_x * 2)?;
-            write!(file_cdim, "\n       29041       {}", cartesian_x * 2)?;
-            write!(file_cdim, "\n       29012       {}", cartesian_x * 2)?;
+
+            write!(file_cdim, "\n       80105       {}", cartesian_scale * ff_mult * 2.)?;
+            write!(file_cdim, "\n       80401       {}", cartesian_scale * ff_mult * 2.)?;
+            write!(file_cdim, "\n       80102       {}", cartesian_scale * ff_mult * 2.)?;
 
             // Write grid levels
             write!(file_cdim, "\n GRID LEVEL OF BASIC GRID AND COMPUTATIONAL GRID:\n       1 1")?;
@@ -524,7 +428,7 @@ impl Solution {
                 "{}",
                 x_edges.iter().map(|edge_id| format!("  {edge_id}")).collect::<Vec<_>>().join("  ")
             )?;
-            write!(file_cdim, "  29015")?;
+            write!(file_cdim, "  80105")?;
 
             // Write edges in y (j) direction
             let y_edges = edge_per_loop
@@ -547,7 +451,7 @@ impl Solution {
                 "{}",
                 y_edges.iter().map(|edge_id| format!("  {edge_id}")).collect::<Vec<_>>().join("  ")
             )?;
-            write!(file_cdim, "  29041")?;
+            write!(file_cdim, "  80401")?;
 
             // Write edges in z (k) direction
             let z_edges = edge_per_loop
@@ -570,12 +474,21 @@ impl Solution {
                 "{}",
                 z_edges.iter().map(|edge_id| format!("  {edge_id}")).collect::<Vec<_>>().join("  ")
             )?;
-            write!(file_cdim, "  29012")?;
+            write!(file_cdim, "  80102")?;
 
             // Write reference (origin) vertex
             write!(file_cdim, "\n NUMBER OF VERTICES WITH CARTESIAN COORDINATES:\n       2\n        VERT i j k\n")?;
-            write!(file_cdim, "       {} 0 0 0\n", vert_to_id.get_by_left(&refv).unwrap())?;
-            write!(file_cdim, "       19001 -{cartesian_x} -{cartesian_x} -{cartesian_x}\n")?;
+            let center_to_ref = polycube.structure.position(refv) - cartesian_center;
+            write!(
+                file_cdim,
+                "       {} {} {} {}\n",
+                vert_to_id.get_by_left(&refv).unwrap(),
+                center_to_ref.x as i32,
+                center_to_ref.y as i32,
+                center_to_ref.z as i32
+            )?;
+            let w = (cartesian_scale * ff_mult) as i32;
+            write!(file_cdim, "       70001 -{w} -{w} -{w}\n")?;
 
             // Write symmetry and orientation
             write!(file_cdim, "SYMMETRY\n       0\nORIENTATION\n       0")?;
