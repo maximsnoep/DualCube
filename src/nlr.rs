@@ -382,29 +382,24 @@ impl Solution {
                     .structure
                     .edge_ids()
                     .iter()
-                    .map(|edge_id| {
-                        let verts = quad.edge_to_verts.get(edge_id).unwrap();
-                        let mut lines = vec![];
-                        let width = verts.len();
-                        lines.push(format!(
-                            "       {}       {}",
-                            edge_to_id
-                                .get_by_left(edge_id)
-                                .or_else(|| edge_to_id.get_by_left(&polycube.structure.twin(*edge_id)))
-                                .unwrap(),
-                            width
-                        ));
-                        for i in 0..verts.len() {
-                            let vert_id = verts[i];
-                            let pos = quad.quad_mesh.position(vert_id);
-                            lines.push(format!(
-                                "  {}  {}  {}",
-                                ryu::Buffer::new().format(pos.x),
-                                ryu::Buffer::new().format(pos.y),
-                                ryu::Buffer::new().format(pos.z)
-                            ));
-                        }
-                        lines.join("\n")
+                    .filter_map(|edge_id| {
+                        edge_to_id.get_by_left(edge_id).map(|edge_int| {
+                            let verts = quad.edge_to_verts.get(edge_id).unwrap();
+                            let mut lines = vec![];
+                            let width = verts.len();
+                            lines.push(format!("       {}       {}", edge_int, width));
+                            for i in 0..verts.len() {
+                                let vert_id = verts[i];
+                                let pos = quad.quad_mesh.position(vert_id);
+                                lines.push(format!(
+                                    "  {}  {}  {}",
+                                    ryu::Buffer::new().format(pos.x),
+                                    ryu::Buffer::new().format(pos.y),
+                                    ryu::Buffer::new().format(pos.z)
+                                ));
+                            }
+                            lines.join("\n")
+                        })
                     })
                     .collect::<Vec<_>>()
                     .join("\n")
