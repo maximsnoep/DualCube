@@ -3890,7 +3890,7 @@ dependencies = [
 [[package]]
 name = "mehsh"
 version = "0.0.1"
-source = "git+https://github.com/maximsnoep/mehsh#5095983d0a8f2f41cc05259b523af4cb36301674"
+source = "git+https://github.com/maximsnoep/mehsh#6d449bd87c6ddaa2dcef9237c7d08c51c758a317"
 dependencies = [
  "bevy_color",
  "bevy_gizmos",
