@@ -4,7 +4,6 @@ use crate::{
     to_principal_direction, PrincipalDirection,
 };
 use bimap::BiHashMap;
-use hutspot::geom::Vector3D;
 use itertools::Itertools;
 use log::info;
 use mehsh::prelude::*;
@@ -383,24 +382,22 @@ impl Solution {
                     .structure
                     .edge_ids()
                     .iter()
-                    .filter_map(|edge_id| {
-                        edge_to_id.get_by_left(edge_id).map(|edge_int| {
-                            let path = layout.edge_to_path.get(edge_id).unwrap();
-                            format!("       {}       {}\n", edge_int, path.len())
-                                + &path
-                                    .iter()
-                                    .map(|&point| {
-                                        let pos = layout.granulated_mesh.position(point);
-                                        format!(
-                                            "  {}  {}  {}",
-                                            ryu::Buffer::new().format(pos.x),
-                                            ryu::Buffer::new().format(pos.y),
-                                            ryu::Buffer::new().format(pos.z)
-                                        )
-                                    })
-                                    .collect::<Vec<_>>()
-                                    .join("\n")
-                        })
+                    .map(|edge_id| {
+                        let verts = quad.edge_to_verts.get(edge_id).unwrap();
+                        let mut lines = vec![];
+                        let width = verts.len();
+                        lines.push(format!("       {}       {}", edge_to_id.get_by_left(edge_id).unwrap(), width));
+                        for i in 0..verts.len() {
+                            let vert_id = verts[i];
+                            let pos = quad.quad_mesh.position(vert_id);
+                            lines.push(format!(
+                                "  {}  {}  {}",
+                                ryu::Buffer::new().format(pos.x),
+                                ryu::Buffer::new().format(pos.y),
+                                ryu::Buffer::new().format(pos.z)
+                            ));
+                        }
+                        lines.join("\n")
                     })
                     .collect::<Vec<_>>()
                     .join("\n")

@@ -5,9 +5,7 @@ use bimap::BiHashMap;
 use faer::sparse::{SparseColMat, Triplet};
 use faer::Mat;
 use faer_gmres::gmres;
-use hutspot::geom::{Vector2D, Vector3D};
 use itertools::Itertools;
-use mehsh::mesh::algo::location::face;
 use mehsh::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -20,6 +18,7 @@ pub struct Quad {
     pub quad_mesh_polycube: Mesh<QUAD>,
     pub quad_mesh: Mesh<QUAD>,
     pub face_to_verts: HashMap<FaceKey<POLYCUBE>, Vec<Vec<VertKey<QUAD>>>>,
+    pub edge_to_verts: HashMap<EdgeKey<POLYCUBE>, Vec<VertKey<QUAD>>>,
 }
 
 impl Quad {
@@ -59,6 +58,9 @@ impl Quad {
 
         let mut face_to_verts_usize: HashMap<FaceKey<POLYCUBE>, Vec<Vec<usize>>> = HashMap::new();
         let mut face_to_verts: HashMap<FaceKey<POLYCUBE>, Vec<Vec<VertKey<QUAD>>>> = HashMap::new();
+
+        let mut edge_to_verts_usize: HashMap<EdgeKey<POLYCUBE>, Vec<usize>> = HashMap::new();
+        let mut edge_to_verts: HashMap<EdgeKey<POLYCUBE>, Vec<VertKey<QUAD>>> = HashMap::new();
 
         while let Some(patch_id) = queue.pop() {
             if patches_done.contains(&patch_id) {
@@ -274,11 +276,11 @@ impl Quad {
 
             let grid_width = polycube.size(edge1);
             assert!(polycube.size(edge3) == grid_width);
-            let grid_n = grid_width as usize * omega;
+            let grid_n = grid_width as usize * omega + 1;
 
             let grid_height = polycube.size(edge2);
             assert!(polycube.size(edge4) == grid_height);
-            let grid_m = grid_height as usize * omega;
+            let grid_m = grid_height as usize * omega + 1;
 
             let to_pos = |i: usize, j: usize| {
                 let u = i as f64 / (grid_m - 1) as f64;
@@ -316,6 +318,7 @@ impl Quad {
                 for (j, &vert) in edge_verts.iter().enumerate() {
                     vert_map[0][j] = Some(vert);
                 }
+                edge_to_verts_usize.insert(edge1, edge_verts.clone());
             }
 
             // Edge2 which is j=grid_n-1 and i=0 to i=grid_m-1
@@ -325,6 +328,7 @@ impl Quad {
                 for (i, &vert) in edge_verts.iter().enumerate() {
                     vert_map[i][grid_n - 1] = Some(vert);
                 }
+                edge_to_verts_usize.insert(edge2, edge_verts.clone());
             }
 
             // Edge3 which is i=grid_m-1 and j=grid_n-1 to j=0
@@ -334,6 +338,7 @@ impl Quad {
                 for (j, &vert) in edge_verts.iter().enumerate() {
                     vert_map[grid_m - 1][grid_n - 1 - j] = Some(vert);
                 }
+                edge_to_verts_usize.insert(edge3, edge_verts.clone());
             }
 
             // Edge4 which is j=0 and i=grid_m-1 to i=0
@@ -343,6 +348,7 @@ impl Quad {
                 for (i, &vert) in edge_verts.iter().enumerate() {
                     vert_map[grid_m - 1 - i][0] = Some(vert);
                 }
+                edge_to_verts_usize.insert(edge4, edge_verts.clone());
             }
 
             for i in 0..grid_m - 1 {
@@ -448,6 +454,12 @@ impl Quad {
                 face_to_verts.insert(face_id.to_owned(), vert_keys);
             }
 
+            for (edge_id, vert_ids) in &edge_to_verts_usize {
+                // Convert usize to VertKey<QUAD>
+                let vert_keys = vert_ids.iter().map(|&v| vert_id_map.key(v).unwrap().to_owned()).collect_vec();
+                edge_to_verts.insert(edge_id.to_owned(), vert_keys);
+            }
+
             // Create the quad mesh
             // First, create copy of quad_mesh_polycube
             let mut quad_mesh = quad_mesh_polycube.clone();
@@ -514,6 +526,7 @@ impl Quad {
                 quad_mesh_polycube,
                 quad_mesh,
                 face_to_verts,
+                edge_to_verts,
             }
         } else {
             panic!("Failed to create quad mesh from faces and vertex positions");

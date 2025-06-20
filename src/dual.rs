@@ -1,5 +1,4 @@
 use crate::{
-    graph::Graaf,
     solutions::{Loop, LoopID},
     EdgeID, EmbeddedMesh, PrincipalDirection, VertID,
 };
@@ -58,7 +57,7 @@ pub struct LevelGraphs {
     //
     pub zones: SlotMap<ZoneID, Zone>,
     //
-    pub graphs: [Graaf<ZoneID, LoopID>; 3],
+    pub graphs: [fatgraph::fixed::FixedGraph<ZoneID, LoopID>; 3],
     //
     pub region_to_zones: [HashMap<LoopRegionID, ZoneID>; 3],
     //
@@ -444,7 +443,8 @@ impl Dual {
         // All edges contained in loops can be considered blocked
         let blocked = self.loops_ref.values().flat_map(|lewp| lewp.edges.iter().copied()).collect::<HashSet<_>>();
         // Then all connected components of the mesh that are not blocked are loop regions
-        let loop_regions = hutspot::graph::find_ccs(&self.mesh_ref.vert_ids(), |vertex| {
+
+        let loop_regions = fatgraph::fluid::find_ccs(&self.mesh_ref.vert_ids(), |vertex| {
             let mut neighbors = self.mesh_ref.neighbors(vertex);
             neighbors.retain(|&neighbor| !blocked.contains(&self.mesh_ref.edge_between_verts(vertex, neighbor).unwrap().0));
             neighbors
@@ -559,7 +559,7 @@ impl Dual {
                     edges.push((zone_id, adjacent_id, loop_id));
                 }
 
-                self.level_graphs.graphs[direction as usize] = Graaf::from(zone_ids.clone(), edges.clone());
+                self.level_graphs.graphs[direction as usize] = fatgraph::fixed::FixedGraph::from(zone_ids.clone(), edges.clone());
             }
         }
     }

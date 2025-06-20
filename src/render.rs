@@ -1,4 +1,3 @@
-use crate::color;
 use crate::dual::Orientation;
 use crate::{
     to_color, to_principal_direction, vector3d_to_vec3, Configuration, FlatMaterial, InputResource, Perspective, PrincipalDirection, Rendered, SolutionResource,
@@ -378,7 +377,7 @@ pub fn update(
                 if let Some(quad) = &solution.current_solution.quad {
                     let mut default_color_map = HashMap::new();
                     for face_id in quad.quad_mesh.face_ids() {
-                        default_color_map.insert(face_id, color::LIGHT_GRAY);
+                        default_color_map.insert(face_id, colors::LIGHT_GRAY);
                     }
 
                     let (scale, translation) = quad.quad_mesh.scale_translation();
@@ -392,7 +391,7 @@ pub fn update(
                     let mut gizmos_paths = GizmoAsset::new();
                     let mut gizmos_flat_paths = GizmoAsset::new();
                     if let (Ok(lay), Some(polycube)) = (&solution.current_solution.layout, &solution.current_solution.polycube) {
-                        let color = color::GRAY;
+                        let color = colors::GRAY;
                         let c = bevy::color::Color::srgb(color[0], color[1], color[2]);
 
                         let mut irregular_vertices = HashSet::new();
@@ -456,7 +455,7 @@ pub fn update(
                             .add(RenderFeature::new(
                                 "wireframe",
                                 true,
-                                RenderAsset::Gizmo(GizmoBundle::new(gizmo_assets.add(quad.quad_mesh.gizmos(color::GRAY)), 0.5, -1e-3)),
+                                RenderAsset::Gizmo(GizmoBundle::new(gizmo_assets.add(quad.quad_mesh.gizmos(colors::GRAY)), 0.5, -1e-3)),
                             ))
                             .add(RenderFeature::new(
                                 "paths",
@@ -481,7 +480,7 @@ pub fn update(
                 if let Some(quad) = &solution.current_solution.quad {
                     let mut default_color_map = HashMap::new();
                     for face_id in quad.quad_mesh_polycube.face_ids() {
-                        default_color_map.insert(face_id, color::LIGHT_GRAY);
+                        default_color_map.insert(face_id, colors::LIGHT_GRAY);
                     }
 
                     let (scale, translation) = quad.quad_mesh_polycube.scale_translation();
@@ -496,7 +495,7 @@ pub fn update(
                     let mut gizmos_paths = GizmoAsset::new();
                     let mut gizmos_flat_paths = GizmoAsset::new();
                     if let (Ok(lay), Some(polycube)) = (&solution.current_solution.layout, &solution.current_solution.polycube) {
-                        let color = color::GRAY;
+                        let color = colors::GRAY;
                         let c = bevy::color::Color::srgb(color[0], color[1], color[2]);
 
                         for (&pedge_id, path) in &lay.edge_to_path {
@@ -529,12 +528,12 @@ pub fn update(
                             .add(RenderFeature::new(
                                 "quads",
                                 false,
-                                RenderAsset::Gizmo(GizmoBundle::new(gizmo_assets.add(quad.quad_mesh_polycube.gizmos(color::GRAY)), 0.5, -1e-3)),
+                                RenderAsset::Gizmo(GizmoBundle::new(gizmo_assets.add(quad.quad_mesh_polycube.gizmos(colors::GRAY)), 0.5, -1e-3)),
                             ))
                             .add(RenderFeature::new(
                                 "triangles",
                                 false,
-                                RenderAsset::Gizmo(GizmoBundle::new(gizmo_assets.add(quad.triangle_mesh_polycube.gizmos(color::GRAY)), 2., -1e-3)),
+                                RenderAsset::Gizmo(GizmoBundle::new(gizmo_assets.add(quad.triangle_mesh_polycube.gizmos(colors::GRAY)), 2., -1e-3)),
                             ))
                             .add(RenderFeature::new(
                                 "paths",
@@ -561,12 +560,12 @@ pub fn update(
                 let mut granulated_mesh = &EmbeddedMesh::default();
                 let mut default_color_map = HashMap::new();
                 for face_id in input.face_ids() {
-                    default_color_map.insert(face_id, color::LIGHT_GRAY);
+                    default_color_map.insert(face_id, colors::LIGHT_GRAY);
                 }
                 let mut color_map_segmentation = HashMap::new();
                 let mut color_map_alignment = HashMap::new();
 
-                let color = color::WHITE;
+                let color = colors::WHITE;
                 let c = bevy::color::Color::srgb(color[0], color[1], color[2]);
 
                 for (lewp_id, lewp) in &solution.current_solution.loops {
@@ -622,7 +621,7 @@ pub fn update(
 
                     for &triangle_id in &granulated_mesh.face_ids() {
                         let score = *solution.current_solution.alignment_per_triangle.get_or_panic(triangle_id);
-                        let color = color::map(score as f32, &color::SCALE_MAGMA);
+                        let color = colors::map(score as f32, &colors::SCALE_MAGMA);
                         color_map_alignment.insert(triangle_id, color);
                     }
                 }
@@ -632,13 +631,13 @@ pub fn update(
                 if let Some(flags) = &solution.current_solution.external_flag {
                     for (face_id, label) in flags.iter() {
                         let color = match label {
-                            0 => color::RED,
-                            1 => color::RED,
-                            4 => color::YELLOW,
-                            5 => color::YELLOW,
-                            2 => color::BLUE,
-                            3 => color::BLUE,
-                            _ => color::BLACK,
+                            0 => colors::RED,
+                            1 => colors::RED,
+                            4 => colors::YELLOW,
+                            5 => colors::YELLOW,
+                            2 => colors::BLUE,
+                            3 => colors::BLUE,
+                            _ => colors::BLACK,
                         };
                         color_map_flag.insert(face_id, color);
                     }
@@ -677,7 +676,7 @@ pub fn update(
                         .add(RenderFeature::new(
                             "wireframe",
                             false,
-                            RenderAsset::Gizmo(GizmoBundle::new(gizmo_assets.add(input.gizmos(color::GRAY)), 0.5, -1e-3)),
+                            RenderAsset::Gizmo(GizmoBundle::new(gizmo_assets.add(input.gizmos(colors::GRAY)), 0.5, -1e-3)),
                         ))
                         .add(RenderFeature::new(
                             "X-loops",
@@ -727,7 +726,7 @@ pub struct GizmosCache {
     pub raycaster: Vec<Line>,
 }
 
-type Line = (Vec3, Vec3, color::Color);
+type Line = (Vec3, Vec3, colors::Color);
 
 // Draws the gizmos. This includes all wireframes, vertices, normals, raycasts, etc.
 pub fn gizmos(mut gizmos: Gizmos, gizmos_cache: Res<GizmosCache>, configuration: Res<Configuration>) {
@@ -740,7 +739,7 @@ pub fn gizmos(mut gizmos: Gizmos, gizmos_cache: Res<GizmosCache>, configuration:
     }
 }
 
-pub fn add_line2(lines: &mut Vec<Line>, position_a: Vector3D, position_b: Vector3D, offset: Vector3D, color: color::Color, translation: Vector3D, scale: f64) {
+pub fn add_line2(lines: &mut Vec<Line>, position_a: Vector3D, position_b: Vector3D, offset: Vector3D, color: colors::Color, translation: Vector3D, scale: f64) {
     let line = DrawableLine::from_line(position_a, position_b, offset, translation, scale);
     lines.push((line.u, line.v, color));
 }

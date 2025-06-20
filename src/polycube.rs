@@ -1,8 +1,7 @@
-use crate::dual::{Dual, LoopRegionID, Orientation};
+use crate::dual::{Dual, LoopRegionID};
 use crate::layout::Layout;
 use crate::PrincipalDirection;
 use bimap::BiHashMap;
-use hutspot::geom::Vector3D;
 use itertools::Itertools;
 use mehsh::prelude::*;
 use serde::{Deserialize, Serialize};

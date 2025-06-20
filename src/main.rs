@@ -1,6 +1,4 @@
-mod color;
 mod dual;
-mod graph;
 mod layout;
 mod nlr;
 mod polycube;
@@ -22,16 +20,12 @@ use bevy::winit::WinitWindows;
 use bevy::{reflect::TypePath, render::render_resource::ShaderRef};
 use bevy_egui::EguiPlugin;
 use dual::Orientation;
-use graph::Graaf;
-use hutspot::color::RED;
-use hutspot::geom::Vector3D;
 use itertools::Itertools;
 use mehsh::prelude::*;
 use ordered_float::OrderedFloat;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use render::{add_line2, CameraFor, GizmosCache, MeshProperties, Objects, RenderObjectStore};
 use serde::{Deserialize, Serialize};
-use slotmap::SecondaryMap;
 use smooth_bevy_cameras::controllers::orbit::OrbitCameraPlugin;
 use smooth_bevy_cameras::LookTransformPlugin;
 use solutions::{Loop, Solution};
@@ -79,26 +73,26 @@ pub enum Perspective {
     Dual,
 }
 
-pub const fn to_color(direction: PrincipalDirection, perspective: Perspective, orientation: Option<Orientation>) -> hutspot::color::Color {
+pub const fn to_color(direction: PrincipalDirection, perspective: Perspective, orientation: Option<Orientation>) -> colors::Color {
     match (perspective, direction, orientation) {
-        (Perspective::Primal, PrincipalDirection::X, None) => hutspot::color::RED,
-        (Perspective::Primal, PrincipalDirection::Y, None) => hutspot::color::BLUE,
-        (Perspective::Primal, PrincipalDirection::Z, None) => hutspot::color::YELLOW,
-        (Perspective::Primal, PrincipalDirection::X, Some(Orientation::Forwards)) => hutspot::color::RED,
-        (Perspective::Primal, PrincipalDirection::X, Some(Orientation::Backwards)) => hutspot::color::RED,
-        (Perspective::Primal, PrincipalDirection::Y, Some(Orientation::Forwards)) => hutspot::color::BLUE,
-        (Perspective::Primal, PrincipalDirection::Y, Some(Orientation::Backwards)) => hutspot::color::BLUE,
-        (Perspective::Primal, PrincipalDirection::Z, Some(Orientation::Forwards)) => hutspot::color::YELLOW,
-        (Perspective::Primal, PrincipalDirection::Z, Some(Orientation::Backwards)) => hutspot::color::YELLOW,
-        (Perspective::Dual, PrincipalDirection::X, None) => hutspot::color::GREEN,
-        (Perspective::Dual, PrincipalDirection::Y, None) => hutspot::color::ORANGE,
-        (Perspective::Dual, PrincipalDirection::Z, None) => hutspot::color::PURPLE,
-        (Perspective::Dual, PrincipalDirection::X, Some(Orientation::Forwards)) => hutspot::color::GREEN,
-        (Perspective::Dual, PrincipalDirection::X, Some(Orientation::Backwards)) => hutspot::color::GREEN_LIGHT,
-        (Perspective::Dual, PrincipalDirection::Y, Some(Orientation::Forwards)) => hutspot::color::ORANGE,
-        (Perspective::Dual, PrincipalDirection::Y, Some(Orientation::Backwards)) => hutspot::color::ORANG_LIGHT,
-        (Perspective::Dual, PrincipalDirection::Z, Some(Orientation::Forwards)) => hutspot::color::PURPLE,
-        (Perspective::Dual, PrincipalDirection::Z, Some(Orientation::Backwards)) => hutspot::color::PURPLE_LIGHT,
+        (Perspective::Primal, PrincipalDirection::X, None) => colors::RED,
+        (Perspective::Primal, PrincipalDirection::Y, None) => colors::BLUE,
+        (Perspective::Primal, PrincipalDirection::Z, None) => colors::YELLOW,
+        (Perspective::Primal, PrincipalDirection::X, Some(Orientation::Forwards)) => colors::RED,
+        (Perspective::Primal, PrincipalDirection::X, Some(Orientation::Backwards)) => colors::RED,
+        (Perspective::Primal, PrincipalDirection::Y, Some(Orientation::Forwards)) => colors::BLUE,
+        (Perspective::Primal, PrincipalDirection::Y, Some(Orientation::Backwards)) => colors::BLUE,
+        (Perspective::Primal, PrincipalDirection::Z, Some(Orientation::Forwards)) => colors::YELLOW,
+        (Perspective::Primal, PrincipalDirection::Z, Some(Orientation::Backwards)) => colors::YELLOW,
+        (Perspective::Dual, PrincipalDirection::X, None) => colors::GREEN,
+        (Perspective::Dual, PrincipalDirection::Y, None) => colors::ORANGE,
+        (Perspective::Dual, PrincipalDirection::Z, None) => colors::PURPLE,
+        (Perspective::Dual, PrincipalDirection::X, Some(Orientation::Forwards)) => colors::GREEN,
+        (Perspective::Dual, PrincipalDirection::X, Some(Orientation::Backwards)) => colors::GREEN_LIGHT,
+        (Perspective::Dual, PrincipalDirection::Y, Some(Orientation::Forwards)) => colors::ORANGE,
+        (Perspective::Dual, PrincipalDirection::Y, Some(Orientation::Backwards)) => colors::ORANG_LIGHT,
+        (Perspective::Dual, PrincipalDirection::Z, Some(Orientation::Forwards)) => colors::PURPLE,
+        (Perspective::Dual, PrincipalDirection::Z, Some(Orientation::Backwards)) => colors::PURPLE_LIGHT,
     }
 }
 
@@ -302,14 +296,14 @@ pub struct CacheResource {
     cache: [HashMap<[EdgeID; 2], Vec<([EdgeID; 2], OrderedFloat<f64>)>>; 3],
 }
 
-#[derive(Default, Debug, Clone, Resource, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Resource)]
 pub struct InputResource {
     mesh: Arc<EmbeddedMesh>,
     properties: MeshProperties,
     properties2: MeshProperties,
     vertex_lookup: mehsh::prelude::VertLocation<MESH>,
     triangle_lookup: mehsh::prelude::FaceLocation<MESH>,
-    flow_graphs: [Graaf<EdgeID, f64>; 3],
+    flow_graphs: [fatgraph::fixed::FixedGraph<EdgeID, f64>; 3],
 }
 
 #[derive(Debug, Clone, Resource)]
@@ -636,7 +630,7 @@ pub fn handle_events(
                         })
                         .collect::<Vec<_>>();
 
-                    mesh_resmut.flow_graphs[axis as usize] = Graaf::from(nodes.clone(), edges);
+                    mesh_resmut.flow_graphs[axis as usize] = fatgraph::fixed::FixedGraph::from(nodes.clone(), edges);
                 }
 
                 solution.current_solution.reconstruct_solution(configuration.unit_cubes);
@@ -995,7 +989,7 @@ fn raycast(
         let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edgepair[0]));
         let color = match sol {
             Some(_) => to_color(configuration.direction, Perspective::Dual, None),
-            None => hutspot::color::BLACK.into(),
+            None => colors::BLACK.into(),
         };
         add_line2(
             &mut gizmos_cache.raycaster,

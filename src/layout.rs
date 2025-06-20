@@ -1,9 +1,7 @@
-use crate::dual::{Dual, Orientation, PropertyViolationError};
+use crate::dual::{Dual, PropertyViolationError};
 use crate::polycube::{Polycube, PolycubeEdgeID, PolycubeFaceID, PolycubeVertID};
 use crate::{to_principal_direction, EmbeddedMesh, FaceID, PrincipalDirection, VertID};
 use bimap::BiHashMap;
-use hutspot::consts::{EPS, PI};
-use hutspot::geom::Vector3D;
 use itertools::Itertools;
 use mehsh::prelude::*;
 use ordered_float::OrderedFloat;
@@ -110,7 +108,7 @@ impl Layout {
                 let max_count = *vertex_to_count.values().max().unwrap();
 
                 // Get all vertices with the highest count
-                let candidates = vertex_to_count.iter().filter(|(_, &count)| count == max_count).map(|(&v, _)| v).collect_vec();
+                let candidates = vertex_to_count.iter().filter(|&(_, &count)| count == max_count).map(|(&v, _)| v).collect_vec();
 
                 region_to_candidates.insert(region_id, candidates);
             }

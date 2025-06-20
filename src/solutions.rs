@@ -1,19 +1,17 @@
 use crate::{
     dual::{Dual, Orientation, PropertyViolationError},
-    graph::Graaf,
     layout::Layout,
-    polycube::{Polycube, PolycubeFaceID},
+    polycube::Polycube,
     quad::Quad,
-    to_principal_direction, EdgeID, EmbeddedMesh, FaceID, PrincipalDirection, MESH,
+    to_principal_direction, EdgeID, EmbeddedMesh, PrincipalDirection, MESH,
 };
-use hutspot::geom::Vector3D;
 use itertools::Itertools;
 use mehsh::prelude::*;
 use ordered_float::OrderedFloat;
-use rand::{seq::IteratorRandom, thread_rng};
+use rand::{rng, seq::IteratorRandom};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
-use slotmap::{SecondaryMap, SlotMap};
+use slotmap::SlotMap;
 use std::io::Write;
 use std::{
     collections::{HashMap, HashSet},
@@ -21,15 +19,6 @@ use std::{
     path::PathBuf,
     sync::Arc,
 };
-
-macro_rules! match_slice {
-    ([$($var:ident),+] <- $expr:expr) => {
-        let ($($var),+) = match &$expr[..] {
-            [$($var),+] => ($($var),+),
-            _ => unreachable!(),
-        };
-    };
-}
 
 slotmap::new_key_type! {
     pub struct LoopID;
@@ -290,7 +279,12 @@ impl Solution {
         Ok(())
     }
 
-    pub fn construct_loop(&self, [e1, e2]: [EdgeID; 2], domain: &Graaf<EdgeID, f64>, measure: &impl Fn(f64) -> f64) -> Option<(Vec<EdgeID>, f64)> {
+    pub fn construct_loop(
+        &self,
+        [e1, e2]: [EdgeID; 2],
+        domain: &fatgraph::fixed::FixedGraph<EdgeID, f64>,
+        measure: &impl Fn(f64) -> f64,
+    ) -> Option<(Vec<EdgeID>, f64)> {
         if !domain.node_exists(e1) || !domain.node_exists(e2) || !domain.edge_exists(e1, e2) || !domain.edge_exists(e2, e1) {
             return None;
         }
@@ -336,7 +330,7 @@ impl Solution {
         &self,
         [e1, e2]: [EdgeID; 2],
         direction: PrincipalDirection,
-        flow_graph: &Graaf<EdgeID, f64>,
+        flow_graph: &fatgraph::fixed::FixedGraph<EdgeID, f64>,
         measure: impl Fn(f64) -> f64,
     ) -> Option<(Vec<EdgeID>, f64)> {
         // Filter the original flow graph
@@ -364,13 +358,13 @@ impl Solution {
         &self,
         n: usize,
         axis: PrincipalDirection,
-        flow_graphs: &[Graaf<EdgeID, f64>; 3],
+        flow_graphs: &[fatgraph::fixed::FixedGraph<EdgeID, f64>; 3],
         measure: impl Fn(f64) -> f64 + std::marker::Sync + std::marker::Send,
         score: impl Fn((&[EdgeID], f64)) -> f64 + std::marker::Sync + std::marker::Send,
     ) -> Vec<Vec<EdgeID>> {
         (0..n.pow(4))
             .map(|_| {
-                let e1 = self.mesh_ref.edge_ids().into_iter().choose(&mut thread_rng()).unwrap();
+                let e1 = self.mesh_ref.edge_ids().into_iter().choose(&mut rng()).unwrap();
                 let e2 = self.mesh_ref.next(e1);
                 [e1, e2]
             })
@@ -391,7 +385,7 @@ impl Solution {
             .collect::<Vec<_>>()
     }
 
-    pub fn initialize(&mut self, flow_graphs: &[Graaf<EdgeID, f64>; 3]) {
+    pub fn initialize(&mut self, flow_graphs: &[fatgraph::fixed::FixedGraph<EdgeID, f64>; 3]) {
         let m = |b: f64| b.powi(10);
         let s = |(p, _): (&[EdgeID], f64)| -(p.len() as f64);
 
@@ -551,7 +545,7 @@ impl Solution {
         }
     }
 
-    pub fn mutation(&self, flow_graphs: &[Graaf<EdgeID, f64>; 3]) -> Option<Self> {
+    pub fn mutation(&self, flow_graphs: &[fatgraph::fixed::FixedGraph<EdgeID, f64>; 3]) -> Option<Self> {
         // Three types of mutation:
         // 1. Add loop(s)
         // 2. Remove loop(s)
@@ -611,7 +605,7 @@ impl Solution {
             }
             2 => {
                 // Remove loop(s)
-                let loop_id = self.loops.keys().choose(&mut rand::thread_rng()).unwrap();
+                let loop_id = self.loops.keys().choose(&mut rand::rng()).unwrap();
                 let mut candidate_solution = mutated_solution.clone();
                 candidate_solution.del_loop(loop_id);
 
@@ -655,7 +649,7 @@ impl Solution {
     //     (0..nr_loops)
     //         .into_par_iter()
     //         .flat_map(move |_| {
-    //             let mut rng = thread_rng();
+    //             let mut rng = rng();
     //             let mut new_solution = self.clone();
 
     //             // random int between 1 and 3
@@ -696,7 +690,7 @@ impl Solution {
     // pub fn mutate_del_loop(&self, nr_loops: usize) -> Option<Self> {
     //     self.loops
     //         .keys()
-    //         .choose_multiple(&mut rand::thread_rng(), nr_loops)
+    //         .choose_multiple(&mut rand::rng(), nr_loops)
     //         .into_par_iter()
     //         .flat_map(|loop_id| {
     //             let mut real_solution = self.clone();
@@ -966,7 +960,7 @@ impl Solution {
     //             .to_owned();
 
     //         if let Some(cycle_to_edges) = self.find_some_valid_loops_through_region(region_id, direction) {
-    //             let chosen_cycle = cycle_to_edges.iter().choose(&mut rand::thread_rng()).unwrap();
+    //             let chosen_cycle = cycle_to_edges.iter().choose(&mut rand::rng()).unwrap();
 
     //             let mut augmented_cycle = chosen_cycle.clone();
 
