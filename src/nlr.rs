@@ -424,7 +424,7 @@ impl Solution {
                         lines.push(format!("       {}       {}  {}", face_to_id.get_by_left(face_id).unwrap(), height, width));
                         for i in 0..width {
                             for j in 0..height {
-                                let vert_id = verts[i][j];
+                                let vert_id = verts[j][i];
                                 let pos = quad.quad_mesh.position(vert_id);
                                 let line = format!(
                                     "  {}  {}  {}",

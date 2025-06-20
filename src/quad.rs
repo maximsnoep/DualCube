@@ -272,7 +272,7 @@ impl Quad {
                 triangle_mesh_polycube.set_position(v, position);
             }
 
-            let omega = 5;
+            let omega = 3;
 
             let grid_width = polycube.size(edge1);
             assert!(polycube.size(edge3) == grid_width);
