@@ -386,7 +386,14 @@ impl Solution {
                         let verts = quad.edge_to_verts.get(edge_id).unwrap();
                         let mut lines = vec![];
                         let width = verts.len();
-                        lines.push(format!("       {}       {}", edge_to_id.get_by_left(edge_id).unwrap(), width));
+                        lines.push(format!(
+                            "       {}       {}",
+                            edge_to_id
+                                .get_by_left(edge_id)
+                                .or_else(|| edge_to_id.get_by_left(&polycube.structure.twin(*edge_id)))
+                                .unwrap(),
+                            width
+                        ));
                         for i in 0..verts.len() {
                             let vert_id = verts[i];
                             let pos = quad.quad_mesh.position(vert_id);

@@ -457,7 +457,10 @@ impl Quad {
             for (edge_id, vert_ids) in &edge_to_verts_usize {
                 // Convert usize to VertKey<QUAD>
                 let vert_keys = vert_ids.iter().map(|&v| vert_id_map.key(v).unwrap().to_owned()).collect_vec();
-                edge_to_verts.insert(edge_id.to_owned(), vert_keys);
+                edge_to_verts.insert(edge_id.to_owned(), vert_keys.clone());
+                let twin_id = polycube.twin(*edge_id);
+                let rev_vert_keys = vert_keys.iter().rev().cloned().collect_vec();
+                edge_to_verts.insert(twin_id, rev_vert_keys);
             }
 
             // Create the quad mesh
