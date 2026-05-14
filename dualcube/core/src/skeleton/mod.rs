@@ -66,6 +66,13 @@ pub struct SkeletonData {
 
     /// A skeleton isomorphic to `labeled_skeleton`, but with node positions and patch vertices updated to match the polycube structure.
     polycube_skeleton: Option<LabeledCurveSkeleton>,
+
+    /// Mangled partial skeleton produced when connectivity surgery couldn't
+    /// reduce away every face. Has nodes positioned in original-mesh space
+    /// and edges, but its `BoundaryLoop`s are empty placeholders. Set only
+    /// on failure; intended purely for visual inspection so the user can see
+    /// where surgery got stuck.
+    failed_surgery_skeleton: Option<CurveSkeleton>,
 }
 
 impl SkeletonData {
@@ -92,6 +99,13 @@ impl SkeletonData {
     /// Returns a reference to the polycube skeleton if it has been computed.
     pub fn polycube_skeleton(&self) -> Option<&LabeledCurveSkeleton> {
         self.polycube_skeleton.as_ref()
+    }
+
+    /// Returns a reference to the partial skeleton from a failed connectivity
+    /// surgery, if any. `Some` only when the most recent surgery couldn't
+    /// reduce away every face; intended purely for diagnostic visualization.
+    pub fn failed_surgery_skeleton(&self) -> Option<&CurveSkeleton> {
+        self.failed_surgery_skeleton.as_ref()
     }
 
     /// Reconstructs what a skeleton looked like at a certain point in the volume collapse history, if the history is available.
@@ -124,7 +138,7 @@ impl SkeletonData {
         omega: usize,
     ) -> (Option<Polycube>, Option<Quad>) {
         // Reuse contraction
-        let (curve_skeleton, mut cleaned_skeleton) =
+        let (curve_skeleton, mut cleaned_skeleton, failed_surgery) =
             surgery_and_simplification(&mesh, &self.contraction_mesh);
 
         // Reuse pipeline post simplifcation
@@ -148,6 +162,7 @@ impl SkeletonData {
         self.collapse_history = Some(history);
         self.labeled_skeleton = labeled;
         self.polycube_skeleton = polycube_skeleton;
+        self.failed_surgery_skeleton = failed_surgery;
 
         (polycube, quad)
     }
@@ -283,7 +298,7 @@ pub fn get_skeleton_based_mapping(
     // Start by doing contraction
     let contracted_mesh = contract_mesh(&mesh, 50);
 
-    let (raw_curve_skeleton, mut cleaned_skeleton) =
+    let (raw_curve_skeleton, mut cleaned_skeleton, failed_surgery) =
         surgery_and_simplification(&mesh, &contracted_mesh);
 
     let (labeled, history, polycube_and_skeleton) = post_simplification_stage(
@@ -309,27 +324,31 @@ pub fn get_skeleton_based_mapping(
             collapse_history: Some(history),
             labeled_skeleton: labeled,
             polycube_skeleton,
+            failed_surgery_skeleton: failed_surgery,
         },
         polycube,
         quad,
     )
 }
 
+/// Returns `(raw, cleaned, failed_surgery_diagnostic)`. `raw` and `cleaned`
+/// are always populated — they're empty `CurveSkeleton`s when surgery
+/// failed, which lets every downstream stage no-op trivially without
+/// needing a per-stage guard. The optional third value carries the mangled
+/// partial state from a failed surgery, intended purely for visual
+/// inspection.
 fn surgery_and_simplification(
     mesh: &Arc<Mesh<INPUT>>,
     contracted_mesh: &Mesh<CONTRACTION>,
-) -> (CurveSkeleton, CurveSkeleton) {
-    // Turn the contracted mesh into a 1D curve skeleton
-    let curve_skeleton = extract_skeleton(contracted_mesh, mesh);
+) -> (CurveSkeleton, CurveSkeleton, Option<CurveSkeleton>) {
+    let (curve_skeleton, failed_surgery) = extract_skeleton(contracted_mesh, mesh);
 
-    // Simplify skeleton to get more coherent features
     let mut cleaned_skeleton = curve_skeleton.clone();
     simplify_skeleton(&mut cleaned_skeleton, mesh);
-
     // Smooth region boundaries
     // cleaned_skeleton.smooth_boundaries(mesh); // This is not really necessary...
 
-    (curve_skeleton, cleaned_skeleton)
+    (curve_skeleton, cleaned_skeleton, failed_surgery)
 }
 
 /// The decomposed part of the skeletonization process that happens after simplification.
@@ -373,10 +392,12 @@ fn post_simplification_stage(
     // (MAYBE TEMP) Do volume based collapse, and save the history.
     let history = volume_based_collapse(&*cleaned_skeleton, &mesh);
 
-    // Generate polycube based on labeled skeleton
+    // Generate polycube based on labeled skeleton. Skip on an empty
+    // skeleton (which is what surgery produces on failure) — generate_polycube
+    // panics when handed a zero-face polycube mesh.
     let polycube: Option<(Polycube, LabeledCurveSkeleton, Quad)> = match &labeled {
-        Some(labeled) => Some(generate_polycube(labeled, omega)),
-        None => None,
+        Some(labeled) if labeled.node_count() > 0 => Some(generate_polycube(labeled, omega)),
+        _ => None,
     };
 
     // Create the mapping between input mesh and polycube

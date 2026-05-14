@@ -315,35 +315,58 @@ impl SurgeryContext {
     /// For genus-0 inputs (no boundary matrix is maintained) this is a
     /// no-op: every collapse is accepted. Otherwise: probe what β₁ of the
     /// simplicial complex would become after a hypothetical collapse u → v
-    /// and reject if it would change. This is the only invariant we care
-    /// about — it's strictly weaker than the classical Dey–Edelsbrunner
-    /// edge-link condition, so it admits collapses that the strict check
-    /// would refuse, while still preventing topology change.
-    fn check_link_condition(&self, u: VIdx, v: VIdx) -> bool {
-        let Some(bm) = self.boundary_matrix.as_ref() else {
-            return true;
-        };
-        let Some(delta) = self.compute_collapse_delta(u, v) else {
-            return true;
-        };
+    /// and reject if it would change.
+    fn check_homology_preserved(&self, u: VIdx, v: VIdx) -> bool {
+        match self.simulate_post_collapse_beta_1(u, v) {
+            None => true, // genus 0 — no homology to preserve
+            Some(new_beta_1) => new_beta_1 == self.target_beta_1 as i64,
+        }
+    }
 
-        // Snapshot the boundary matrix, apply the would-be changes, and
-        // re-reduce to get the post-collapse rank.
+    /// Classical Dey–Edelsbrunner manifold-preservation link condition: for
+    /// every shared neighbour `w` of `u` and `v`, the face `(u, v, w)` must
+    /// already exist. If it does not, the collapse would leave the merged
+    /// edge `(v, w)` incident to four faces (= non-manifold edge) and would
+    /// in turn create a non-manifold vertex.
+    ///
+    /// On a closed 2-manifold this is exactly the condition that the
+    /// collapse leaves the complex a closed 2-manifold. We re-introduced it
+    /// alongside the homology check because the homology check alone permits
+    /// non-manifold collapses, and those non-manifold remainders inflate β₁
+    /// with spurious 1-skeleton cycles that block all later collapses.
+    fn check_manifold_preserved(&self, u: VIdx, v: VIdx) -> bool {
+        let n_u = &self.neighbors[&u];
+        let n_v = &self.neighbors[&v];
+        for &w in n_u {
+            if w == v {
+                continue;
+            }
+            if n_v.contains(&w) && !self.active_faces.contains(&sort_face(u, v, w)) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Returns the β₁ that the simplicial complex would have if `u → v` were
+    /// collapsed. `None` when no boundary matrix is being maintained (genus
+    /// 0). Used both by the legality check and by the stuck-state diagnostic.
+    fn simulate_post_collapse_beta_1(&self, u: VIdx, v: VIdx) -> Option<i64> {
+        let bm = self.boundary_matrix.as_ref()?;
+        let delta = self.compute_collapse_delta(u, v)?;
+
         let mut snap = bm.clone();
         Self::apply_collapse_delta(&mut snap, &delta);
         snap.matrix.reduce();
         let new_rank = snap.matrix.rank();
 
-        // Post-collapse counts. For a connected complex, β₁ = E − V + 1 −
-        // rank(∂₂). Edge collapse on a connected complex preserves
-        // connectedness (the merged vertex is still connected to everything
-        // either endpoint reached), so we can keep β₀ = 1 fixed.
+        // Post-collapse counts. β₁ = E − V + β₀ − rank(∂₂); for a connected
+        // input edge collapse preserves β₀ = 1.
         let v_now = (self.positions.len() - self.is_dead.len()) as i64;
         let e_now = bm.edge_to_col.len() as i64;
         let new_v = v_now - delta.delta_v as i64;
         let new_e = e_now - delta.delta_e as i64;
-        let new_beta_1 = new_e - new_v + 1 - new_rank as i64;
-        new_beta_1 == self.target_beta_1 as i64
+        Some(new_e - new_v + 1 - new_rank as i64)
     }
 
     /// Computes what the (face_to_row, edge_to_col, matrix) state would
@@ -436,7 +459,7 @@ impl SurgeryContext {
 
     /// Applies a [`CollapseDelta`] in place to the given boundary matrix and
     /// its face/edge maps. Used both for the snapshot in
-    /// [`Self::check_link_condition`] and for the live commit in
+    /// [`Self::check_manifold_preserved`] and for the live commit in
     /// [`Self::collapse_edge`].
     fn apply_collapse_delta(bm: &mut BoundaryMatrix, delta: &CollapseDelta) {
         // 1. Column merges: shared-neighbor edge columns collapse into one.
@@ -513,7 +536,14 @@ impl SurgeryContext {
             return false;
         }
 
-        if !self.check_link_condition(u, v) {
+        // Manifold-preservation gate (cheap, local). Goes first because the
+        // homology check is global and expensive; if this fails the collapse
+        // is rejected anyway.
+        if !self.check_manifold_preserved(u, v) {
+            return false;
+        }
+
+        if !self.check_homology_preserved(u, v) {
             return false;
         }
 
@@ -539,6 +569,98 @@ impl SurgeryContext {
         count
     }
 
+    /// Logs a full diagnostic of the stuck state: aggregate counts, the
+    /// connected-component structure of the sub-complex still carrying
+    /// faces, and a per-directed-edge β₁ probe for every remaining face.
+    ///
+    /// Intended to fire once when surgery exits with `active_faces`
+    /// non-empty. The point is to make it obvious whether we're stuck on a
+    /// single irreducible "torus core" (a topological obstruction) or on
+    /// scattered pathologies (a likely bug).
+    fn dump_stuck_state_diagnostic(&self) {
+        let v_now = self.positions.len() - self.is_dead.len();
+        let f_now = self.active_faces.len();
+        let e_now = self
+            .boundary_matrix
+            .as_ref()
+            .map(|bm| bm.edge_to_col.len())
+            .unwrap_or(0);
+        let chi = v_now as i64 - e_now as i64 + f_now as i64;
+
+        warn!(
+            "Stuck-state aggregate: V={}, E={}, F={}, χ={}, target_β₁={}.",
+            v_now, e_now, f_now, chi, self.target_beta_1
+        );
+
+        // Vertices that still belong to at least one active face form the
+        // "live sub-complex". Compute its connected components by BFS over
+        // the adjacency restricted to faces.
+        let mut face_verts: HashSet<VIdx> = HashSet::new();
+        for &[a, b, c] in &self.active_faces {
+            face_verts.insert(a);
+            face_verts.insert(b);
+            face_verts.insert(c);
+        }
+        let mut adj: HashMap<VIdx, HashSet<VIdx>> = HashMap::new();
+        for &[a, b, c] in &self.active_faces {
+            adj.entry(a).or_default().extend([b, c]);
+            adj.entry(b).or_default().extend([a, c]);
+            adj.entry(c).or_default().extend([a, b]);
+        }
+        let mut visited: HashSet<VIdx> = HashSet::new();
+        let mut components: Vec<(usize, usize)> = Vec::new(); // (verts, faces)
+        for &start in &face_verts {
+            if visited.contains(&start) {
+                continue;
+            }
+            let mut comp_verts: HashSet<VIdx> = HashSet::new();
+            let mut queue: VecDeque<VIdx> = VecDeque::new();
+            queue.push_back(start);
+            visited.insert(start);
+            comp_verts.insert(start);
+            while let Some(v) = queue.pop_front() {
+                if let Some(ns) = adj.get(&v) {
+                    for &n in ns {
+                        if visited.insert(n) {
+                            comp_verts.insert(n);
+                            queue.push_back(n);
+                        }
+                    }
+                }
+            }
+            let comp_face_count = self
+                .active_faces
+                .iter()
+                .filter(|&&[a, b, c]| {
+                    comp_verts.contains(&a)
+                        && comp_verts.contains(&b)
+                        && comp_verts.contains(&c)
+                })
+                .count();
+            components.push((comp_verts.len(), comp_face_count));
+        }
+        warn!(
+            "Stuck sub-complex has {} connected component(s): {:?} (V, F per component).",
+            components.len(),
+            components
+        );
+
+        // Per-face dump. With ~10–20 stuck faces this is ~60–120 lines —
+        // verbose, but the whole point of this hook is to let us read every
+        // rejection.
+        warn!(
+            "Per-face per-directed-edge diagnostics ({} faces × 6 edges):",
+            f_now
+        );
+        for (i, &face) in self.active_faces.iter().enumerate() {
+            let [a, b, c] = face;
+            warn!("  face {} {:?}:", i, face);
+            for &(u, v) in &[(a, b), (b, a), (b, c), (c, b), (a, c), (c, a)] {
+                warn!("    {}", self.edge_diagnostic_summary(u, v));
+            }
+        }
+    }
+
     /// Returns a one-line diagnostic summary for directed edge u -> v.
     fn edge_diagnostic_summary(&self, u: VIdx, v: VIdx) -> String {
         let u_dead = self.is_dead.contains(&u);
@@ -548,11 +670,22 @@ impl SurgeryContext {
             .get(&u)
             .is_some_and(|neighbor_set| neighbor_set.contains(&v));
         let has_faces = adjacent && !u_dead && !v_dead && self.edge_has_faces(u, v);
-        let link_ok = has_faces && self.check_link_condition(u, v);
+        let manifold_ok = has_faces && self.check_manifold_preserved(u, v);
+        let beta_1 = if has_faces {
+            self.simulate_post_collapse_beta_1(u, v)
+        } else {
+            None
+        };
+        let homology_ok = has_faces && self.check_homology_preserved(u, v);
 
+        let beta_str = match beta_1 {
+            Some(b) => format!("new_β₁={} (target {}, Δ={:+})",
+                b, self.target_beta_1, b - self.target_beta_1 as i64),
+            None => "new_β₁=N/A".to_string(),
+        };
         format!(
-            "{:?}->{:?}[u_dead={}, v_dead={}, adjacent={}, has_faces={}, link_ok={}]",
-            u, v, u_dead, v_dead, adjacent, has_faces, link_ok
+            "{:?}->{:?}[dead u/v={}/{}, adj={}, faces={}, manifold={}, homology={}, {}]",
+            u, v, u_dead, v_dead, adjacent, has_faces, manifold_ok, homology_ok, beta_str
         )
     }
 
@@ -640,7 +773,17 @@ impl SurgeryContext {
 
 
     /// Builds the final CurveSkeleton graph from the surgery result.
-    fn to_curve_skeleton(&self, original_mesh: &Mesh<INPUT>) -> CurveSkeleton {
+    ///
+    /// `compute_boundary_loops`: when true, edges carry the proper face-walk
+    /// boundary loop. When false (used for partial / failed surgery results),
+    /// edges carry an empty BoundaryLoop placeholder so the graph can be
+    /// rendered without panicking on patches that don't share a real
+    /// boundary in the original mesh.
+    fn to_curve_skeleton(
+        &self,
+        original_mesh: &Mesh<INPUT>,
+        compute_boundary_loops: bool,
+    ) -> CurveSkeleton {
         let mut graph = CurveSkeleton::default();
         let mut node_indices = HashMap::new();
 
@@ -663,7 +806,12 @@ impl SurgeryContext {
             node_indices.insert(v, idx);
         }
 
-        // Add edges
+        // Add edges. When `compute_boundary_loops` is false (surgery failed
+        // and we're producing a skeleton purely for inspection), insert
+        // empty BoundaryLoops instead of running the face-walk — partial
+        // skeletons can have adjacent skeleton nodes whose patches share no
+        // boundary face in the original mesh, which would panic
+        // `BoundaryLoop::new`.
         for (&u, neighbor_set) in &self.neighbors {
             if self.is_dead.contains(&u) {
                 continue;
@@ -674,14 +822,24 @@ impl SurgeryContext {
                     // Only add each edge once (when u < v)
                     if u < v && !self.is_dead.contains(&v) {
                         if let Some(&v_node) = node_indices.get(&v) {
-                            // compute boundary loop from the two node patches via face-walk
-                            let patch_u = graph.node_weight(u_node).unwrap().patch_vertices.clone();
-                            let patch_v = graph.node_weight(v_node).unwrap().patch_vertices.clone();
-                            graph.add_edge(
-                                u_node,
-                                v_node,
-                                BoundaryLoop::new(&patch_u, &patch_v, original_mesh),
-                            );
+                            let loop_data = if compute_boundary_loops {
+                                let patch_u = graph
+                                    .node_weight(u_node)
+                                    .unwrap()
+                                    .patch_vertices
+                                    .clone();
+                                let patch_v = graph
+                                    .node_weight(v_node)
+                                    .unwrap()
+                                    .patch_vertices
+                                    .clone();
+                                BoundaryLoop::new(&patch_u, &patch_v, original_mesh)
+                            } else {
+                                BoundaryLoop {
+                                    edge_midpoints: Vec::new(),
+                                }
+                            };
+                            graph.add_edge(u_node, v_node, loop_data);
                         }
                     }
                 }
@@ -699,15 +857,21 @@ impl SurgeryContext {
 /// * `original_mesh` - The original input mesh (for embedding refinement).
 ///
 /// # Returns
-/// A `CurveSkeleton` graph representing the 1D skeleton.
+/// `(skeleton, failed_surgery_diagnostic)`:
+/// - On success: a fully-collapsed curve skeleton and `None`.
+/// - On failure (preprocessing reject, or no candidates left while faces
+///   remain): an empty `CurveSkeleton` and `Some(partial_skeleton)` carrying
+///   the mangled state for inspection. Returning empty as the primary lets
+///   downstream pipeline stages run unguarded — they trivially no-op on an
+///   empty graph — while the diagnostic can be rendered as a separate
+///   overlay.
 pub fn extract_skeleton(
     contracted_mesh: &Mesh<CONTRACTION>,
     original_mesh: &Mesh<INPUT>,
-) -> CurveSkeleton {
+) -> (CurveSkeleton, Option<CurveSkeleton>) {
     let Some(mut ctx) = SurgeryContext::new(contracted_mesh) else {
-        // Preprocessing already logged the reason. Return an empty skeleton
-        // so the rest of the pipeline doesn't crash on a missing CurveSkeleton.
-        return CurveSkeleton::default();
+        // Preprocessing already logged the reason.
+        return (CurveSkeleton::default(), None);
     };
     let mut heap = BinaryHeap::new();
 
@@ -746,19 +910,7 @@ pub fn extract_skeleton(
                 );
             }
 
-            if let Some(face) = ctx.active_faces.iter().copied().next() {
-                let [a, b, c] = face;
-                warn!(
-                    "Sample remaining face {:?} diagnostics: {}, {}, {}, {}, {}, {}",
-                    face,
-                    ctx.edge_diagnostic_summary(a, b),
-                    ctx.edge_diagnostic_summary(b, a),
-                    ctx.edge_diagnostic_summary(b, c),
-                    ctx.edge_diagnostic_summary(c, b),
-                    ctx.edge_diagnostic_summary(c, a),
-                    ctx.edge_diagnostic_summary(a, c)
-                );
-            }
+            ctx.dump_stuck_state_diagnostic();
             break;
         };
 
@@ -807,19 +959,28 @@ pub fn extract_skeleton(
         }
     }
 
-    info!(
-        "Connectivity surgery complete. Collapsed {} edges. Remaining vertices: {}",
-        collapses,
-        ctx.positions.len() - ctx.is_dead.len()
-    );
-
-    // Build the skeleton
-    let mut skeleton = ctx.to_curve_skeleton(original_mesh);
-
-    // Refine embedding using original mesh positions
-    skeleton.refine_embeddings(original_mesh);
-
-    skeleton
+    let succeeded = ctx.active_faces.is_empty();
+    if succeeded {
+        info!(
+            "Connectivity surgery complete. Collapsed {} edges. Remaining vertices: {}",
+            collapses,
+            ctx.positions.len() - ctx.is_dead.len()
+        );
+        let mut skeleton = ctx.to_curve_skeleton(original_mesh, true);
+        skeleton.refine_embeddings(original_mesh);
+        (skeleton, None)
+    } else {
+        warn!(
+            "Connectivity surgery did NOT complete: {} faces remain after {} collapses. Returning empty skeleton to the pipeline and the partial state as a separate diagnostic.",
+            ctx.active_faces.len(),
+            collapses
+        );
+        // Build the partial skeleton with empty BoundaryLoops and no
+        // embedding refinement — both steps assume a clean partition into
+        // well-formed patches and would panic on the mangled state.
+        let diagnostic = ctx.to_curve_skeleton(original_mesh, false);
+        (CurveSkeleton::default(), Some(diagnostic))
+    }
 }
 
 /// Verifies the input is a closed connected 2-manifold and (when genus > 0)
@@ -1106,7 +1267,7 @@ mod tests {
         if !ctx.edge_has_faces(c.u, c.v) {
             return Some(RejectReason::NoFaces);
         }
-        if !ctx.check_link_condition(c.u, c.v) {
+        if !ctx.check_manifold_preserved(c.u, c.v) {
             return Some(RejectReason::LinkFailed);
         }
         None
@@ -1227,7 +1388,7 @@ mod tests {
                     && ctx.edge_has_faces(c.u, c.v);
 
                 let link_ok = if link_condition_enabled {
-                    basic_ok && ctx.check_link_condition(c.u, c.v)
+                    basic_ok && ctx.check_manifold_preserved(c.u, c.v)
                 } else {
                     basic_ok
                 };
@@ -1346,7 +1507,7 @@ mod tests {
         summary
     }
 
-    /// Step 3: Direct probe of `check_link_condition` for a middle-ring edge.
+    /// Step 3: Direct probe of `check_manifold_preserved` for a middle-ring edge.
     /// Ring 10 is the middle. The edge from slot 0 to slot 1 on ring 10 has a third
     /// ring-10 vertex (slot 5? slot 2?) as a common neighbor only if the triangulation
     /// connects it across — for our quad triangulation, common neighbors of an edge on a
@@ -1389,8 +1550,8 @@ mod tests {
             let exists = ctx.active_faces.contains(&sort_face(i, j, k));
             eprintln!("    k={:>3}: (i,j,k) face exists? {}", idx_of(k), exists);
         }
-        let verdict = ctx.check_link_condition(i, j);
-        eprintln!("  check_link_condition(i, j) = {}", verdict);
+        let verdict = ctx.check_manifold_preserved(i, j);
+        eprintln!("  check_manifold_preserved(i, j) = {}", verdict);
 
         // Also: for any *pair* of common neighbors w1, w2, if both (i,w1,w2) and (j,w1,w2)
         // are faces, then w1-w2 ∈ lk(i) ∩ lk(j) but not in lk(ij). The classical 2-manifold

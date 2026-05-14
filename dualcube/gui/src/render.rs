@@ -1016,8 +1016,10 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                 let mut gizmos_raw_skeleton = GizmoAsset::new();
                 let mut gizmos_cleaned_skeleton = GizmoAsset::new();
                 let mut gizmos_cleaned_skeleton_gray = GizmoAsset::new();
+                let mut gizmos_failed_surgery_skeleton = GizmoAsset::new();
                 let mut patch_mesh: Option<bevy::mesh::Mesh> = None;
                 let mut raw_patch_mesh: Option<bevy::mesh::Mesh> = None;
+                let mut failed_surgery_patch_mesh: Option<bevy::mesh::Mesh> = None;
                 let mut granulated_mesh = &mehsh::prelude::Mesh::<INPUT>::default();
                 let mut default_color_map = HashMap::new();
                 let mut black_color_map = HashMap::new();
@@ -1153,6 +1155,15 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                             create_skeleton_gizmos(curve_skeleton, translation, scale);
                         raw_patch_mesh =
                             Some(create_patch_mesh(curve_skeleton, input, translation, scale));
+                    }
+                    // Diagnostic: when connectivity surgery couldn't reduce
+                    // away every face, render the partial skeleton so the
+                    // user can see where it got stuck.
+                    if let Some(failed) = skeleton_data.failed_surgery_skeleton() {
+                        gizmos_failed_surgery_skeleton =
+                            create_skeleton_gizmos(failed, translation, scale);
+                        failed_surgery_patch_mesh =
+                            Some(create_patch_mesh(failed, input, translation, scale));
                     }
                     if let Some(cleaned_skeleton) = skeleton_data.cleaned_skeleton() {
                         // Check for labeled skeleton
@@ -1425,7 +1436,13 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                     .gizmo(granulated_mesh_gizmos, 0.5, -0.00001, "refined wireframe")
                     .gizmo(gizmos_raw_skeleton, 25., -0.00014, "raw skeleton")
                     .gizmo(gizmos_cleaned_skeleton, 25., -0.00015, "cleaned skeleton")
-                    .gizmo(gizmos_cleaned_skeleton_gray, 25., -0.000155, "cleaned skeleton (gray)");
+                    .gizmo(gizmos_cleaned_skeleton_gray, 25., -0.000155, "cleaned skeleton (gray)")
+                    .gizmo(
+                        gizmos_failed_surgery_skeleton,
+                        25.,
+                        -0.000145,
+                        "failed surgery skeleton",
+                    );
 
                 // TODO: remove later
                 if let Some(crossings) = &solution.loop_crossings {
@@ -1477,6 +1494,24 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                     let raw_boundary_gizmos =
                         create_patch_boundary_gizmos(raw, input, translation, scale);
                     render_obj.gizmo(raw_boundary_gizmos, 1.0, -0.000165, "raw patches");
+                }
+                // Failed-surgery patch overlay
+                if let Some(fpm) = failed_surgery_patch_mesh {
+                    render_obj.bevy_mesh(fpm, "failed surgery patches");
+                }
+                if let Some(failed) = solution
+                    .skeleton
+                    .as_ref()
+                    .and_then(|s| s.failed_surgery_skeleton())
+                {
+                    let failed_boundary_gizmos =
+                        create_patch_boundary_gizmos(failed, input, translation, scale);
+                    render_obj.gizmo(
+                        failed_boundary_gizmos,
+                        1.0,
+                        -0.000167,
+                        "failed surgery patches",
+                    );
                 }
                 // Build collapse history patch overlay if history is available
                 if let Some(skeleton_data) = &solution.skeleton {

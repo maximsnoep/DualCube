@@ -605,6 +605,11 @@ impl Quad {
     /// Since there is no input-mesh mapping, `quad_mesh` is identical to `quad_mesh_polycube`.
     #[must_use]
     pub fn from_polycube(polycube: &Mesh<POLYCUBE>, omega: usize) -> Option<Self> {
+        let face_ids = polycube.face_ids();
+        if face_ids.is_empty() {
+            return None;
+        }
+
         let mut edges_done: HashMap<EdgeKey<POLYCUBE>, Vec<usize>> = HashMap::new();
         let mut corners_done: HashMap<VertKey<POLYCUBE>, usize> = HashMap::new();
 
@@ -615,7 +620,7 @@ impl Quad {
         let mut edge_to_verts_usize: HashMap<EdgeKey<POLYCUBE>, Vec<usize>> = HashMap::new();
 
         let mut queue = vec![];
-        queue.push(polycube.face_ids()[0]);
+        queue.push(face_ids[0]);
 
         let mut patches_done = HashSet::new();
 

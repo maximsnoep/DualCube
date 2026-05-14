@@ -288,9 +288,15 @@ where
                             r0, r1, &region_color_fn,
                         );
                     } else {
-                        unreachable!(
-                            "Triangle with all three vertices in different regions encountered."
-                        );
+                        // All three vertices in different regions: only
+                        // happens for a malformed partition (e.g. the
+                        // failed-surgery diagnostic skeleton). Skip the
+                        // boundary split and just paint the whole triangle
+                        // with v0's color so we still get something visible.
+                        let color = region_color_fn(r0);
+                        add_vertex(p0, face_normal, &color);
+                        add_vertex(p1, face_normal, &color);
+                        add_vertex(p2, face_normal, &color);
                     }
                 }
                 _ => {}
