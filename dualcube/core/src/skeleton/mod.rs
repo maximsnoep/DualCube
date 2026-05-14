@@ -35,6 +35,7 @@ mod connectivity_surgery;
 mod contraction;
 mod embeddability;
 mod f2_rref;
+mod tetrahedralize;
 mod manipulation;
 mod patch;
 mod simplify;
