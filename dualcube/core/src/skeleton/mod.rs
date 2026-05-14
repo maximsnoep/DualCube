@@ -34,6 +34,7 @@ mod boundary_loop;
 mod connectivity_surgery;
 mod contraction;
 mod embeddability;
+mod f2_rref;
 mod manipulation;
 mod patch;
 mod simplify;
