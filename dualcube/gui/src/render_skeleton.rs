@@ -338,6 +338,34 @@ where
     builder.build()
 }
 
+/// Builds a Bevy mesh from the explicit triangle positions of a
+/// failed-surgery remnant — each triangle is rendered in red so the user
+/// can read off exactly which faces the surgery loop got stuck on.
+/// Per-face flat normals (from the cross product of two edges) keep the
+/// mesh well-shaded.
+pub fn create_failed_surgery_face_mesh(
+    triangles: &[[Vector3D; 3]],
+    translation: Vector3D,
+    scale: f64,
+) -> bevy::mesh::Mesh {
+    let mut builder = MeshBuilder::default();
+    const RED: [f32; 3] = [0.95, 0.18, 0.18];
+    const FALLBACK_NORMAL: Vector3D = Vector3D::new(0.0, 0.0, 1.0);
+
+    for &[a, b, c] in triangles {
+        let raw = (b - a).cross(&(c - a));
+        let normal = if raw.norm() > 1e-12 { raw.normalize() } else { FALLBACK_NORMAL };
+        let pa = a * scale + translation;
+        let pb = b * scale + translation;
+        let pc = c * scale + translation;
+        builder.add_vertex(&pa, &normal, &RED);
+        builder.add_vertex(&pb, &normal, &RED);
+        builder.add_vertex(&pc, &normal, &RED);
+    }
+
+    builder.build()
+}
+
 /// Creates a Bevy mesh for visualizing surface patches as filled triangles.
 pub fn create_patch_mesh(
     curve_skeleton: &CurveSkeleton,

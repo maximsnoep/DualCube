@@ -954,6 +954,40 @@ impl SurgeryContext {
 
         graph
     }
+
+    /// Returns world-space triangle positions for every 2-face still in the
+    /// simplicial complex when surgery stopped. Used by the failed-surgery
+    /// overlay to draw the literal remnant faces in red. Positions are
+    /// taken from the contracted, normalized vertex positions and
+    /// denormalized to original world space — matching the placement of
+    /// skeleton nodes in `to_curve_skeleton`.
+    fn remaining_face_triangles(&self) -> Vec<[Vector3D; 3]> {
+        self.active_faces
+            .iter()
+            .map(|&[a, b, c]| {
+                [
+                    self.positions[&a] / self.scale + self.center,
+                    self.positions[&b] / self.scale + self.center,
+                    self.positions[&c] / self.scale + self.center,
+                ]
+            })
+            .collect()
+    }
+}
+
+/// Diagnostic bundle returned by [`extract_skeleton`] when surgery did NOT
+/// complete (some faces remained). Carries both the partial curve skeleton
+/// (with empty boundary loops, since the patch partition is mangled) and
+/// the world-space triangle positions of every face still in the stuck
+/// state — so the GUI can render the remnant in red.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FailedSurgeryDiagnostic {
+    /// Partial skeleton: a node per surviving vertex, an edge per surviving
+    /// 1-cell. Edges carry empty [`BoundaryLoop`] placeholders.
+    pub skeleton: CurveSkeleton,
+    /// Each entry is a triangle's three world-space corner positions
+    /// (post-contraction, denormalized).
+    pub remaining_face_positions: Vec<[Vector3D; 3]>,
 }
 
 /// Extracts a 1D curve skeleton from a contracted mesh via connectivity surgery.
@@ -974,7 +1008,7 @@ impl SurgeryContext {
 pub fn extract_skeleton(
     contracted_mesh: &Mesh<CONTRACTION>,
     original_mesh: &Mesh<INPUT>,
-) -> (CurveSkeleton, Option<CurveSkeleton>) {
+) -> (CurveSkeleton, Option<FailedSurgeryDiagnostic>) {
     let Some(mut ctx) = SurgeryContext::new(contracted_mesh, original_mesh) else {
         // Preprocessing already logged the reason.
         return (CurveSkeleton::default(), None);
@@ -1083,8 +1117,15 @@ pub fn extract_skeleton(
         );
         // Build the partial skeleton with empty BoundaryLoops and no
         // embedding refinement — both steps assume a clean partition into
-        // well-formed patches and would panic on the mangled state.
-        let diagnostic = ctx.to_curve_skeleton(original_mesh, false);
+        // well-formed patches and would panic on the mangled state. Also
+        // bundle the world-space triangle positions of every remaining
+        // face so the GUI can render the stuck-state remnant.
+        let partial_skeleton = ctx.to_curve_skeleton(original_mesh, false);
+        let remaining_face_positions = ctx.remaining_face_triangles();
+        let diagnostic = FailedSurgeryDiagnostic {
+            skeleton: partial_skeleton,
+            remaining_face_positions,
+        };
         (CurveSkeleton::default(), Some(diagnostic))
     }
 }

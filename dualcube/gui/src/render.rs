@@ -1,7 +1,8 @@
 use crate::render_skeleton::{
-    create_crossing_point_gizmos, create_face_point_gizmos, create_labeled_skeleton_gizmos, create_patch_boundary_gizmos,
-    create_patch_convexity_mesh, create_patch_mesh, create_polycube_patch_boundary_gizmos,
-    create_polycube_patch_mesh, create_skeleton_gizmos,
+    create_crossing_point_gizmos, create_face_point_gizmos, create_failed_surgery_face_mesh,
+    create_labeled_skeleton_gizmos, create_patch_boundary_gizmos, create_patch_convexity_mesh,
+    create_patch_mesh, create_polycube_patch_boundary_gizmos, create_polycube_patch_mesh,
+    create_skeleton_gizmos,
 };
 use crate::ui::UiResource;
 use crate::{colors, MainMesh, PerpetualGizmos};
@@ -1020,6 +1021,7 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                 let mut patch_mesh: Option<bevy::mesh::Mesh> = None;
                 let mut raw_patch_mesh: Option<bevy::mesh::Mesh> = None;
                 let mut failed_surgery_patch_mesh: Option<bevy::mesh::Mesh> = None;
+                let mut failed_surgery_face_mesh: Option<bevy::mesh::Mesh> = None;
                 let mut granulated_mesh = &mehsh::prelude::Mesh::<INPUT>::default();
                 let mut default_color_map = HashMap::new();
                 let mut black_color_map = HashMap::new();
@@ -1157,13 +1159,23 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                             Some(create_patch_mesh(curve_skeleton, input, translation, scale));
                     }
                     // Diagnostic: when connectivity surgery couldn't reduce
-                    // away every face, render the partial skeleton so the
-                    // user can see where it got stuck.
-                    if let Some(failed) = skeleton_data.failed_surgery_skeleton() {
+                    // away every face, render the partial skeleton AND the
+                    // remaining face triangles in red so the user can see
+                    // exactly what got stuck.
+                    if let Some(failed) = skeleton_data.failed_surgery() {
                         gizmos_failed_surgery_skeleton =
-                            create_skeleton_gizmos(failed, translation, scale);
-                        failed_surgery_patch_mesh =
-                            Some(create_patch_mesh(failed, input, translation, scale));
+                            create_skeleton_gizmos(&failed.skeleton, translation, scale);
+                        failed_surgery_patch_mesh = Some(create_patch_mesh(
+                            &failed.skeleton,
+                            input,
+                            translation,
+                            scale,
+                        ));
+                        failed_surgery_face_mesh = Some(create_failed_surgery_face_mesh(
+                            &failed.remaining_face_positions,
+                            translation,
+                            scale,
+                        ));
                     }
                     if let Some(cleaned_skeleton) = skeleton_data.cleaned_skeleton() {
                         // Check for labeled skeleton
@@ -1499,13 +1511,18 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                 if let Some(fpm) = failed_surgery_patch_mesh {
                     render_obj.bevy_mesh(fpm, "failed surgery patches");
                 }
+                // Failed-surgery face overlay: the literal triangles still
+                // in the stuck simplicial complex, rendered in red.
+                if let Some(ffm) = failed_surgery_face_mesh {
+                    render_obj.bevy_mesh(ffm, "failed surgery faces (red)");
+                }
                 if let Some(failed) = solution
                     .skeleton
                     .as_ref()
-                    .and_then(|s| s.failed_surgery_skeleton())
+                    .and_then(|s| s.failed_surgery())
                 {
                     let failed_boundary_gizmos =
-                        create_patch_boundary_gizmos(failed, input, translation, scale);
+                        create_patch_boundary_gizmos(&failed.skeleton, input, translation, scale);
                     render_obj.gizmo(
                         failed_boundary_gizmos,
                         1.0,

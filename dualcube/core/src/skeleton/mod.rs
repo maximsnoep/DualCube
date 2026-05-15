@@ -9,7 +9,7 @@ use crate::{
     prelude::{INPUT, Polycube},
     quad::Quad,
     skeleton::{
-        connectivity_surgery::extract_skeleton,
+        connectivity_surgery::{extract_skeleton, FailedSurgeryDiagnostic},
         contraction::{CONTRACTION, contract_mesh},
         curve_skeleton::{CurveSkeleton, CurveSkeletonSpatial},
         embeddability::make_embedding_possible,
@@ -70,12 +70,13 @@ pub struct SkeletonData {
     /// A skeleton isomorphic to `labeled_skeleton`, but with node positions and patch vertices updated to match the polycube structure.
     polycube_skeleton: Option<LabeledCurveSkeleton>,
 
-    /// Mangled partial skeleton produced when connectivity surgery couldn't
-    /// reduce away every face. Has nodes positioned in original-mesh space
-    /// and edges, but its `BoundaryLoop`s are empty placeholders. Set only
-    /// on failure; intended purely for visual inspection so the user can see
-    /// where surgery got stuck.
-    failed_surgery_skeleton: Option<CurveSkeleton>,
+    /// Diagnostic bundle produced when connectivity surgery couldn't reduce
+    /// away every face. Contains both the partial skeleton (mangled — empty
+    /// boundary loops) and the world-space triangle positions of every face
+    /// still in the stuck-state simplicial complex. Set only on failure;
+    /// intended purely for visual inspection so the user can see what
+    /// surgery got stuck on.
+    failed_surgery: Option<FailedSurgeryDiagnostic>,
 }
 
 impl SkeletonData {
@@ -104,11 +105,12 @@ impl SkeletonData {
         self.polycube_skeleton.as_ref()
     }
 
-    /// Returns a reference to the partial skeleton from a failed connectivity
-    /// surgery, if any. `Some` only when the most recent surgery couldn't
-    /// reduce away every face; intended purely for diagnostic visualization.
-    pub fn failed_surgery_skeleton(&self) -> Option<&CurveSkeleton> {
-        self.failed_surgery_skeleton.as_ref()
+    /// Returns the failed-surgery diagnostic bundle (partial skeleton + the
+    /// world-space positions of every face still left in the stuck state).
+    /// `Some` only when the most recent surgery couldn't reduce away every
+    /// face; intended purely for diagnostic visualization.
+    pub fn failed_surgery(&self) -> Option<&FailedSurgeryDiagnostic> {
+        self.failed_surgery.as_ref()
     }
 
     /// Reconstructs what a skeleton looked like at a certain point in the volume collapse history, if the history is available.
@@ -165,7 +167,7 @@ impl SkeletonData {
         self.collapse_history = Some(history);
         self.labeled_skeleton = labeled;
         self.polycube_skeleton = polycube_skeleton;
-        self.failed_surgery_skeleton = failed_surgery;
+        self.failed_surgery = failed_surgery;
 
         (polycube, quad)
     }
@@ -327,7 +329,7 @@ pub fn get_skeleton_based_mapping(
             collapse_history: Some(history),
             labeled_skeleton: labeled,
             polycube_skeleton,
-            failed_surgery_skeleton: failed_surgery,
+            failed_surgery,
         },
         polycube,
         quad,
@@ -343,7 +345,7 @@ pub fn get_skeleton_based_mapping(
 fn surgery_and_simplification(
     mesh: &Arc<Mesh<INPUT>>,
     contracted_mesh: &Mesh<CONTRACTION>,
-) -> (CurveSkeleton, CurveSkeleton, Option<CurveSkeleton>) {
+) -> (CurveSkeleton, CurveSkeleton, Option<FailedSurgeryDiagnostic>) {
     let (curve_skeleton, failed_surgery) = extract_skeleton(contracted_mesh, mesh);
 
     let mut cleaned_skeleton = curve_skeleton.clone();
