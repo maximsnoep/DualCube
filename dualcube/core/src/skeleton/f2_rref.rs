@@ -108,6 +108,51 @@ impl F2Matrix {
         }
     }
 
+    /// Read-only access to the matrix rows. Useful when you want to do
+    /// custom GF(2) arithmetic without going through the matrix's own ops.
+    pub fn rows(&self) -> &[Vec<u32>] {
+        &self.rows
+    }
+
+    /// After [`Self::reduce`] has been called, builds the map from each
+    /// pivot column → the row index that pivots it. Useful for repeatedly
+    /// reducing external 1-chains against this matrix's row span.
+    pub fn pivot_map(&self) -> std::collections::HashMap<u32, usize> {
+        let mut m = std::collections::HashMap::with_capacity(self.rows.len());
+        for (i, row) in self.rows.iter().enumerate() {
+            if let Some(&col) = row.first() {
+                m.insert(col, i);
+            }
+        }
+        m
+    }
+
+    /// Reduces `candidate` (a sorted GF(2) 1-chain) in place against this
+    /// matrix's row span, using a precomputed pivot map from
+    /// [`Self::pivot_map`]. Returns `true` iff the candidate reduces to the
+    /// zero chain, i.e. lies in the row span of `self`.
+    ///
+    /// Caller must have already called [`Self::reduce`] (or otherwise put
+    /// the matrix into a state where each non-empty row has a unique
+    /// leading column) before calling [`Self::pivot_map`].
+    pub fn reduce_against(
+        &self,
+        pivot_map: &std::collections::HashMap<u32, usize>,
+        candidate: &mut Vec<u32>,
+    ) -> bool {
+        while let Some(&leading) = candidate.first() {
+            match pivot_map.get(&leading) {
+                Some(&piv) => {
+                    let mut next = Vec::with_capacity(candidate.len() + self.rows[piv].len());
+                    Self::xor_into(candidate, &self.rows[piv], &mut next);
+                    *candidate = next;
+                }
+                None => return false,
+            }
+        }
+        true
+    }
+
     /// Computes the row-reduced echelon form in place using sparse Gaussian
     /// elimination. After this call, `rank()` returns the matrix's rank.
     ///

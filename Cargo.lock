@@ -7073,8 +7073,6 @@ dependencies = [
 [[package]]
 name = "tritet"
 version = "3.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3560352d26e110f0c5336d4565934919c3834fefa1632c5ef2790299b503d398"
 dependencies = [
  "cc",
  "once_cell",

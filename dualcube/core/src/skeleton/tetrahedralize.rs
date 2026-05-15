@@ -101,10 +101,13 @@ pub fn tetrahedralize(mesh: &Mesh<INPUT>) -> Result<TetMesh, TetError> {
         ]);
     }
 
-    // Configure TetGen: one facet per surface triangle, no regions, no holes.
-    // (No holes ⇒ the single bounded region is meshed as the interior.)
+    // Configure TetGen: one facet per surface triangle, one region (the
+    // interior), no holes. The region marker is what triggers TetGen's PLC
+    // (constrained Delaunay) mode — without it the call degenerates to
+    // plain Delaunay tetrahedralization of the input points and the
+    // surface facets are not preserved.
     let facet_npoint: Vec<usize> = vec![3; triangles.len()];
-    let mut tet = Tetgen::new(n_input_vertices, Some(facet_npoint), None, None)
+    let mut tet = Tetgen::new(n_input_vertices, Some(facet_npoint), Some(1), None)
         .map_err(TetError::Tetgen)?;
 
     // Feed surface vertices.
@@ -119,6 +122,23 @@ pub fn tetrahedralize(mesh: &Mesh<INPUT>) -> Result<TetMesh, TetError> {
             tet.set_facet_point(f, m, tri[m]).map_err(TetError::Tetgen)?;
         }
     }
+
+    // Mark the interior region by giving TetGen a point inside it. For
+    // closed meshes whose vertex centroid lies inside the volume (true for
+    // any star-shaped solid and in particular for all our test inputs and
+    // for bob), the centroid of all surface vertices works.
+    let (mut cx, mut cy, mut cz) = (0.0, 0.0, 0.0);
+    for &v in &vert_ids {
+        let p = mesh.position(v);
+        cx += p.x;
+        cy += p.y;
+        cz += p.z;
+    }
+    let n = n_input_vertices as f64;
+    cx /= n;
+    cy /= n;
+    cz /= n;
+    tet.set_region(0, 1, cx, cy, cz, None).map_err(TetError::Tetgen)?;
 
     // Run TetGen on the PLC. Defaults: no quadratic elements, no global size
     // bounds, no minimum-angle constraint. We want the cheapest valid
