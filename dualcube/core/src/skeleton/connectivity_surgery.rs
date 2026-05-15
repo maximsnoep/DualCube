@@ -137,10 +137,11 @@ fn xor_sorted(a: &[u32], b: &[u32]) -> Vec<u32> {
 
 /// In-place column-merge on a single sorted GF(2) chain. Same operation
 /// as `F2Matrix::merge_columns`, but for one chain — used to evolve handle
-/// cycles through edge collapses.
-fn merge_columns_in_chain(chain: &mut Vec<u32>, a: u32, b: u32) {
-    debug_assert!(a != b);
-    let (keep, drop) = if a < b { (a, b) } else { (b, a) };
+/// cycles through edge collapses. As with `merge_columns`, the caller's
+/// `(keep, drop)` is honoured exactly: `drop` is XOR'd into `keep`, and
+/// the `drop` column is removed from the chain.
+fn merge_columns_in_chain(chain: &mut Vec<u32>, keep: u32, drop: u32) {
+    debug_assert!(keep != drop);
     if let Ok(drop_pos) = chain.binary_search(&drop) {
         chain.remove(drop_pos);
         match chain.binary_search(&keep) {
@@ -749,6 +750,48 @@ impl SurgeryContext {
             components.len(),
             components
         );
+
+        // Handle-cycle dump: for each tracked handle generator, report
+        // - total edges,
+        // - how many of those edges currently appear in the boundary of
+        //   some active face (= face-incident, i.e. the edge could become
+        //   a collapse candidate),
+        // - the actual vertex pairs of the cycle's edges, so the user can
+        //   correlate with the geometric view.
+        let bm = &self.boundary_matrix;
+        let mut face_incident_cols: HashSet<u32> = HashSet::new();
+        for face in &self.active_faces {
+            if let Some(&row_idx) = bm.face_to_row.get(face) {
+                for &col in &bm.matrix.rows()[row_idx] {
+                    face_incident_cols.insert(col);
+                }
+            }
+        }
+        let col_to_edge: HashMap<u32, [VIdx; 2]> =
+            bm.edge_to_col.iter().map(|(&k, &v)| (v, k)).collect();
+
+        for (i, cycle) in bm.handle_cycles.iter().enumerate() {
+            let total = cycle.len();
+            let face_incident = cycle
+                .iter()
+                .filter(|col| face_incident_cols.contains(col))
+                .count();
+            let orphaned = total - face_incident;
+            warn!(
+                "Handle cycle {}: {} edges total, {} face-incident (collapse-candidatable), {} orphaned (no incident face).",
+                i, total, face_incident, orphaned
+            );
+            // Per-edge dump: vertex pair + whether it's face-incident.
+            for &col in cycle {
+                let endpoints = col_to_edge.get(&col).copied();
+                let endpoints_str = match endpoints {
+                    Some([a, b]) => format!("{:?}-{:?}", a, b),
+                    None => "<edge no longer in edge_to_col>".to_string(),
+                };
+                let where_ = if face_incident_cols.contains(&col) { "face-incident" } else { "orphaned" };
+                warn!("    col {} = {} [{}]", col, endpoints_str, where_);
+            }
+        }
 
         // Per-face dump. With ~10–20 stuck faces this is ~60–120 lines —
         // verbose, but the whole point of this hook is to let us read every

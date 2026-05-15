@@ -85,9 +85,14 @@ impl F2Matrix {
     /// collapse: a face that was incident to either edge is now incident to
     /// the merged edge, while a (hypothetical) face incident to both becomes
     /// incident to the merged edge zero times.
-    pub fn merge_columns(&mut self, a: u32, b: u32) {
-        debug_assert!(a != b);
-        let (keep, drop) = if a < b { (a, b) } else { (b, a) };
+    pub fn merge_columns(&mut self, keep: u32, drop: u32) {
+        debug_assert!(keep != drop);
+        // The caller picks which column survives — we don't reinterpret.
+        // This matters when external bookkeeping (like edge_to_col in the
+        // surgery's BoundaryMatrix) is keyed by which column is "kept";
+        // reinterpreting via min/max would silently swap which side of
+        // the merge ends up holding data, leaving external maps pointing
+        // at the wrong column.
         for row in &mut self.rows {
             let drop_pos = row.binary_search(&drop);
             if let Ok(dp) = drop_pos {
@@ -220,9 +225,10 @@ mod tests {
     /// merge_columns on disjoint rows: bit moves from the dropped col to the kept col.
     #[test]
     fn merge_columns_disjoint() {
-        // row A has only col 5; row B has only col 2; merge cols 5 and 2 → both rows have col 2.
+        // row A has only col 5; row B has only col 2.
+        // Drop col 5 into col 2 → both rows end up with col 2.
         let mut m = F2Matrix::from_rows(vec![vec![5], vec![2]]);
-        m.merge_columns(5, 2);
+        m.merge_columns(2, 5);
         assert_eq!(m.rows[0], vec![2]);
         assert_eq!(m.rows[1], vec![2]);
     }
@@ -355,12 +361,28 @@ mod tests {
     /// merge_columns(a, b) and merge_columns(b, a) yield the same matrix
     /// (the kept column is always min(a, b)).
     #[test]
-    fn merge_columns_argument_order_symmetric() {
-        let mut a = F2Matrix::from_rows(vec![vec![1, 5], vec![3, 5]]);
-        let mut b = F2Matrix::from_rows(vec![vec![1, 5], vec![3, 5]]);
+    /// `merge_columns(keep, drop)` keeps `keep` and drops `drop` — the
+    /// caller's choice, regardless of which integer is smaller.
+    /// Reinterpreting via min/max (as the old version did) was silently
+    /// wrong for callers that maintain external bookkeeping keyed by
+    /// column identity (e.g. the surgery boundary matrix's edge_to_col).
+    #[test]
+    fn merge_columns_honours_caller_keep_drop() {
+        // Drop column 5 into column 1: data shifts to column 1.
+        let mut a = F2Matrix::from_rows(vec![vec![5], vec![1, 5]]);
         a.merge_columns(1, 5);
+        assert_eq!(a.rows[0], vec![1], "drop column moves into keep column");
+        assert_eq!(
+            a.rows[1],
+            Vec::<u32>::new(),
+            "row with both columns cancels under XOR"
+        );
+
+        // Drop column 1 into column 5: data shifts to column 5 (opposite).
+        let mut b = F2Matrix::from_rows(vec![vec![1], vec![1, 5]]);
         b.merge_columns(5, 1);
-        assert_eq!(a.rows, b.rows);
+        assert_eq!(b.rows[0], vec![5], "with reversed args the kept col is 5");
+        assert_eq!(b.rows[1], Vec::<u32>::new());
     }
 
     /// merge_columns where the dropped column is empty in every row is a no-op.
