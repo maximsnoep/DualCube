@@ -81,6 +81,15 @@ struct BoundaryMatrix {
     /// generator is an image, under the running chain-map composition, of
     /// one of the precomputed handle cycles `c_i ∈ K`. Empty for genus 0.
     handle_cycles: Vec<Vec<u32>>,
+    /// The closed-surface 2-cycle, represented as a 2-chain over face row
+    /// indices (sorted, GF(2) coefficients). Initially the sum of every
+    /// face row (the canonical 2-cycle of a closed orientable surface);
+    /// evolved through collapses by the chain map. The legality check
+    /// rejects any collapse that would create a *new* 2-cycle (= a bubble)
+    /// — equivalently, the post-collapse `β₂` must not exceed
+    /// `(surface_2_chain non-empty ? 1 : 0)`. Once this chain dies, no
+    /// more 2-cycles are permitted.
+    surface_2_chain: Vec<usize>,
 }
 
 /// The set of changes a candidate collapse u → v would make to the
@@ -151,6 +160,30 @@ fn merge_columns_in_chain(chain: &mut Vec<u32>, keep: u32, drop: u32) {
     }
 }
 
+/// Removes `row` from `chain` if present. Used to evolve the
+/// surface_2_chain when a face is removed entirely (chain map sends it
+/// to 0).
+fn remove_row_from_chain(chain: &mut Vec<usize>, row: usize) {
+    if let Ok(pos) = chain.binary_search(&row) {
+        chain.remove(pos);
+    }
+}
+
+/// In-place row-merge on a sorted GF(2) 2-chain. Used to evolve the
+/// surface_2_chain when face `F_old` is identified with face `F_new`
+/// (= chain map sends `F_old → F_new`). If `F_old` was in the chain, its
+/// coefficient XORs into `F_new`'s coefficient.
+fn merge_rows_in_chain(chain: &mut Vec<usize>, old_row: usize, new_row: usize) {
+    debug_assert!(old_row != new_row);
+    if let Ok(old_pos) = chain.binary_search(&old_row) {
+        chain.remove(old_pos);
+        match chain.binary_search(&new_row) {
+            Ok(new_pos) => { chain.remove(new_pos); }
+            Err(insert_pos) => { chain.insert(insert_pos, new_row); }
+        }
+    }
+}
+
 /// Ephemeral state used during the surgery process.
 ///
 /// We maintain a "virtual" adjacency structure separate from the DCEL mesh
@@ -187,7 +220,8 @@ struct SurgeryContext {
     target_g: usize,
 
     /// Boundary matrix ∂₂ tracked across collapses, plus the handle-subspace
-    /// generators. Always populated for a valid closed orientable input.
+    /// generators and the surface 2-cycle chain. Always populated for a
+    /// valid closed orientable input.
     boundary_matrix: BoundaryMatrix,
 }
 
@@ -384,28 +418,39 @@ impl SurgeryContext {
         true
     }
 
-    /// Homology-quotient-preserving legality check.
+    /// Homology-quotient-preserving legality check, with explicit surface
+    /// 2-cycle tracking.
     ///
-    /// Accepts a collapse iff the post-collapse complex satisfies
-    /// `β₁(X') − dim K(X') = g`, where `g` is the genus of the input
-    /// surface and `K(X')` is the image of the precomputed handle subspace
-    /// under the running chain map. See `HOMOLOGY_PRESERVING_SURGERY.md`
-    /// for the proof of correctness — this is the criterion that preserves
-    /// the quotient `H₁(X) / K(X) ≅ H₁(V)`, allowing handle classes to be
-    /// killed but preventing any tunnel class from dying.
+    /// Accepts a collapse iff the post-collapse complex satisfies BOTH:
+    /// 1. `β₁(X') − dim K(X') = g` — preserves `H₁(X)/K(X) ≅ H₁(V)`.
+    /// 2. `β₂(X') ≤ (surface_2_chain' is non-empty ? 1 : 0)` — every
+    ///    2-cycle must be accounted for by the surviving surface. If the
+    ///    surface chain has died, no 2-cycles are permitted; if it's
+    ///    still alive, at most one 2-cycle (the surface itself) is
+    ///    permitted. This rejects bubble-spawning collapses even when β₂
+    ///    is conserved by a "surface dies + bubble born" swap.
+    ///
+    /// See `HOMOLOGY_PRESERVING_SURGERY.md` for correctness of (1); (2)
+    /// prevents the surgery from pinching off closed-sphere sub-complexes
+    /// that no edge collapse could subsequently dissolve.
     fn check_homology_quotient_preserved(&self, u: VIdx, v: VIdx) -> bool {
         match self.simulate_post_collapse_quotient(u, v) {
-            None => true, // no boundary matrix means no candidate at all
-            Some((new_beta_1, new_dim_k)) => {
+            None => true, // no candidate delta available
+            Some((new_beta_1, new_dim_k, new_beta_2, new_surface_alive)) => {
+                let expected_beta_2 = if new_surface_alive { 1 } else { 0 };
                 new_beta_1 - new_dim_k == self.target_g as i64
+                    && new_beta_2 <= expected_beta_2
             }
         }
     }
 
-    /// Returns `(β₁, dim K)` of the post-collapse complex if u → v were
-    /// applied. `None` when no candidate delta is available. Used by both
-    /// the legality check and the stuck-state diagnostic.
-    fn simulate_post_collapse_quotient(&self, u: VIdx, v: VIdx) -> Option<(i64, i64)> {
+    /// Returns `(β₁, dim K, β₂, surface_alive)` of the post-collapse
+    /// complex. `None` when no candidate delta is available.
+    fn simulate_post_collapse_quotient(
+        &self,
+        u: VIdx,
+        v: VIdx,
+    ) -> Option<(i64, i64, i64, bool)> {
         let bm = &self.boundary_matrix;
         let delta = self.compute_collapse_delta(u, v)?;
 
@@ -456,7 +501,13 @@ impl SurgeryContext {
             }
         }
 
-        Some((new_beta_1, new_dim_k))
+        // β₂(X') = F' − rank(∂₂'). F' is the active-face count after
+        // applying delta. The post-collapse surface 2-chain sits in `snap`.
+        let new_f = (self.active_faces.len() as i64) - delta.delta_f as i64;
+        let new_beta_2 = new_f - new_rank as i64;
+        let new_surface_alive = !snap.surface_2_chain.is_empty();
+
+        Some((new_beta_1, new_dim_k, new_beta_2, new_surface_alive))
     }
 
     /// Computes what the (face_to_row, edge_to_col, matrix) state would
@@ -556,6 +607,27 @@ impl SurgeryContext {
         // 0. Look up the (u, v) column BEFORE we mutate edge_to_col, so we
         //    can scrub it out of the handle cycles below.
         let removed_uv_col = bm.edge_to_col.get(&delta.removed_uv_edge).copied();
+
+        // 0b. Evolve the surface 2-cycle chain. This MUST run before
+        //     steps 2/3 (which mutate face_to_row), because we need to
+        //     look up row indices for both `F_old` and `F_new` of every
+        //     merged pair while both entries still exist.
+        for (old, new_kept) in &delta.faces_merged {
+            let old_row = bm.face_to_row.get(old).copied();
+            let new_row = bm.face_to_row.get(new_kept).copied();
+            if let (Some(or), Some(nr)) = (old_row, new_row) {
+                if or != nr {
+                    merge_rows_in_chain(&mut bm.surface_2_chain, or, nr);
+                }
+            }
+        }
+        for face in &delta.faces_removed {
+            if let Some(&row) = bm.face_to_row.get(face) {
+                remove_row_from_chain(&mut bm.surface_2_chain, row);
+            }
+        }
+        // (faces_renamed: row index is preserved, just the face_to_row key
+        // changes, so the chain — which is indexed by row — is unchanged.)
 
         // 1a. Evolve each handle cycle by the chain map. On 1-chains, the
         //     chain map for an edge collapse u → v is: (a) merge the columns
@@ -693,9 +765,10 @@ impl SurgeryContext {
         let chi = v_now as i64 - e_now as i64 + f_now as i64;
         let n_handle_cycles = self.boundary_matrix.handle_cycles.len();
 
+        let surface_chain_size = self.boundary_matrix.surface_2_chain.len();
         warn!(
-            "Stuck-state aggregate: V={}, E={}, F={}, χ={}, target_g={}, live_handle_cycles={}.",
-            v_now, e_now, f_now, chi, self.target_g, n_handle_cycles
+            "Stuck-state aggregate: V={}, E={}, F={}, χ={}, target_g={}, live_handle_cycles={}, surface_chain_size={}.",
+            v_now, e_now, f_now, chi, self.target_g, n_handle_cycles, surface_chain_size
         );
 
         // Vertices that still belong to at least one active face form the
@@ -826,9 +899,14 @@ impl SurgeryContext {
         let quotient_ok = has_faces && self.check_homology_quotient_preserved(u, v);
 
         let quotient_str = match quotient {
-            Some((b, k)) => format!(
-                "new_β₁={}, new_dim_K={}, Δ(β₁−dim_K)={:+} (target {})",
-                b, k, (b - k) - self.target_g as i64, self.target_g
+            Some((b, k, b2, surface_alive)) => format!(
+                "new_β₁={}, new_dim_K={}, new_β₂={}, surface_alive={}, Δ(β₁−dim_K)={:+} (target {})",
+                b,
+                k,
+                b2,
+                surface_alive,
+                (b - k) - self.target_g as i64,
+                self.target_g,
             ),
             None => "post-collapse stats unavailable".to_string(),
         };
@@ -914,7 +992,10 @@ impl SurgeryContext {
         // Clear u's neighbor set
         self.neighbors.get_mut(&u).unwrap().clear();
 
-        // Commit the boundary-matrix delta to the live state.
+        // Commit the boundary-matrix delta to the live state. The
+        // surface_2_chain is evolved inside apply_collapse_delta; we no
+        // longer track a separate β₂ cap because the chain itself
+        // determines what β₂ is allowed (= 1 while alive, 0 once empty).
         if let Some(delta) = delta {
             Self::apply_collapse_delta(&mut self.boundary_matrix, &delta);
         }
@@ -1295,6 +1376,12 @@ fn preprocess_topology(
         return None;
     }
 
+    // Initial surface 2-cycle: sum of all face rows. For a closed
+    // orientable surface this is exactly the fundamental 2-cycle (each
+    // edge bounds 2 faces, so the boundary vanishes mod 2).
+    let n_faces = face_to_row.len();
+    let surface_2_chain: Vec<usize> = (0..n_faces).collect();
+
     Some((
         g,
         BoundaryMatrix {
@@ -1302,6 +1389,7 @@ fn preprocess_topology(
             face_to_row,
             edge_to_col,
             handle_cycles: Vec::new(),
+            surface_2_chain,
         },
     ))
 }
