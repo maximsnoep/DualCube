@@ -15,6 +15,9 @@ use nalgebra::{Matrix4, Vector4};
 use super::contraction::CONTRACTION;
 use super::curve_skeleton::{CurveSkeleton, CurveSkeletonSpatial};
 use super::f2_rref::F2Matrix;
+use super::handle_subspace::compute_handle_subspace;
+use super::tet_boundary::build_tet_boundary;
+use super::tetrahedralize::tetrahedralize;
 use crate::prelude::INPUT;
 use crate::skeleton::boundary_loop::BoundaryLoop;
 use crate::skeleton::curve_skeleton::SkeletonNode;
@@ -58,9 +61,10 @@ impl PartialEq for CollapseCandidate {
 impl Eq for CollapseCandidate {}
 
 /// Boundary matrix ∂₂ over GF(2) plus the maps needed to address rows by
-/// face triple and columns by undirected edge. Maintained alongside the
-/// surgery state when the input has positive genus, so the legality check
-/// can probe what β₁ would become after a hypothetical collapse.
+/// face triple and columns by undirected edge, plus a basis of the handle
+/// subspace `K ⊆ H₁(S; ℤ/2)`. Maintained throughout surgery so the
+/// legality check can probe what β₁ and dim(K) would become after a
+/// hypothetical collapse.
 #[derive(Clone)]
 struct BoundaryMatrix {
     matrix: F2Matrix,
@@ -72,6 +76,11 @@ struct BoundaryMatrix {
     /// stable across collapses; merged columns are dropped from this map
     /// and become the zero column in `matrix`.
     edge_to_col: HashMap<[VIdx; 2], u32>,
+    /// Handle-subspace generators: `g` 1-chains over the current edge
+    /// basis (sorted column indices, exactly like a `matrix` row). Each
+    /// generator is an image, under the running chain-map composition, of
+    /// one of the precomputed handle cycles `c_i ∈ K`. Empty for genus 0.
+    handle_cycles: Vec<Vec<u32>>,
 }
 
 /// The set of changes a candidate collapse u → v would make to the
@@ -108,6 +117,39 @@ fn sort_edge(a: VIdx, b: VIdx) -> [VIdx; 2] {
     if a < b { [a, b] } else { [b, a] }
 }
 
+/// Symmetric difference of two sorted-distinct `u32` slices, returned as a
+/// fresh sorted `Vec<u32>` — the GF(2) row-XOR primitive used when reducing
+/// a handle-cycle residue against a pivot row.
+fn xor_sorted(a: &[u32], b: &[u32]) -> Vec<u32> {
+    let mut out = Vec::with_capacity(a.len() + b.len());
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() && j < b.len() {
+        match a[i].cmp(&b[j]) {
+            Ordering::Less => { out.push(a[i]); i += 1; }
+            Ordering::Greater => { out.push(b[j]); j += 1; }
+            Ordering::Equal => { i += 1; j += 1; }
+        }
+    }
+    out.extend_from_slice(&a[i..]);
+    out.extend_from_slice(&b[j..]);
+    out
+}
+
+/// In-place column-merge on a single sorted GF(2) chain. Same operation
+/// as `F2Matrix::merge_columns`, but for one chain — used to evolve handle
+/// cycles through edge collapses.
+fn merge_columns_in_chain(chain: &mut Vec<u32>, a: u32, b: u32) {
+    debug_assert!(a != b);
+    let (keep, drop) = if a < b { (a, b) } else { (b, a) };
+    if let Ok(drop_pos) = chain.binary_search(&drop) {
+        chain.remove(drop_pos);
+        match chain.binary_search(&keep) {
+            Ok(kp) => { chain.remove(kp); }
+            Err(ip) => { chain.insert(ip, keep); }
+        }
+    }
+}
+
 /// Ephemeral state used during the surgery process.
 ///
 /// We maintain a "virtual" adjacency structure separate from the DCEL mesh
@@ -138,24 +180,29 @@ struct SurgeryContext {
     /// Initially each vertex maps to itself, then accumulates as vertices merge.
     vertex_to_original: HashMap<VIdx, Vec<VertKey<INPUT>>>,
 
-    /// β₁ of the input simplicial complex (= 2g for a closed orientable
-    /// 2-manifold of genus g). The legality check rejects any collapse that
-    /// would change β₁ away from this target.
-    target_beta_1: usize,
+    /// Genus of the closed orientable input surface. The legality check
+    /// requires `β₁(X) − dim K(X) = g` throughout surgery — i.e. the
+    /// quotient `H₁(X) / K(X) ≅ H₁(V)` keeps full rank.
+    target_g: usize,
 
-    /// Boundary matrix ∂₂ tracked across collapses. `None` when the input has
-    /// genus 0, in which case the legality check is a no-op (always accept).
-    boundary_matrix: Option<BoundaryMatrix>,
+    /// Boundary matrix ∂₂ tracked across collapses, plus the handle-subspace
+    /// generators. Always populated for a valid closed orientable input.
+    boundary_matrix: BoundaryMatrix,
 }
 
 impl SurgeryContext {
     /// Creates a new SurgeryContext from a contracted mesh.
     ///
+    /// The `original_mesh` is used solely to compute the handle subspace
+    /// `K ⊆ H₁(S; ℤ/2)` once via TetGen — the contracted mesh shares its
+    /// topology and vertex indexing (raw `DefaultKey` values match), so the
+    /// computed handle cycles translate directly into surgery's edge basis.
+    ///
     /// Returns `None` (after logging an error) when the input mesh fails the
     /// preprocessing checks: not a closed connected 2-manifold, or the
     /// derived genus isn't a non-negative integer. Callers should treat
     /// `None` as "produce an empty skeleton".
-    fn new(mesh: &Mesh<CONTRACTION>) -> Option<Self> {
+    fn new(mesh: &Mesh<CONTRACTION>, original_mesh: &Mesh<INPUT>) -> Option<Self> {
         let vert_ids = mesh.vert_ids();
 
         // Compute bounding box for normalization. Normalization is necessary for
@@ -236,13 +283,18 @@ impl SurgeryContext {
         }
 
         // Topology preprocessing: verify the simplicial complex is a closed
-        // connected 2-manifold, derive genus, and (for g > 0) build the
-        // boundary matrix ∂₂ that the homology-preserving legality check
-        // works against.
+        // connected 2-manifold, derive genus, and build the boundary matrix
+        // ∂₂ over GF(2). When genus > 0, also compute a basis of the handle
+        // subspace K = ker(H₁(S) → H₁(V)) via tetrahedralization of the
+        // input surface, and attach those cycles to the boundary matrix.
         // At construction time no vertex has been collapsed yet.
         let is_dead: HashSet<VIdx> = HashSet::new();
-        let (target_beta_1, boundary_matrix) =
+        let (target_g, mut boundary_matrix) =
             preprocess_topology(&active_faces, &neighbors, &is_dead, vert_ids.len())?;
+
+        if target_g > 0 {
+            attach_handle_cycles(&mut boundary_matrix, original_mesh, target_g)?;
+        }
 
         Some(Self {
             positions,
@@ -253,7 +305,7 @@ impl SurgeryContext {
             quadrics,
             is_dead,
             vertex_to_original,
-            target_beta_1,
+            target_g,
             boundary_matrix,
         })
     }
@@ -310,30 +362,13 @@ impl SurgeryContext {
         false
     }
 
-    /// Homology-preserving legality check.
-    ///
-    /// For genus-0 inputs (no boundary matrix is maintained) this is a
-    /// no-op: every collapse is accepted. Otherwise: probe what β₁ of the
-    /// simplicial complex would become after a hypothetical collapse u → v
-    /// and reject if it would change.
-    fn check_homology_preserved(&self, u: VIdx, v: VIdx) -> bool {
-        match self.simulate_post_collapse_beta_1(u, v) {
-            None => true, // genus 0 — no homology to preserve
-            Some(new_beta_1) => new_beta_1 == self.target_beta_1 as i64,
-        }
-    }
-
-    /// Classical Dey–Edelsbrunner manifold-preservation link condition: for
-    /// every shared neighbour `w` of `u` and `v`, the face `(u, v, w)` must
-    /// already exist. If it does not, the collapse would leave the merged
-    /// edge `(v, w)` incident to four faces (= non-manifold edge) and would
-    /// in turn create a non-manifold vertex.
-    ///
-    /// On a closed 2-manifold this is exactly the condition that the
-    /// collapse leaves the complex a closed 2-manifold. We re-introduced it
-    /// alongside the homology check because the homology check alone permits
-    /// non-manifold collapses, and those non-manifold remainders inflate β₁
-    /// with spurious 1-skeleton cycles that block all later collapses.
+    /// Classical Dey–Edelsbrunner manifold-preservation check (every
+    /// shared neighbour `w` of `u` and `v` must form a face `(u, v, w)`).
+    /// **Not** in the legality gate any more — the new criterion permits
+    /// non-manifold collapses that kill handle cycles — but kept around so
+    /// the existing tests and diagnostics can ask "would this collapse have
+    /// preserved manifoldness?".
+    #[allow(dead_code)]
     fn check_manifold_preserved(&self, u: VIdx, v: VIdx) -> bool {
         let n_u = &self.neighbors[&u];
         let n_v = &self.neighbors[&v];
@@ -348,11 +383,29 @@ impl SurgeryContext {
         true
     }
 
-    /// Returns the β₁ that the simplicial complex would have if `u → v` were
-    /// collapsed. `None` when no boundary matrix is being maintained (genus
-    /// 0). Used both by the legality check and by the stuck-state diagnostic.
-    fn simulate_post_collapse_beta_1(&self, u: VIdx, v: VIdx) -> Option<i64> {
-        let bm = self.boundary_matrix.as_ref()?;
+    /// Homology-quotient-preserving legality check.
+    ///
+    /// Accepts a collapse iff the post-collapse complex satisfies
+    /// `β₁(X') − dim K(X') = g`, where `g` is the genus of the input
+    /// surface and `K(X')` is the image of the precomputed handle subspace
+    /// under the running chain map. See `HOMOLOGY_PRESERVING_SURGERY.md`
+    /// for the proof of correctness — this is the criterion that preserves
+    /// the quotient `H₁(X) / K(X) ≅ H₁(V)`, allowing handle classes to be
+    /// killed but preventing any tunnel class from dying.
+    fn check_homology_quotient_preserved(&self, u: VIdx, v: VIdx) -> bool {
+        match self.simulate_post_collapse_quotient(u, v) {
+            None => true, // no boundary matrix means no candidate at all
+            Some((new_beta_1, new_dim_k)) => {
+                new_beta_1 - new_dim_k == self.target_g as i64
+            }
+        }
+    }
+
+    /// Returns `(β₁, dim K)` of the post-collapse complex if u → v were
+    /// applied. `None` when no candidate delta is available. Used by both
+    /// the legality check and the stuck-state diagnostic.
+    fn simulate_post_collapse_quotient(&self, u: VIdx, v: VIdx) -> Option<(i64, i64)> {
+        let bm = &self.boundary_matrix;
         let delta = self.compute_collapse_delta(u, v)?;
 
         let mut snap = bm.clone();
@@ -360,20 +413,57 @@ impl SurgeryContext {
         snap.matrix.reduce();
         let new_rank = snap.matrix.rank();
 
-        // Post-collapse counts. β₁ = E − V + β₀ − rank(∂₂); for a connected
-        // input edge collapse preserves β₀ = 1.
+        // β₁ = E − V + 1 − rank(∂₂); β₀ = 1 (edge contraction preserves
+        // connectedness on a connected 1-skeleton).
         let v_now = (self.positions.len() - self.is_dead.len()) as i64;
         let e_now = bm.edge_to_col.len() as i64;
         let new_v = v_now - delta.delta_v as i64;
         let new_e = e_now - delta.delta_e as i64;
-        Some(new_e - new_v + 1 - new_rank as i64)
+        let new_beta_1 = new_e - new_v + 1 - new_rank as i64;
+
+        // dim K(X'): the dimension of the handle subspace inside H₁(X').
+        // Equivalently, how many of the (already chain-map-evolved) handle
+        // cycles remain linearly independent modulo B₁(X'). Reduce each
+        // cycle against snap.matrix's RREF + already-accepted cycles; each
+        // cycle that ends up with a non-zero residue contributes one to
+        // dim K.
+        let mut pivot_map = snap.matrix.pivot_map();
+        let n_matrix_rows = snap.matrix.rows().len();
+        let mut extra_pivot_rows: Vec<Vec<u32>> = Vec::new();
+        let mut new_dim_k: i64 = 0;
+        for cycle in &snap.handle_cycles {
+            let mut residue = cycle.clone();
+            loop {
+                let Some(&leading) = residue.first() else {
+                    break;
+                };
+                if let Some(&piv) = pivot_map.get(&leading) {
+                    let pivot_row: &[u32] = if piv < n_matrix_rows {
+                        &snap.matrix.rows()[piv]
+                    } else {
+                        &extra_pivot_rows[piv - n_matrix_rows]
+                    };
+                    residue = xor_sorted(&residue, pivot_row);
+                } else {
+                    // Independent — becomes a new pivot for `leading`.
+                    let extra_idx = n_matrix_rows + extra_pivot_rows.len();
+                    pivot_map.insert(leading, extra_idx);
+                    extra_pivot_rows.push(residue);
+                    new_dim_k += 1;
+                    break;
+                }
+            }
+        }
+
+        Some((new_beta_1, new_dim_k))
     }
 
     /// Computes what the (face_to_row, edge_to_col, matrix) state would
-    /// change to under a hypothetical collapse u → v. Returns `None` when
-    /// no boundary matrix is maintained (genus 0).
+    /// change to under a hypothetical collapse u → v. Returns `None` only
+    /// if u and v aren't both adjacent in the current `neighbors` map
+    /// (which `is_legal_collapse_candidate` gates against anyway).
     fn compute_collapse_delta(&self, u: VIdx, v: VIdx) -> Option<CollapseDelta> {
-        let bm = self.boundary_matrix.as_ref()?;
+        let bm = &self.boundary_matrix;
         let n_u = &self.neighbors[&u];
         let n_v = &self.neighbors[&v];
 
@@ -457,14 +547,32 @@ impl SurgeryContext {
         })
     }
 
-    /// Applies a [`CollapseDelta`] in place to the given boundary matrix and
-    /// its face/edge maps. Used both for the snapshot in
-    /// [`Self::check_manifold_preserved`] and for the live commit in
-    /// [`Self::collapse_edge`].
+    /// Applies a [`CollapseDelta`] in place to the given boundary matrix,
+    /// its face/edge maps, and the tracked handle cycles. Used both for the
+    /// snapshot in [`Self::simulate_post_collapse_quotient`] and for the
+    /// live commit in [`Self::collapse_edge`].
     fn apply_collapse_delta(bm: &mut BoundaryMatrix, delta: &CollapseDelta) {
-        // 1. Column merges: shared-neighbor edge columns collapse into one.
-        //    Done first so subsequent row clears reference the merged columns
-        //    if needed (they don't, but ordering is harmless).
+        // 0. Look up the (u, v) column BEFORE we mutate edge_to_col, so we
+        //    can scrub it out of the handle cycles below.
+        let removed_uv_col = bm.edge_to_col.get(&delta.removed_uv_edge).copied();
+
+        // 1a. Evolve each handle cycle by the chain map. On 1-chains, the
+        //     chain map for an edge collapse u → v is: (a) merge the columns
+        //     of every shared-neighbour edge pair (same merge_columns op we
+        //     do on matrix rows), and (b) drop the (u, v) column itself.
+        for cycle in &mut bm.handle_cycles {
+            for &(keep, drop) in &delta.edge_col_merges {
+                merge_columns_in_chain(cycle, keep, drop);
+            }
+            if let Some(col) = removed_uv_col {
+                if let Ok(pos) = cycle.binary_search(&col) {
+                    cycle.remove(pos);
+                }
+            }
+        }
+
+        // 1b. Column merges on the matrix: shared-neighbour edge columns
+        //     collapse into one.
         for &(keep, drop) in &delta.edge_col_merges {
             bm.matrix.merge_columns(keep, drop);
         }
@@ -536,14 +644,14 @@ impl SurgeryContext {
             return false;
         }
 
-        // Manifold-preservation gate (cheap, local). Goes first because the
-        // homology check is global and expensive; if this fails the collapse
-        // is rejected anyway.
-        if !self.check_manifold_preserved(u, v) {
-            return false;
-        }
-
-        if !self.check_homology_preserved(u, v) {
+        // Homology-quotient gate: the only thing we enforce. Strictly
+        // manifold collapses are *not* required — we deliberately allow
+        // non-manifold collapses that kill handle cycles, since handles
+        // need to die for surgery to reach a 1-skeleton on positive-genus
+        // inputs. The criterion `β₁ − dim K = g` precisely permits
+        // handle-killing collapses while still rejecting tunnel-killing
+        // ones and collapses that create spurious 1-skeleton cycles.
+        if !self.check_homology_quotient_preserved(u, v) {
             return false;
         }
 
@@ -580,16 +688,13 @@ impl SurgeryContext {
     fn dump_stuck_state_diagnostic(&self) {
         let v_now = self.positions.len() - self.is_dead.len();
         let f_now = self.active_faces.len();
-        let e_now = self
-            .boundary_matrix
-            .as_ref()
-            .map(|bm| bm.edge_to_col.len())
-            .unwrap_or(0);
+        let e_now = self.boundary_matrix.edge_to_col.len();
         let chi = v_now as i64 - e_now as i64 + f_now as i64;
+        let n_handle_cycles = self.boundary_matrix.handle_cycles.len();
 
         warn!(
-            "Stuck-state aggregate: V={}, E={}, F={}, χ={}, target_β₁={}.",
-            v_now, e_now, f_now, chi, self.target_beta_1
+            "Stuck-state aggregate: V={}, E={}, F={}, χ={}, target_g={}, live_handle_cycles={}.",
+            v_now, e_now, f_now, chi, self.target_g, n_handle_cycles
         );
 
         // Vertices that still belong to at least one active face form the
@@ -670,22 +775,23 @@ impl SurgeryContext {
             .get(&u)
             .is_some_and(|neighbor_set| neighbor_set.contains(&v));
         let has_faces = adjacent && !u_dead && !v_dead && self.edge_has_faces(u, v);
-        let manifold_ok = has_faces && self.check_manifold_preserved(u, v);
-        let beta_1 = if has_faces {
-            self.simulate_post_collapse_beta_1(u, v)
+        let quotient = if has_faces {
+            self.simulate_post_collapse_quotient(u, v)
         } else {
             None
         };
-        let homology_ok = has_faces && self.check_homology_preserved(u, v);
+        let quotient_ok = has_faces && self.check_homology_quotient_preserved(u, v);
 
-        let beta_str = match beta_1 {
-            Some(b) => format!("new_β₁={} (target {}, Δ={:+})",
-                b, self.target_beta_1, b - self.target_beta_1 as i64),
-            None => "new_β₁=N/A".to_string(),
+        let quotient_str = match quotient {
+            Some((b, k)) => format!(
+                "new_β₁={}, new_dim_K={}, Δ(β₁−dim_K)={:+} (target {})",
+                b, k, (b - k) - self.target_g as i64, self.target_g
+            ),
+            None => "post-collapse stats unavailable".to_string(),
         };
         format!(
-            "{:?}->{:?}[dead u/v={}/{}, adj={}, faces={}, manifold={}, homology={}, {}]",
-            u, v, u_dead, v_dead, adjacent, has_faces, manifold_ok, homology_ok, beta_str
+            "{:?}->{:?}[dead u/v={}/{}, adj={}, faces={}, quotient_ok={}, {}]",
+            u, v, u_dead, v_dead, adjacent, has_faces, quotient_ok, quotient_str
         )
     }
 
@@ -766,8 +872,8 @@ impl SurgeryContext {
         self.neighbors.get_mut(&u).unwrap().clear();
 
         // Commit the boundary-matrix delta to the live state.
-        if let (Some(delta), Some(bm)) = (delta, self.boundary_matrix.as_mut()) {
-            Self::apply_collapse_delta(bm, &delta);
+        if let Some(delta) = delta {
+            Self::apply_collapse_delta(&mut self.boundary_matrix, &delta);
         }
     }
 
@@ -869,7 +975,7 @@ pub fn extract_skeleton(
     contracted_mesh: &Mesh<CONTRACTION>,
     original_mesh: &Mesh<INPUT>,
 ) -> (CurveSkeleton, Option<CurveSkeleton>) {
-    let Some(mut ctx) = SurgeryContext::new(contracted_mesh) else {
+    let Some(mut ctx) = SurgeryContext::new(contracted_mesh, original_mesh) else {
         // Preprocessing already logged the reason.
         return (CurveSkeleton::default(), None);
     };
@@ -983,10 +1089,10 @@ pub fn extract_skeleton(
     }
 }
 
-/// Verifies the input is a closed connected 2-manifold and (when genus > 0)
-/// builds the GF(2) boundary matrix ∂₂ that will be used for the
-/// homology-preserving legality check. Returns `(target_beta_1, matrix)`
-/// where `matrix` is `None` for genus 0 (legality check becomes a no-op).
+/// Verifies the input is a closed connected 2-manifold, derives the genus,
+/// and builds the GF(2) boundary matrix ∂₂. Returns `(g, BoundaryMatrix)`
+/// — the `handle_cycles` field of the matrix is left empty here; callers
+/// fill it in afterwards via [`attach_handle_cycles`] when genus > 0.
 ///
 /// On failure (non-manifold edge, disconnected, non-integer genus, sanity
 /// check mismatch), logs an error and returns `None`.
@@ -995,7 +1101,7 @@ fn preprocess_topology(
     neighbors: &HashMap<VIdx, HashSet<VIdx>>,
     is_dead: &HashSet<VIdx>,
     n_verts_total: usize,
-) -> Option<(usize, Option<BoundaryMatrix>)> {
+) -> Option<(usize, BoundaryMatrix)> {
     // Closed-manifold check: every undirected edge bounds exactly two faces.
     // Building the edge -> face count map also gives us E.
     let mut edge_face_count: HashMap<[VIdx; 2], usize> = HashMap::new();
@@ -1062,16 +1168,11 @@ fn preprocess_topology(
         return None;
     }
     let g = (two_g / 2) as usize;
-    let target_beta_1 = 2 * g;
 
     info!(
         "Connectivity surgery preprocessing: V={}, E={}, F={}, χ={}, genus={}.",
         v_count, e_count, f_count, chi, g
     );
-
-    if g == 0 {
-        return Some((target_beta_1, None));
-    }
 
     // Build ∂₂: assign columns to edges, rows to faces.
     let mut edge_to_col: HashMap<[VIdx; 2], u32> = HashMap::with_capacity(e_count);
@@ -1111,13 +1212,96 @@ fn preprocess_topology(
     }
 
     Some((
-        target_beta_1,
-        Some(BoundaryMatrix {
+        g,
+        BoundaryMatrix {
             matrix,
             face_to_row,
             edge_to_col,
-        }),
+            handle_cycles: Vec::new(),
+        },
     ))
+}
+
+/// Tetrahedralizes `original_mesh`, computes the handle subspace
+/// `K = ker(H₁(S; ℤ/2) → H₁(V; ℤ/2))`, and stores a basis of `K` as
+/// `handle_cycles` on `bm`, translated into surgery's contraction edge
+/// basis (column indices in `bm.matrix`).
+///
+/// The translation works because the contracted mesh shares vertex raw
+/// values with the input mesh (`SurgeryContext::new` initialises
+/// `vertex_to_original` via `VertKey::<INPUT>::new(v.raw())`), and the
+/// vendored tritet preserves every input surface triangle, so each surface
+/// edge is also a contraction-mesh edge with a column entry in
+/// `bm.edge_to_col`.
+///
+/// Returns `None` (after logging) if the input is malformed enough to
+/// break this invariant. `target_g` is supplied for the post-condition
+/// sanity check (we should produce exactly `g` handle cycles).
+fn attach_handle_cycles(
+    bm: &mut BoundaryMatrix,
+    original_mesh: &Mesh<INPUT>,
+    target_g: usize,
+) -> Option<()> {
+    let tm = match tetrahedralize(original_mesh) {
+        Ok(t) => t,
+        Err(e) => {
+            error!("Connectivity surgery aborted: tetrahedralization failed: {}", e);
+            return None;
+        }
+    };
+    let tb = build_tet_boundary(&tm);
+    let hs = compute_handle_subspace(original_mesh, &tb);
+
+    if hs.cycles.len() != target_g {
+        error!(
+            "Connectivity surgery aborted: handle-subspace dimension mismatch (got {}, expected genus {}). Tetrahedralization likely violated an invariant.",
+            hs.cycles.len(),
+            target_g
+        );
+        return None;
+    }
+
+    // Build a translation table from surface-edge index → contraction-mesh
+    // column index in bm.matrix. Surface edges are pairs of u32 positions
+    // in original_mesh.vert_ids(); contraction VertKeys share raw values
+    // with the input mesh.
+    let input_vert_ids = original_mesh.vert_ids();
+    let surface_to_col: Vec<u32> = hs
+        .surface_edges
+        .iter()
+        .map(|&[a, b]| {
+            let a_input = input_vert_ids[a as usize];
+            let b_input = input_vert_ids[b as usize];
+            let a_contr = VIdx::new(a_input.raw());
+            let b_contr = VIdx::new(b_input.raw());
+            *bm.edge_to_col.get(&sort_edge(a_contr, b_contr)).unwrap_or_else(|| {
+                panic!(
+                    "handle-cycle translation: input surface edge ({:?}, {:?}) missing from contraction edge_to_col",
+                    a_input, b_input
+                )
+            })
+        })
+        .collect();
+
+    bm.handle_cycles = hs
+        .cycles
+        .into_iter()
+        .map(|cycle| {
+            let mut translated: Vec<u32> = cycle
+                .into_iter()
+                .map(|surf_idx| surface_to_col[surf_idx as usize])
+                .collect();
+            translated.sort();
+            translated
+        })
+        .collect();
+
+    info!(
+        "Attached {} handle-cycle generators to the boundary matrix.",
+        bm.handle_cycles.len()
+    );
+
+    Some(())
 }
 
 /// Computes the edge quadric matrix (Eq 4 in paper).
@@ -1267,7 +1451,7 @@ mod tests {
         if !ctx.edge_has_faces(c.u, c.v) {
             return Some(RejectReason::NoFaces);
         }
-        if !ctx.check_manifold_preserved(c.u, c.v) {
+        if !ctx.check_homology_quotient_preserved(c.u, c.v) {
             return Some(RejectReason::LinkFailed);
         }
         None
@@ -1327,7 +1511,11 @@ mod tests {
         link_condition_enabled: bool,
         verbose: bool,
     ) -> RunSummary {
-        let mut ctx = SurgeryContext::new(mesh).expect("preprocessing failed in test");
+        // SurgeryContext::new now needs an INPUT counterpart for the
+        // tetrahedralization-based handle-subspace computation. Build one
+        // with the same geometry; vertex raw values match across tags.
+        let (input_mesh, _vmap_input): (Mesh<INPUT>, _) = build_cylinder();
+        let mut ctx = SurgeryContext::new(mesh, &input_mesh).expect("preprocessing failed in test");
 
         // Resolve original-index for a VIdx (relies on vmap being the build_cylinder output).
         let idx_of = |k: VIdx| -> usize { *vmap.id(&k).expect("vmap missing key") };
@@ -1388,7 +1576,7 @@ mod tests {
                     && ctx.edge_has_faces(c.u, c.v);
 
                 let link_ok = if link_condition_enabled {
-                    basic_ok && ctx.check_manifold_preserved(c.u, c.v)
+                    basic_ok && ctx.check_homology_quotient_preserved(c.u, c.v)
                 } else {
                     basic_ok
                 };
@@ -1507,7 +1695,7 @@ mod tests {
         summary
     }
 
-    /// Step 3: Direct probe of `check_manifold_preserved` for a middle-ring edge.
+    /// Step 3: Direct probe of `check_homology_quotient_preserved` for a middle-ring edge.
     /// Ring 10 is the middle. The edge from slot 0 to slot 1 on ring 10 has a third
     /// ring-10 vertex (slot 5? slot 2?) as a common neighbor only if the triangulation
     /// connects it across — for our quad triangulation, common neighbors of an edge on a
@@ -1518,7 +1706,8 @@ mod tests {
     #[test]
     fn link_condition_probe_middle_ring_edge() {
         let (mesh, vmap): (Mesh<CONTRACTION>, _) = build_cylinder();
-        let ctx = SurgeryContext::new(&mesh).expect("preprocessing failed in test");
+        let (input_mesh, _): (Mesh<INPUT>, _) = build_cylinder();
+        let ctx = SurgeryContext::new(&mesh, &input_mesh).expect("preprocessing failed in test");
         let idx_of = |k: VIdx| -> usize { *vmap.id(&k).expect("vmap missing key") };
 
         let r = 10usize;
@@ -1550,8 +1739,8 @@ mod tests {
             let exists = ctx.active_faces.contains(&sort_face(i, j, k));
             eprintln!("    k={:>3}: (i,j,k) face exists? {}", idx_of(k), exists);
         }
-        let verdict = ctx.check_manifold_preserved(i, j);
-        eprintln!("  check_manifold_preserved(i, j) = {}", verdict);
+        let verdict = ctx.check_homology_quotient_preserved(i, j);
+        eprintln!("  check_homology_quotient_preserved(i, j) = {}", verdict);
 
         // Also: for any *pair* of common neighbors w1, w2, if both (i,w1,w2) and (j,w1,w2)
         // are faces, then w1-w2 ∈ lk(i) ∩ lk(j) but not in lk(ij). The classical 2-manifold
