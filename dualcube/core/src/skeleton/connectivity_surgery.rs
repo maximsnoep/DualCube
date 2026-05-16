@@ -1484,9 +1484,20 @@ fn preprocess_topology(
         face_to_row.insert(face, row_idx);
     }
 
-    let mut matrix = F2Matrix::from_rows(rows);
-    matrix.reduce();
-    let rank = matrix.rank();
+    let matrix = F2Matrix::from_rows(rows);
+    // Compute the rank on a clone so the live `matrix` keeps each row as
+    // its face's literal boundary. `apply_collapse_delta` later identifies
+    // a face's row by `face_to_row[face]` and clears it; that's only
+    // correct if the row content still matches that face. A row-echelon
+    // reduce on the live matrix XORs rows together — at least one face's
+    // row becomes empty (the closed surface's fundamental 2-cycle is the
+    // sum of all face rows = 0) — and subsequent face removals would clear
+    // the *wrong* content.
+    let rank = {
+        let mut clone = matrix.clone();
+        clone.reduce();
+        clone.rank()
+    };
 
     // Sanity: β₁ = E − V + 1 − rank(∂₂) should equal 2g for a closed
     // connected orientable 2-manifold.
