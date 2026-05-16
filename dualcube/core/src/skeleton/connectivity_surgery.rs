@@ -489,7 +489,16 @@ impl SurgeryContext {
                 continue;
             }
             if n_v.contains(&w) {
-                // Shared neighbour: build γ_w and test for tunnel content.
+                // Fast path — strict Dey–Edelsbrunner link condition at
+                // this corner: if face `(u,v,w)` exists, then
+                // `γ_w = ∂(u,v,w) ∈ B₁(X)` is already a boundary, so
+                // `[γ_w] = 0` has no tunnel content. Skip the reduction
+                // and move on to the next shared neighbour.
+                if self.active_faces.contains(&sort_face(u, v, w)) {
+                    continue;
+                }
+                // Slow path: build `γ_w` and test for tunnel content via
+                // reduction against `B₁(X) + K`.
                 let vw_col = bm.edge_to_col[&sort_edge(v, w)];
                 let uw_col = bm.edge_to_col[&sort_edge(u, w)];
                 let mut residue = [uv_col, vw_col, uw_col];
