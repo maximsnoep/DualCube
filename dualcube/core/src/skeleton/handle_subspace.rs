@@ -31,13 +31,18 @@ use super::f2_rref::F2Matrix;
 use super::tet_boundary::TetBoundaryComplex;
 use crate::prelude::INPUT;
 
-/// A basis for the handle subspace, plus the surface-edge indexing the
-/// cycles are expressed over.
+/// A basis for the handle subspace AND a basis for its tunnel complement,
+/// plus the surface-edge indexing both cycle families are expressed over.
 #[derive(Debug, Clone)]
 pub struct HandleSubspace {
-    /// `g` linearly independent handle cycles. Each is a sorted list of
-    /// surface-edge indices (indices into `surface_edges`).
+    /// `g` linearly independent handle cycles (= elements of `K`, the
+    /// kernel of `H₁(S) → H₁(V)`). Each is a sorted list of surface-edge
+    /// indices (indices into `surface_edges`).
     pub cycles: Vec<Vec<u32>>,
+    /// `g` linearly independent tunnel cycles — chosen as a complement
+    /// to `K` in `H₁(S)`, so the natural map `H₁(S)/K → H₁(V)` sends
+    /// them to a basis. Each is a sorted list of surface-edge indices.
+    pub tunnel_cycles: Vec<Vec<u32>>,
     /// Surface edges, each as a sorted pair of vertex indices. The vertex
     /// index is the position of the vertex in `mesh.vert_ids()` — i.e. the
     /// same indexing the [`super::tetrahedralize::TetMesh`] uses for the
@@ -163,6 +168,7 @@ pub fn compute_handle_subspace(
     // ---- Step 5: for each non-tree edge, build the fundamental cycle and ----
     // ---- test whether it bounds in T (= handle loop). ----
     let mut handle_candidates: Vec<Vec<u32>> = Vec::new();
+    let mut tunnel_candidates: Vec<Vec<u32>> = Vec::new();
     for edge_idx in 0..(surface_edges.len() as u32) {
         if tree_edges.contains(&edge_idx) {
             continue;
@@ -181,6 +187,9 @@ pub fn compute_handle_subspace(
         if tet_d2.reduce_against(&tet_b1_pivots, &mut lifted) {
             // Reduced to zero — the cycle bounds in T, it's a handle.
             handle_candidates.push(cycle);
+        } else {
+            // Did NOT bound in T — it's a tunnel candidate.
+            tunnel_candidates.push(cycle);
         }
     }
 
@@ -217,8 +226,32 @@ pub fn compute_handle_subspace(
         }
     }
 
+    // ---- Step 7: extract a tunnel basis as a complement to K. ----
+    // Pivots now include both B₁(S) rows and the residues of the chosen
+    // handle cycles, so reducing tunnel candidates against them yields a
+    // non-zero residue exactly when the candidate is independent of K
+    // mod B₁(S) — i.e. it represents a class in H₁(S)/K ≅ H₁(V) not yet
+    // covered by previously-chosen tunnels.
+    let mut chosen_tunnels: Vec<Vec<u32>> = Vec::new();
+    for candidate in tunnel_candidates {
+        let mut residue = candidate.clone();
+        while let Some(&leading) = residue.first() {
+            if let Some(pivot_row) = pivots.get(&leading) {
+                residue = xor_sorted(&residue, pivot_row);
+            } else {
+                break;
+            }
+        }
+        if !residue.is_empty() {
+            let pivot_col = residue[0];
+            pivots.insert(pivot_col, residue);
+            chosen_tunnels.push(candidate);
+        }
+    }
+
     HandleSubspace {
         cycles: chosen,
+        tunnel_cycles: chosen_tunnels,
         surface_edges,
         edge_to_index,
     }
@@ -414,8 +447,22 @@ mod tests {
         let k = compute_handle_subspace(&mesh, &tb);
         assert_eq!(k.genus(), 1, "torus is genus 1 → exactly one handle");
         assert_eq!(k.cycles.len(), 1);
-        // Sanity: the single handle cycle is non-empty.
         assert!(!k.cycles[0].is_empty(), "handle cycle should have edges");
+
+        // Genus-1 surface also has exactly one tunnel class.
+        assert_eq!(k.tunnel_cycles.len(), 1, "torus has one tunnel");
+        assert!(!k.tunnel_cycles[0].is_empty(), "tunnel cycle should have edges");
+    }
+
+    /// Genus-0 surfaces have no tunnels either.
+    #[test]
+    fn cube_has_empty_tunnel_subspace() {
+        let mesh = build_cube_surface();
+        let tm = tetrahedralize(&mesh).expect("tetgen failed");
+        let tb = build_tet_boundary(&tm);
+        let k = compute_handle_subspace(&mesh, &tb);
+        assert_eq!(k.cycles.len(), 0);
+        assert_eq!(k.tunnel_cycles.len(), 0);
     }
 
     /// The returned cycles' edges should all reference valid surface-edge

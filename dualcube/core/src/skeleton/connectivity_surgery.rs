@@ -78,18 +78,17 @@ struct BoundaryMatrix {
     edge_to_col: HashMap<[VIdx; 2], u32>,
     /// Handle-subspace generators: `g` 1-chains over the current edge
     /// basis (sorted column indices, exactly like a `matrix` row). Each
-    /// generator is an image, under the running chain-map composition, of
-    /// one of the precomputed handle cycles `c_i ∈ K`. Empty for genus 0.
+    /// generator is the chain-map image of one of the precomputed handle
+    /// cycles `c_i ∈ K = ker(H₁(S) → H₁(V))`. Used by the cost bias to
+    /// drive greedy toward handle-killing collapses. Empty for genus 0.
     handle_cycles: Vec<Vec<u32>>,
-    /// The closed-surface 2-cycle, represented as a 2-chain over face row
-    /// indices (sorted, GF(2) coefficients). Initially the sum of every
-    /// face row (the canonical 2-cycle of a closed orientable surface);
-    /// evolved through collapses by the chain map. The legality check
-    /// rejects any collapse that would create a *new* 2-cycle (= a bubble)
-    /// — equivalently, the post-collapse `β₂` must not exceed
-    /// `(surface_2_chain non-empty ? 1 : 0)`. Once this chain dies, no
-    /// more 2-cycles are permitted.
-    surface_2_chain: Vec<usize>,
+    /// Tunnel-subspace generators: `g` 1-chains chosen as a complement
+    /// to `K` in `H₁(S)`, so their images form a basis of `H₁(V)`. The
+    /// legality criterion rejects any collapse that would make any of
+    /// these cycles trivial in `H₁(X)` — equivalently, that would
+    /// collapse a tunnel. Bubble creation is *allowed*; we only protect
+    /// the essential cycles. Empty for genus 0.
+    tunnel_cycles: Vec<Vec<u32>>,
 }
 
 /// The set of changes a candidate collapse u → v would make to the
@@ -160,27 +159,14 @@ fn merge_columns_in_chain(chain: &mut Vec<u32>, keep: u32, drop: u32) {
     }
 }
 
-/// Removes `row` from `chain` if present. Used to evolve the
-/// surface_2_chain when a face is removed entirely (chain map sends it
-/// to 0).
-fn remove_row_from_chain(chain: &mut Vec<usize>, row: usize) {
-    if let Ok(pos) = chain.binary_search(&row) {
-        chain.remove(pos);
-    }
-}
-
-/// In-place row-merge on a sorted GF(2) 2-chain. Used to evolve the
-/// surface_2_chain when face `F_old` is identified with face `F_new`
-/// (= chain map sends `F_old → F_new`). If `F_old` was in the chain, its
-/// coefficient XORs into `F_new`'s coefficient.
-fn merge_rows_in_chain(chain: &mut Vec<usize>, old_row: usize, new_row: usize) {
-    debug_assert!(old_row != new_row);
-    if let Ok(old_pos) = chain.binary_search(&old_row) {
-        chain.remove(old_pos);
-        match chain.binary_search(&new_row) {
-            Ok(new_pos) => { chain.remove(new_pos); }
-            Err(insert_pos) => { chain.insert(insert_pos, new_row); }
-        }
+/// Toggles `col` in a sorted GF(2) 1-chain: if present, remove; if
+/// absent, insert. Used by the free-face collapse's chain map, which on
+/// 1-chains sends the free edge to the sum of the face's other two
+/// edges — i.e. each "other" edge's coefficient gets XOR'd in.
+fn toggle_col_in_chain(chain: &mut Vec<u32>, col: u32) {
+    match chain.binary_search(&col) {
+        Ok(pos) => { chain.remove(pos); }
+        Err(pos) => { chain.insert(pos, col); }
     }
 }
 
@@ -349,6 +335,14 @@ impl SurgeryContext {
     fn compute_collapse_cost(&self, u: VIdx, v: VIdx) -> f64 {
         const WA: f64 = 1.0; // Shape weight
         const WB: f64 = 0.1; // Sampling weight
+        // Handle-cycle bonus: a very negative cost added per cycle this
+        // edge participates in. Pulls handle-killing collapses to the
+        // front of the heap so greedy whittles the handle down before
+        // exhausting the easy non-handle candidates and getting stuck at
+        // the manifold floor. Provably homotopy-safe: bias only affects
+        // ordering, the legality criterion still gates whether the
+        // collapse is allowed.
+        const W_HANDLE_BONUS: f64 = 1.0e6;
 
         // Shape Cost: v^T * (Q_u + Q_v) * v
         let p_v = self.positions[&v];
@@ -366,7 +360,18 @@ impl SurgeryContext {
             }
         }
 
-        WA * shape_cost + WB * sampling_cost
+        // Handle bonus: subtract one full bonus per handle cycle that
+        // currently includes the column for edge (u, v).
+        let mut handle_bonus: f64 = 0.0;
+        if let Some(&col) = self.boundary_matrix.edge_to_col.get(&sort_edge(u, v)) {
+            for cycle in &self.boundary_matrix.handle_cycles {
+                if cycle.binary_search(&col).is_ok() {
+                    handle_bonus += W_HANDLE_BONUS;
+                }
+            }
+        }
+
+        WA * shape_cost + WB * sampling_cost - handle_bonus
     }
 
     /// Checks if an edge (u, v) is part of any active face.
@@ -418,39 +423,56 @@ impl SurgeryContext {
         true
     }
 
-    /// Homology-quotient-preserving legality check, with explicit surface
-    /// 2-cycle tracking.
+    /// Tunnel-survival legality check.
     ///
-    /// Accepts a collapse iff the post-collapse complex satisfies BOTH:
-    /// 1. `β₁(X') − dim K(X') = g` — preserves `H₁(X)/K(X) ≅ H₁(V)`.
-    /// 2. `β₂(X') ≤ (surface_2_chain' is non-empty ? 1 : 0)` — every
-    ///    2-cycle must be accounted for by the surviving surface. If the
-    ///    surface chain has died, no 2-cycles are permitted; if it's
-    ///    still alive, at most one 2-cycle (the surface itself) is
-    ///    permitted. This rejects bubble-spawning collapses even when β₂
-    ///    is conserved by a "surface dies + bubble born" swap.
+    /// Accepts a collapse iff every tracked tunnel cycle remains
+    /// non-trivial in `H₁(X')` after the collapse. Tunnels were chosen
+    /// as a basis-complement to the handle subspace `K`, so their images
+    /// form a basis of `H₁(V)`; if all of them survive the collapse, the
+    /// natural map `H₁(X') → H₁(V)` stays surjective and `X'` retains
+    /// every essential cycle of the underlying handlebody.
     ///
-    /// See `HOMOLOGY_PRESERVING_SURGERY.md` for correctness of (1); (2)
-    /// prevents the surgery from pinching off closed-sphere sub-complexes
-    /// that no edge collapse could subsequently dissolve.
-    fn check_homology_quotient_preserved(&self, u: VIdx, v: VIdx) -> bool {
-        match self.simulate_post_collapse_quotient(u, v) {
-            None => true, // no candidate delta available
-            Some((new_beta_1, new_dim_k, new_beta_2, new_surface_alive)) => {
-                let expected_beta_2 = if new_surface_alive { 1 } else { 0 };
-                new_beta_1 - new_dim_k == self.target_g as i64
-                    && new_beta_2 <= expected_beta_2
+    /// Crucially, this check does **not** care about β₂ or "bubble"
+    /// formation. Closed sub-complexes (bubbles) are allowed to form
+    /// freely — they're a normal byproduct of non-link-condition edge
+    /// collapses on a closed surface and can't damage the result so
+    /// long as the tunnel classes themselves survive. Empirically the
+    /// tunnel is geometrically long enough on real inputs that it
+    /// rarely gets killed in one collapse, so this gate is permissive.
+    fn check_tunnels_survive(&self, u: VIdx, v: VIdx) -> bool {
+        let bm = &self.boundary_matrix;
+        if bm.tunnel_cycles.is_empty() {
+            return true; // genus 0: nothing to protect
+        }
+        let Some(delta) = self.compute_collapse_delta(u, v) else {
+            return true;
+        };
+
+        let mut snap = bm.clone();
+        Self::apply_collapse_delta(&mut snap, &delta);
+        snap.matrix.reduce();
+        let pivot_map = snap.matrix.pivot_map();
+
+        for cycle in &snap.tunnel_cycles {
+            let mut residue = cycle.clone();
+            if snap.matrix.reduce_against(&pivot_map, &mut residue) {
+                // The tunnel reduced to zero modulo `∂₂' = B₁(X')` — it's
+                // now a boundary, i.e. trivial in `H₁(X')`. Reject.
+                return false;
             }
         }
+        true
     }
 
-    /// Returns `(β₁, dim K, β₂, surface_alive)` of the post-collapse
-    /// complex. `None` when no candidate delta is available.
-    fn simulate_post_collapse_quotient(
+    /// Diagnostic-only: returns post-collapse `(β₁, dim K, β₂,
+    /// surviving_tunnels)` so the stuck-state and per-edge dumps can
+    /// report what each rejected collapse would have done. Not used by
+    /// the legality criterion (which checks tunnel survival directly).
+    fn simulate_post_collapse_stats(
         &self,
         u: VIdx,
         v: VIdx,
-    ) -> Option<(i64, i64, i64, bool)> {
+    ) -> Option<(i64, i64, i64, usize)> {
         let bm = &self.boundary_matrix;
         let delta = self.compute_collapse_delta(u, v)?;
 
@@ -459,55 +481,34 @@ impl SurgeryContext {
         snap.matrix.reduce();
         let new_rank = snap.matrix.rank();
 
-        // β₁ = E − V + 1 − rank(∂₂); β₀ = 1 (edge contraction preserves
-        // connectedness on a connected 1-skeleton).
         let v_now = (self.positions.len() - self.is_dead.len()) as i64;
         let e_now = bm.edge_to_col.len() as i64;
         let new_v = v_now - delta.delta_v as i64;
         let new_e = e_now - delta.delta_e as i64;
         let new_beta_1 = new_e - new_v + 1 - new_rank as i64;
 
-        // dim K(X'): the dimension of the handle subspace inside H₁(X').
-        // Equivalently, how many of the (already chain-map-evolved) handle
-        // cycles remain linearly independent modulo B₁(X'). Reduce each
-        // cycle against snap.matrix's RREF + already-accepted cycles; each
-        // cycle that ends up with a non-zero residue contributes one to
-        // dim K.
-        let mut pivot_map = snap.matrix.pivot_map();
-        let n_matrix_rows = snap.matrix.rows().len();
-        let mut extra_pivot_rows: Vec<Vec<u32>> = Vec::new();
+        let pivot_map = snap.matrix.pivot_map();
+
         let mut new_dim_k: i64 = 0;
         for cycle in &snap.handle_cycles {
             let mut residue = cycle.clone();
-            loop {
-                let Some(&leading) = residue.first() else {
-                    break;
-                };
-                if let Some(&piv) = pivot_map.get(&leading) {
-                    let pivot_row: &[u32] = if piv < n_matrix_rows {
-                        &snap.matrix.rows()[piv]
-                    } else {
-                        &extra_pivot_rows[piv - n_matrix_rows]
-                    };
-                    residue = xor_sorted(&residue, pivot_row);
-                } else {
-                    // Independent — becomes a new pivot for `leading`.
-                    let extra_idx = n_matrix_rows + extra_pivot_rows.len();
-                    pivot_map.insert(leading, extra_idx);
-                    extra_pivot_rows.push(residue);
-                    new_dim_k += 1;
-                    break;
-                }
+            if !snap.matrix.reduce_against(&pivot_map, &mut residue) {
+                new_dim_k += 1;
             }
         }
 
-        // β₂(X') = F' − rank(∂₂'). F' is the active-face count after
-        // applying delta. The post-collapse surface 2-chain sits in `snap`.
+        let mut surviving_tunnels: usize = 0;
+        for cycle in &snap.tunnel_cycles {
+            let mut residue = cycle.clone();
+            if !snap.matrix.reduce_against(&pivot_map, &mut residue) {
+                surviving_tunnels += 1;
+            }
+        }
+
         let new_f = (self.active_faces.len() as i64) - delta.delta_f as i64;
         let new_beta_2 = new_f - new_rank as i64;
-        let new_surface_alive = !snap.surface_2_chain.is_empty();
 
-        Some((new_beta_1, new_dim_k, new_beta_2, new_surface_alive))
+        Some((new_beta_1, new_dim_k, new_beta_2, surviving_tunnels))
     }
 
     /// Computes what the (face_to_row, edge_to_col, matrix) state would
@@ -600,40 +601,21 @@ impl SurgeryContext {
     }
 
     /// Applies a [`CollapseDelta`] in place to the given boundary matrix,
-    /// its face/edge maps, and the tracked handle cycles. Used both for the
-    /// snapshot in [`Self::simulate_post_collapse_quotient`] and for the
-    /// live commit in [`Self::collapse_edge`].
+    /// its face/edge maps, and the tracked handle and tunnel cycles. Used
+    /// both for the snapshot in [`Self::check_tunnels_survive`] /
+    /// [`Self::simulate_post_collapse_stats`] and for the live commit in
+    /// [`Self::collapse_edge`].
     fn apply_collapse_delta(bm: &mut BoundaryMatrix, delta: &CollapseDelta) {
         // 0. Look up the (u, v) column BEFORE we mutate edge_to_col, so we
-        //    can scrub it out of the handle cycles below.
+        //    can scrub it out of every tracked 1-chain below.
         let removed_uv_col = bm.edge_to_col.get(&delta.removed_uv_edge).copied();
 
-        // 0b. Evolve the surface 2-cycle chain. This MUST run before
-        //     steps 2/3 (which mutate face_to_row), because we need to
-        //     look up row indices for both `F_old` and `F_new` of every
-        //     merged pair while both entries still exist.
-        for (old, new_kept) in &delta.faces_merged {
-            let old_row = bm.face_to_row.get(old).copied();
-            let new_row = bm.face_to_row.get(new_kept).copied();
-            if let (Some(or), Some(nr)) = (old_row, new_row) {
-                if or != nr {
-                    merge_rows_in_chain(&mut bm.surface_2_chain, or, nr);
-                }
-            }
-        }
-        for face in &delta.faces_removed {
-            if let Some(&row) = bm.face_to_row.get(face) {
-                remove_row_from_chain(&mut bm.surface_2_chain, row);
-            }
-        }
-        // (faces_renamed: row index is preserved, just the face_to_row key
-        // changes, so the chain — which is indexed by row — is unchanged.)
-
-        // 1a. Evolve each handle cycle by the chain map. On 1-chains, the
-        //     chain map for an edge collapse u → v is: (a) merge the columns
-        //     of every shared-neighbour edge pair (same merge_columns op we
-        //     do on matrix rows), and (b) drop the (u, v) column itself.
-        for cycle in &mut bm.handle_cycles {
+        // 1a. Evolve each tracked 1-chain (handle and tunnel cycles) by
+        //     the edge-collapse chain map. On 1-chains, the chain map for
+        //     an edge collapse u → v is: (a) merge the columns of every
+        //     shared-neighbour edge pair (same merge_columns op we do on
+        //     matrix rows), and (b) drop the (u, v) column itself.
+        let evolve_chain = |cycle: &mut Vec<u32>| {
             for &(keep, drop) in &delta.edge_col_merges {
                 merge_columns_in_chain(cycle, keep, drop);
             }
@@ -642,6 +624,12 @@ impl SurgeryContext {
                     cycle.remove(pos);
                 }
             }
+        };
+        for cycle in &mut bm.handle_cycles {
+            evolve_chain(cycle);
+        }
+        for cycle in &mut bm.tunnel_cycles {
+            evolve_chain(cycle);
         }
 
         // 1b. Column merges on the matrix: shared-neighbour edge columns
@@ -717,14 +705,15 @@ impl SurgeryContext {
             return false;
         }
 
-        // Homology-quotient gate: the only thing we enforce. Strictly
+        // Tunnel-survival gate: the only thing we enforce. Strictly
         // manifold collapses are *not* required — we deliberately allow
-        // non-manifold collapses that kill handle cycles, since handles
-        // need to die for surgery to reach a 1-skeleton on positive-genus
-        // inputs. The criterion `β₁ − dim K = g` precisely permits
-        // handle-killing collapses while still rejecting tunnel-killing
-        // ones and collapses that create spurious 1-skeleton cycles.
-        if !self.check_homology_quotient_preserved(u, v) {
+        // non-manifold collapses (and bubble formation) since both can
+        // be necessary to whittle a positive-genus surface down to a
+        // 1-skeleton. We reject only collapses that would kill an
+        // essential cycle of the underlying solid `V`, detected by
+        // checking whether every tracked tunnel cycle remains
+        // non-boundary in `H₁(X')`.
+        if !self.check_tunnels_survive(u, v) {
             return false;
         }
 
@@ -764,11 +753,10 @@ impl SurgeryContext {
         let e_now = self.boundary_matrix.edge_to_col.len();
         let chi = v_now as i64 - e_now as i64 + f_now as i64;
         let n_handle_cycles = self.boundary_matrix.handle_cycles.len();
-
-        let surface_chain_size = self.boundary_matrix.surface_2_chain.len();
+        let n_tunnel_cycles = self.boundary_matrix.tunnel_cycles.len();
         warn!(
-            "Stuck-state aggregate: V={}, E={}, F={}, χ={}, target_g={}, live_handle_cycles={}, surface_chain_size={}.",
-            v_now, e_now, f_now, chi, self.target_g, n_handle_cycles, surface_chain_size
+            "Stuck-state aggregate: V={}, E={}, F={}, χ={}, target_g={}, live_handle_cycles={}, live_tunnel_cycles={}.",
+            v_now, e_now, f_now, chi, self.target_g, n_handle_cycles, n_tunnel_cycles
         );
 
         // Vertices that still belong to at least one active face form the
@@ -891,32 +879,127 @@ impl SurgeryContext {
             .get(&u)
             .is_some_and(|neighbor_set| neighbor_set.contains(&v));
         let has_faces = adjacent && !u_dead && !v_dead && self.edge_has_faces(u, v);
-        let quotient = if has_faces {
-            self.simulate_post_collapse_quotient(u, v)
+        let stats = if has_faces {
+            self.simulate_post_collapse_stats(u, v)
         } else {
             None
         };
-        let quotient_ok = has_faces && self.check_homology_quotient_preserved(u, v);
+        let tunnels_ok = has_faces && self.check_tunnels_survive(u, v);
 
-        let quotient_str = match quotient {
-            Some((b, k, b2, surface_alive)) => format!(
-                "new_β₁={}, new_dim_K={}, new_β₂={}, surface_alive={}, Δ(β₁−dim_K)={:+} (target {})",
+        let stats_str = match stats {
+            Some((b, k, b2, surv)) => format!(
+                "new_β₁={}, new_dim_K={}, new_β₂={}, surviving_tunnels={}/{} (target g={})",
                 b,
                 k,
                 b2,
-                surface_alive,
-                (b - k) - self.target_g as i64,
+                surv,
+                self.boundary_matrix.tunnel_cycles.len(),
                 self.target_g,
             ),
             None => "post-collapse stats unavailable".to_string(),
         };
         format!(
-            "{:?}->{:?}[dead u/v={}/{}, adj={}, faces={}, quotient_ok={}, {}]",
-            u, v, u_dead, v_dead, adjacent, has_faces, quotient_ok, quotient_str
+            "{:?}->{:?}[dead u/v={}/{}, adj={}, faces={}, tunnels_ok={}, {}]",
+            u, v, u_dead, v_dead, adjacent, has_faces, tunnels_ok, stats_str
         )
     }
 
     /// Performs edge collapse: u merges into v.
+    /// Attempts a single **free-face elementary collapse** if one is
+    /// available. A face is "free" when at least one of its three edges
+    /// is incident only to that face (no other active face has it). The
+    /// collapse removes the face and that free edge, which is a textbook
+    /// CW elementary collapse: a deformation retraction, so β₁, dim K,
+    /// and β₂ are all preserved exactly. The legality criterion can't
+    /// reject this operation, so we don't check it.
+    ///
+    /// Returns `true` if a collapse was performed. Caller is expected to
+    /// loop until this returns `false`, after which no free faces remain.
+    fn try_free_face_collapse(&mut self) -> bool {
+        // Count how many active faces each edge is incident to.
+        let mut edge_face_count: HashMap<[VIdx; 2], usize> = HashMap::new();
+        for face in &self.active_faces {
+            let [a, b, c] = *face;
+            *edge_face_count.entry(sort_edge(a, b)).or_insert(0) += 1;
+            *edge_face_count.entry(sort_edge(b, c)).or_insert(0) += 1;
+            *edge_face_count.entry(sort_edge(a, c)).or_insert(0) += 1;
+        }
+
+        // Look for a face that owns at least one count-1 edge.
+        let faces_snapshot: Vec<[VIdx; 3]> = self.active_faces.iter().copied().collect();
+        for face in faces_snapshot {
+            let [a, b, c] = face;
+            for &(x, y) in &[(a, b), (b, c), (a, c)] {
+                let edge = sort_edge(x, y);
+                if edge_face_count.get(&edge).copied().unwrap_or(0) == 1 {
+                    self.do_free_face_collapse(face, edge);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Performs a free-face elementary collapse: remove `face` and the
+    /// `free_edge` (which must currently be incident only to `face`).
+    /// Updates the boundary matrix, handle cycles, surface 2-chain, and
+    /// the live face/edge/neighbor maps.
+    fn do_free_face_collapse(&mut self, face: [VIdx; 3], free_edge: [VIdx; 2]) {
+        let bm = &mut self.boundary_matrix;
+        let face_row = bm.face_to_row.get(&face).copied();
+        let free_col = bm.edge_to_col.get(&free_edge).copied();
+
+        // The face's two NON-free edges, in canonical sorted form.
+        let [a, b, c] = face;
+        let mut other_cols: [Option<u32>; 2] = [None, None];
+        let mut next = 0;
+        for &(x, y) in &[(a, b), (b, c), (a, c)] {
+            let e = sort_edge(x, y);
+            if e == free_edge {
+                continue;
+            }
+            other_cols[next] = bm.edge_to_col.get(&e).copied();
+            next += 1;
+        }
+
+        // Evolve handle and tunnel cycles via the free-face chain map:
+        // e_free ↦ e_2 + e_3 on 1-chains. For each cycle that contains
+        // the free edge's column, remove that column and toggle the
+        // other two.
+        if let (Some(fc), Some(c2), Some(c3)) = (free_col, other_cols[0], other_cols[1]) {
+            let apply = |cycle: &mut Vec<u32>| {
+                if let Ok(pos) = cycle.binary_search(&fc) {
+                    cycle.remove(pos);
+                    toggle_col_in_chain(cycle, c2);
+                    toggle_col_in_chain(cycle, c3);
+                }
+            };
+            for cycle in &mut bm.handle_cycles {
+                apply(cycle);
+            }
+            for cycle in &mut bm.tunnel_cycles {
+                apply(cycle);
+            }
+        }
+
+        // Clear the face's matrix row.
+        if let Some(row) = face_row {
+            bm.matrix.clear_row(row);
+        }
+        bm.face_to_row.remove(&face);
+        bm.edge_to_col.remove(&free_edge);
+
+        // Mirror the active-faces set and the 1-skeleton adjacency.
+        self.active_faces.remove(&face);
+        let [u, v] = free_edge;
+        if let Some(set) = self.neighbors.get_mut(&u) {
+            set.remove(&v);
+        }
+        if let Some(set) = self.neighbors.get_mut(&v) {
+            set.remove(&u);
+        }
+    }
+
     fn collapse_edge(&mut self, u: VIdx, v: VIdx) {
         // Compute the boundary-matrix delta against the pre-collapse state.
         // This is `None` for genus-0 inputs where we don't track the matrix.
@@ -992,10 +1075,8 @@ impl SurgeryContext {
         // Clear u's neighbor set
         self.neighbors.get_mut(&u).unwrap().clear();
 
-        // Commit the boundary-matrix delta to the live state. The
-        // surface_2_chain is evolved inside apply_collapse_delta; we no
-        // longer track a separate β₂ cap because the chain itself
-        // determines what β₂ is allowed (= 1 while alive, 0 once empty).
+        // Commit the boundary-matrix delta to the live state. Handle
+        // and tunnel cycles are evolved inside apply_collapse_delta.
         if let Some(delta) = delta {
             Self::apply_collapse_delta(&mut self.boundary_matrix, &delta);
         }
@@ -1159,6 +1240,7 @@ pub fn extract_skeleton(
 
     // Greedy collapse loop
     while !ctx.active_faces.is_empty() {
+
         let Some(candidate) = heap.pop() else {
             let legal_candidates = ctx.count_legal_collapse_candidates();
             let remaining_faces = ctx.active_faces.len();
@@ -1223,11 +1305,23 @@ pub fn extract_skeleton(
         }
     }
 
+    // Free-face elementary-collapse cleanup pass. Whenever the main
+    // surgery loop leaves face-incident leftovers, free-face collapses can
+    // clean up disk-like remnants (preserve homotopy exactly: no β₁,
+    // dim K, or β₂ change). Doesn't help with closed-sub-complex
+    // remnants (e.g. residual torus cores) — those have no free edges.
+    let mut free_face_collapses = 0;
+    while ctx.try_free_face_collapse() {
+        collapses += 1;
+        free_face_collapses += 1;
+    }
+
     let succeeded = ctx.active_faces.is_empty();
     if succeeded {
         info!(
-            "Connectivity surgery complete. Collapsed {} edges. Remaining vertices: {}",
+            "Connectivity surgery complete. Collapsed {} edges ({} free-face). Remaining vertices: {}",
             collapses,
+            free_face_collapses,
             ctx.positions.len() - ctx.is_dead.len()
         );
         let mut skeleton = ctx.to_curve_skeleton(original_mesh, true);
@@ -1378,10 +1472,6 @@ fn preprocess_topology(
 
     // Initial surface 2-cycle: sum of all face rows. For a closed
     // orientable surface this is exactly the fundamental 2-cycle (each
-    // edge bounds 2 faces, so the boundary vanishes mod 2).
-    let n_faces = face_to_row.len();
-    let surface_2_chain: Vec<usize> = (0..n_faces).collect();
-
     Some((
         g,
         BoundaryMatrix {
@@ -1389,7 +1479,7 @@ fn preprocess_topology(
             face_to_row,
             edge_to_col,
             handle_cycles: Vec::new(),
-            surface_2_chain,
+            tunnel_cycles: Vec::new(),
         },
     ))
 }
@@ -1455,22 +1545,22 @@ fn attach_handle_cycles(
         })
         .collect();
 
-    bm.handle_cycles = hs
-        .cycles
-        .into_iter()
-        .map(|cycle| {
-            let mut translated: Vec<u32> = cycle
-                .into_iter()
-                .map(|surf_idx| surface_to_col[surf_idx as usize])
-                .collect();
-            translated.sort();
-            translated
-        })
-        .collect();
+    let translate = |cycle: Vec<u32>| -> Vec<u32> {
+        let mut translated: Vec<u32> = cycle
+            .into_iter()
+            .map(|surf_idx| surface_to_col[surf_idx as usize])
+            .collect();
+        translated.sort();
+        translated
+    };
+
+    bm.handle_cycles = hs.cycles.into_iter().map(translate).collect();
+    bm.tunnel_cycles = hs.tunnel_cycles.into_iter().map(translate).collect();
 
     info!(
-        "Attached {} handle-cycle generators to the boundary matrix.",
-        bm.handle_cycles.len()
+        "Attached {} handle-cycle and {} tunnel-cycle generators to the boundary matrix.",
+        bm.handle_cycles.len(),
+        bm.tunnel_cycles.len()
     );
 
     Some(())
@@ -1623,7 +1713,7 @@ mod tests {
         if !ctx.edge_has_faces(c.u, c.v) {
             return Some(RejectReason::NoFaces);
         }
-        if !ctx.check_homology_quotient_preserved(c.u, c.v) {
+        if !ctx.check_tunnels_survive(c.u, c.v) {
             return Some(RejectReason::LinkFailed);
         }
         None
@@ -1748,7 +1838,7 @@ mod tests {
                     && ctx.edge_has_faces(c.u, c.v);
 
                 let link_ok = if link_condition_enabled {
-                    basic_ok && ctx.check_homology_quotient_preserved(c.u, c.v)
+                    basic_ok && ctx.check_tunnels_survive(c.u, c.v)
                 } else {
                     basic_ok
                 };
@@ -1867,7 +1957,7 @@ mod tests {
         summary
     }
 
-    /// Step 3: Direct probe of `check_homology_quotient_preserved` for a middle-ring edge.
+    /// Step 3: Direct probe of `check_tunnels_survive` for a middle-ring edge.
     /// Ring 10 is the middle. The edge from slot 0 to slot 1 on ring 10 has a third
     /// ring-10 vertex (slot 5? slot 2?) as a common neighbor only if the triangulation
     /// connects it across — for our quad triangulation, common neighbors of an edge on a
@@ -1911,8 +2001,8 @@ mod tests {
             let exists = ctx.active_faces.contains(&sort_face(i, j, k));
             eprintln!("    k={:>3}: (i,j,k) face exists? {}", idx_of(k), exists);
         }
-        let verdict = ctx.check_homology_quotient_preserved(i, j);
-        eprintln!("  check_homology_quotient_preserved(i, j) = {}", verdict);
+        let verdict = ctx.check_tunnels_survive(i, j);
+        eprintln!("  check_tunnels_survive(i, j) = {}", verdict);
 
         // Also: for any *pair* of common neighbors w1, w2, if both (i,w1,w2) and (j,w1,w2)
         // are faces, then w1-w2 ∈ lk(i) ∩ lk(j) but not in lk(ij). The classical 2-manifold
