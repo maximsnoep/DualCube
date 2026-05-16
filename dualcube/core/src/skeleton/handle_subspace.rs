@@ -260,6 +260,7 @@ pub fn compute_handle_subspace(
     }
 
     let mut chosen: Vec<Vec<u32>> = Vec::new();
+    let mut total_extracted: usize = 0;
     let mut tested = 0usize;
     let mut bound_in_t = 0usize;
     let mut bound_individually = 0usize;
@@ -270,7 +271,14 @@ pub fn compute_handle_subspace(
     // survived to become new tagged_pivots beyond the B₁(T) initial set.
     let mut dim_image = 0usize;
 
-    'cycles: for edge_idx in 0..(surface_edges.len() as u32) {
+    // We process every non-tree edge — no early-exit on `target_g`. The
+    // small extra cost (each cycle is just a few XORs once enough K
+    // basis members are known) buys honest values for `dim_image`,
+    // `total_extracted`, and the "algebraic K dim agrees" cross-check.
+    // `chosen` is still capped at `target_g` for the caller; any K basis
+    // members we'd find beyond that are counted in `total_extracted`
+    // and reported only as a diagnostic signal of unexpected K dim.
+    for edge_idx in 0..(surface_edges.len() as u32) {
         if tree_edges.contains(&edge_idx) {
             continue;
         }
@@ -323,10 +331,14 @@ pub fn compute_handle_subspace(
                 break;
             }
             if !residue.is_empty() {
+                // Always extend the pivot system so subsequent cycles
+                // reduce against the full K basis we've discovered;
+                // otherwise `total_extracted` would inflate past the
+                // true dim K.
                 k_basis_pivots.insert(residue[0], residue);
-                chosen.push(surface_chain);
-                if chosen.len() >= target_g {
-                    break 'cycles;
+                total_extracted += 1;
+                if chosen.len() < target_g {
+                    chosen.push(surface_chain);
                 }
             }
         } else {
@@ -345,12 +357,13 @@ pub fn compute_handle_subspace(
     }
 
     info!(
-        "Handle-subspace: tested {} fundamental cycles, {} bound in T (= K elements): {} singleton-cycles, {} multi-cycle sums. dim(image H₁(S)→H₁(T)) = {}. Extracted K basis of size {} (target {}).",
+        "Handle-subspace: tested {} fundamental cycles, {} bound in T (= K elements): {} singleton-cycles, {} multi-cycle sums. dim(image H₁(S)→H₁(T)) = {}, total K basis members found = {}. Returning {} (target {}).",
         tested,
         bound_in_t,
         bound_individually,
         bound_multi,
         dim_image,
+        total_extracted,
         chosen.len(),
         target_g,
     );
@@ -360,20 +373,28 @@ pub fn compute_handle_subspace(
             non_cycle_chains,
         );
     }
+    // Algebraic cross-check: dim K = β₁(S) − dim(image H₁(S) → H₁(T)),
+    // and dim K should match the total number of K basis members we
+    // pulled out of the full tagged-Gauss pass. A mismatch means either
+    // TetGen filled a region whose topology doesn't match the
+    // handlebody we assumed, or there's a bug in this routine.
     let algebraic_k_dim = surface_h1_dim - (dim_image as i64);
-    if (chosen.len() as i64) != algebraic_k_dim {
+    if (total_extracted as i64) != algebraic_k_dim {
         warn!(
-            "Handle-subspace: extracted basis disagrees with algebraic K dim — got {}, expected β₁(S) − dim(image) = {} − {} = {}. Most likely cause: the handlebody assumption (TetGen filling = solid bounded by S) is wrong, or `target_g` early-exit fired before we found all K basis members.",
-            chosen.len(),
+            "Handle-subspace: total K basis members ({}) disagrees with algebraic K dim ({} = β₁(S){} − dim(image){}). TetGen likely filled a region whose topology differs from the expected handlebody.",
+            total_extracted,
+            algebraic_k_dim,
             surface_h1_dim,
             dim_image,
-            algebraic_k_dim,
         );
     }
-    if !sample_non_bounding.is_empty() && dim_image == 0 {
+    if total_extracted != target_g {
+        // Even if the algebraic check passes (rare), if we found more or
+        // fewer K basis members than `target_g`, surgery's invariant
+        // β₁ − dim K = g won't behave as expected.
         warn!(
-            "Handle-subspace: no lifted cycle escaped B₁(T) yet some samples had non-empty residues: {:?}",
-            sample_non_bounding,
+            "Handle-subspace: found {} K basis members but `target_g` is {}. surgery may behave unexpectedly.",
+            total_extracted, target_g
         );
     }
 

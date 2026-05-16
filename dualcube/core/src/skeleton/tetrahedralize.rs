@@ -124,22 +124,29 @@ pub fn tetrahedralize(mesh: &Mesh<INPUT>) -> Result<TetMesh, TetError> {
         }
     }
 
-    // Mark the interior region by giving TetGen a point inside it. For
-    // closed meshes whose vertex centroid lies inside the volume (true for
-    // any star-shaped solid and in particular for all our test inputs and
-    // for bob), the centroid of all surface vertices works.
-    let (mut cx, mut cy, mut cz) = (0.0, 0.0, 0.0);
-    for &v in &vert_ids {
-        let p = mesh.position(v);
-        cx += p.x;
-        cy += p.y;
-        cz += p.z;
-    }
-    let n = n_input_vertices as f64;
-    cx /= n;
-    cy /= n;
-    cz /= n;
-    tet.set_region(0, 1, cx, cy, cz, None).map_err(TetError::Tetgen)?;
+    // Mark the interior region by giving TetGen a point inside it.
+    //
+    // The vertex centroid (used previously) lands inside any star-shaped
+    // solid but routinely falls *outside* for non-star-shaped genus > 0
+    // surfaces — e.g. a pretzel-shaped genus-2 mesh whose centroid lands
+    // in a tunnel hole. When that happens TetGen fills the complementary
+    // region instead and every downstream computation that assumed
+    // `T = interior of S` is silently wrong.
+    //
+    // Instead pick a non-degenerate surface triangle, compute its centroid
+    // and its *inward* normal (sign of vertex-order orientation determined
+    // from the signed volume of the closed surface), ray-cast inward until
+    // we hit the next surface triangle, and place the marker at half that
+    // distance. The marker is then guaranteed to be inside the solid for
+    // any closed orientable manifold input — including thin features,
+    // because the half-distance step can't reach the opposing wall.
+    let marker = interior_region_marker(mesh, &triangles, &vert_ids)?;
+    info!(
+        "Tetrahedralize: region marker at ({:.6}, {:.6}, {:.6})",
+        marker.x, marker.y, marker.z
+    );
+    tet.set_region(0, 1, marker.x, marker.y, marker.z, None)
+        .map_err(TetError::Tetgen)?;
 
     // Run TetGen on the PLC. Defaults: no quadratic elements, no global size
     // bounds, no minimum-angle constraint. We want the cheapest valid
@@ -212,6 +219,125 @@ pub fn tetrahedralize(mesh: &Mesh<INPUT>) -> Result<TetMesh, TetError> {
         tets,
         n_input_vertices,
     })
+}
+
+/// Picks a point guaranteed to lie strictly inside the closed orientable
+/// solid bounded by `mesh`. Used as TetGen's region marker so it fills
+/// the correct side of the surface.
+///
+/// Algorithm:
+/// 1. Compute the signed volume of the surface (origin-invariant for any
+///    closed surface). Its sign tells us whether the stored vertex order
+///    of each triangle produces an outward-pointing or inward-pointing
+///    normal under `(b−a) × (c−a)`.
+/// 2. Pick the first non-degenerate triangle, take its centroid and its
+///    inward normal.
+/// 3. Ray-cast inward and find the smallest positive `t` at which the
+///    ray crosses any other surface triangle (Möller–Trumbore over the
+///    full triangle list — `O(F)` per cast, fast enough for one shot).
+/// 4. Return `centroid + (t/2) · inward`. Half the distance can't reach
+///    the opposing wall, so the marker is inside the solid even for
+///    thin features.
+fn interior_region_marker(
+    mesh: &Mesh<INPUT>,
+    triangles: &[[usize; 3]],
+    vert_ids: &[VertKey<INPUT>],
+) -> Result<Vector3D, TetError> {
+    // Signed volume of the closed surface (6×, since (a×b)·c is 6× the
+    // tetrahedron volume from origin). Sign is invariant of origin
+    // choice for a closed surface and tells us the vertex-order
+    // convention.
+    let mut six_volume: f64 = 0.0;
+    for tri in triangles {
+        let pa = mesh.position(vert_ids[tri[0]]);
+        let pb = mesh.position(vert_ids[tri[1]]);
+        let pc = mesh.position(vert_ids[tri[2]]);
+        six_volume += pa.cross(&pb).dot(&pc);
+    }
+    if six_volume.abs() < 1e-12 {
+        return Err(TetError::Tetgen(
+            "surface mesh has zero signed volume — closed orientable manifold expected",
+        ));
+    }
+    let outward_sign = if six_volume > 0.0 { 1.0 } else { -1.0 };
+
+    // Pick the first non-degenerate triangle. For any reasonable mesh
+    // this is index 0.
+    let mut src: Option<(usize, Vector3D, Vector3D)> = None;
+    for (i, tri) in triangles.iter().enumerate() {
+        let pa = mesh.position(vert_ids[tri[0]]);
+        let pb = mesh.position(vert_ids[tri[1]]);
+        let pc = mesh.position(vert_ids[tri[2]]);
+        let normal = (pb - pa).cross(&(pc - pa));
+        let two_area = normal.norm();
+        if two_area < 1e-20 {
+            continue;
+        }
+        let centroid = (pa + pb + pc) / 3.0;
+        let inward = normal * (-outward_sign / two_area);
+        src = Some((i, centroid, inward));
+        break;
+    }
+    let (src_idx, centroid, inward) = src
+        .ok_or(TetError::Tetgen("all surface triangles are degenerate"))?;
+
+    // Ray-cast inward; find the smallest positive intersection parameter.
+    let mut nearest_t = f64::INFINITY;
+    for (j, tri) in triangles.iter().enumerate() {
+        if j == src_idx {
+            continue;
+        }
+        let qa = mesh.position(vert_ids[tri[0]]);
+        let qb = mesh.position(vert_ids[tri[1]]);
+        let qc = mesh.position(vert_ids[tri[2]]);
+        if let Some(t) = ray_triangle_intersect(centroid, inward, qa, qb, qc) {
+            // Strict positivity guards against grazing the source face
+            // through a shared edge or vertex.
+            if t > 1e-9 && t < nearest_t {
+                nearest_t = t;
+            }
+        }
+    }
+    if !nearest_t.is_finite() {
+        return Err(TetError::Tetgen(
+            "inward ray from source triangle hit no other surface triangle — surface is not closed?",
+        ));
+    }
+
+    Ok(centroid + inward * (nearest_t * 0.5))
+}
+
+/// Möller–Trumbore ray-triangle intersection over `f64`. Returns the
+/// positive parameter `t` such that `origin + t · direction` lies on
+/// the triangle `(a, b, c)`, or `None` if the ray misses, hits the
+/// triangle behind the origin, or is parallel.
+fn ray_triangle_intersect(
+    origin: Vector3D,
+    direction: Vector3D,
+    a: Vector3D,
+    b: Vector3D,
+    c: Vector3D,
+) -> Option<f64> {
+    let e1 = b - a;
+    let e2 = c - a;
+    let p = direction.cross(&e2);
+    let det = e1.dot(&p);
+    if det.abs() < 1e-12 {
+        return None;
+    }
+    let inv_det = 1.0 / det;
+    let s = origin - a;
+    let u = s.dot(&p) * inv_det;
+    if !(0.0..=1.0).contains(&u) {
+        return None;
+    }
+    let q = s.cross(&e1);
+    let v = direction.dot(&q) * inv_det;
+    if v < 0.0 || u + v > 1.0 {
+        return None;
+    }
+    let t = e2.dot(&q) * inv_det;
+    if t > 0.0 { Some(t) } else { None }
 }
 
 #[cfg(test)]
