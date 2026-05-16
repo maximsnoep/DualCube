@@ -13,6 +13,7 @@
 
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
+use std::time::Instant;
 
 use log::{error, info, warn};
 use mehsh::prelude::{HasNeighbors, HasPosition, HasVertices, Mesh, Vector3D, VertKey};
@@ -821,6 +822,69 @@ impl SurgeryContext {
         let e_now = self.boundary_matrix.edge_to_col.len();
         let chi = v_now as i64 - e_now as i64 + f_now as i64;
         let n_handle_cycles = self.boundary_matrix.handle_cycles.len();
+
+        // Compute current β₁ and dim K (number of handle cycles still
+        // independent of B₁) so we can fold them into a single grep-able
+        // summary line.
+        let (beta_1, dim_k) = {
+            let mut snap = self.boundary_matrix.matrix.clone();
+            snap.reduce();
+            let rank = snap.rank();
+            let pivot_map = snap.pivot_map();
+            let beta_1 = e_now as i64 - v_now as i64 + 1 - rank as i64;
+            let mut dim_k = 0i64;
+            for cycle in &self.boundary_matrix.handle_cycles {
+                let mut residue = cycle.clone();
+                if !snap.reduce_against(&pivot_map, &mut residue) {
+                    dim_k += 1;
+                }
+            }
+            (beta_1, dim_k)
+        };
+
+        // Component count over the live sub-complex (vertices touching at
+        // least one active face). Cheap BFS — we redo it for the per-
+        // component breakdown below, but doing it here lets the one-line
+        // summary include the count.
+        let n_components = {
+            let mut face_verts: HashSet<VIdx> = HashSet::new();
+            for &[a, b, c] in &self.active_faces {
+                face_verts.insert(a);
+                face_verts.insert(b);
+                face_verts.insert(c);
+            }
+            let mut adj: HashMap<VIdx, HashSet<VIdx>> = HashMap::new();
+            for &[a, b, c] in &self.active_faces {
+                adj.entry(a).or_default().extend([b, c]);
+                adj.entry(b).or_default().extend([a, c]);
+                adj.entry(c).or_default().extend([a, b]);
+            }
+            let mut visited: HashSet<VIdx> = HashSet::new();
+            let mut count = 0usize;
+            for &start in &face_verts {
+                if !visited.insert(start) {
+                    continue;
+                }
+                count += 1;
+                let mut queue: VecDeque<VIdx> = VecDeque::new();
+                queue.push_back(start);
+                while let Some(v) = queue.pop_front() {
+                    if let Some(ns) = adj.get(&v) {
+                        for &n in ns {
+                            if visited.insert(n) {
+                                queue.push_back(n);
+                            }
+                        }
+                    }
+                }
+            }
+            count
+        };
+
+        warn!(
+            "STUCK-SUMMARY F={} V={} E={} chi={} target_g={} beta_1={} dim_K={} live_handle_cycles={} components={}",
+            f_now, v_now, e_now, chi, self.target_g, beta_1, dim_k, n_handle_cycles, n_components
+        );
         warn!(
             "Stuck-state aggregate: V={}, E={}, F={}, χ={}, target_g={}, live_handle_cycles={}.",
             v_now, e_now, f_now, chi, self.target_g, n_handle_cycles
@@ -1325,6 +1389,27 @@ pub fn extract_skeleton(
 
     let mut collapses = 0;
 
+    // Progress indicator: log a line each time we cross a 10%-of-initial
+    // bucket. `bucket_index(f_now)` rounds down to which 10% bucket
+    // `initial_faces − f_now` falls into; logging fires only when that
+    // integer strictly exceeds `buckets_logged`. This avoids the duplicate-
+    // log trap of comparing against a face-count threshold that drifts
+    // away from a clean 10% step (the first threshold `initial − bucket`
+    // is not generally a multiple of `bucket`, so snapping to multiples
+    // can produce two consecutive logs at the same percent).
+    let start = Instant::now();
+    let initial_faces = ctx.active_faces.len();
+    let bucket_size = (initial_faces / 10).max(1);
+    let mut buckets_logged: usize = 0;
+    let mut last_bucket_at = start;
+    let mut last_bucket_faces = initial_faces;
+    info!(
+        "Connectivity surgery starting: V={}, F={}, target_g={}.",
+        ctx.positions.len() - ctx.is_dead.len(),
+        initial_faces,
+        ctx.target_g,
+    );
+
     // Greedy collapse loop
     while !ctx.active_faces.is_empty() {
 
@@ -1367,6 +1452,32 @@ pub fn extract_skeleton(
         ctx.collapse_edge(candidate.u, candidate.v);
         collapses += 1;
 
+        // Progress: log one line per new 10% bucket crossed. A single
+        // collapse can take out several faces and jump multiple buckets —
+        // we still emit exactly one line, reporting the highest bucket
+        // reached.
+        let f_now = ctx.active_faces.len();
+        let faces_done = initial_faces - f_now;
+        let b = (faces_done / bucket_size).min(10);
+        if b > buckets_logged {
+            let now = Instant::now();
+            let bucket_elapsed = now.duration_since(last_bucket_at).as_secs_f64();
+            let total_elapsed = now.duration_since(start).as_secs_f64();
+            let removed_this_bucket = last_bucket_faces - f_now;
+            let rate = if bucket_elapsed > 1e-6 {
+                removed_this_bucket as f64 / bucket_elapsed
+            } else {
+                0.0
+            };
+            info!(
+                "Surgery progress: {}% (F={}/{}, -{} in {:.2}s, {:.0}/s, elapsed {:.2}s)",
+                b * 10, f_now, initial_faces, removed_this_bucket, bucket_elapsed, rate, total_elapsed
+            );
+            last_bucket_at = now;
+            last_bucket_faces = f_now;
+            buckets_logged = b;
+        }
+
         // Re-evaluate edges connected to v
         let neighbors: Vec<_> = ctx.neighbors[&candidate.v].iter().copied().collect();
         for neighbor in neighbors {
@@ -1408,10 +1519,12 @@ pub fn extract_skeleton(
         free_face_collapses += 1;
     }
 
+    let total_elapsed = start.elapsed().as_secs_f64();
     let succeeded = ctx.active_faces.is_empty();
     if succeeded {
         info!(
-            "Connectivity surgery complete. Collapsed {} edges ({} free-face). Remaining vertices: {}",
+            "Connectivity surgery complete in {:.2}s. Collapsed {} edges ({} free-face). Remaining vertices: {}",
+            total_elapsed,
             collapses,
             free_face_collapses,
             ctx.positions.len() - ctx.is_dead.len()
@@ -1421,7 +1534,8 @@ pub fn extract_skeleton(
         (skeleton, None)
     } else {
         warn!(
-            "Connectivity surgery did NOT complete: {} faces remain after {} collapses. Returning empty skeleton to the pipeline and the partial state as a separate diagnostic.",
+            "Connectivity surgery did NOT complete after {:.2}s: {} faces remain after {} collapses. Returning empty skeleton to the pipeline and the partial state as a separate diagnostic.",
+            total_elapsed,
             ctx.active_faces.len(),
             collapses
         );
@@ -1608,6 +1722,27 @@ fn attach_handle_cycles(
     original_mesh: &Mesh<INPUT>,
     target_g: usize,
 ) -> Option<()> {
+    // Orientation sanity check on the input. A closed manifold with χ=2-2g
+    // is a handlebody surface only if it's orientable; a non-orientable
+    // 2-manifold with the same χ would be a sum of crosscaps that doesn't
+    // bound any 3-manifold in R³. We don't yet check intrinsic
+    // orientability — that requires a BFS orientation propagation — but the
+    // cheaper check ("is the face winding consistent across edges?") catches
+    // both genuinely non-orientable inputs and inputs whose triangle list
+    // mixes inward- and outward-facing windings. Either makes TetGen
+    // misbehave, and that misbehaviour shows up downstream as a
+    // handle-subspace dimension mismatch with no obvious cause.
+    if let Err(diag) = check_face_winding_consistent(original_mesh) {
+        error!(
+            "Connectivity surgery aborted: input mesh has inconsistent face winding ({}). \
+             This usually means the surface is non-orientable, or the triangle list mixes \
+             outward- and inward-facing windings. Either prevents TetGen from producing a \
+             valid interior tetrahedralization.",
+            diag
+        );
+        return None;
+    }
+
     let tm = match tetrahedralize(original_mesh) {
         Ok(t) => t,
         Err(e) => {
@@ -1615,14 +1750,43 @@ fn attach_handle_cycles(
             return None;
         }
     };
+    if tm.n_tets() == 0 {
+        error!(
+            "Connectivity surgery aborted: TetGen returned 0 tetrahedra. The input surface \
+             likely violates a TetGen assumption (self-intersecting, near-degenerate \
+             triangles, or a region marker that didn't land inside the solid)."
+        );
+        return None;
+    }
     let tb = build_tet_boundary(&tm);
-    let hs = compute_handle_subspace(original_mesh, &tb);
+    info!(
+        "Tet boundary complex: {} triangles, {} edges across {} tetrahedra.",
+        tb.n_triangles(),
+        tb.n_edges(),
+        tm.n_tets()
+    );
+    let hs = compute_handle_subspace(original_mesh, &tb, target_g);
 
     if hs.cycles.len() != target_g {
         error!(
-            "Connectivity surgery aborted: handle-subspace dimension mismatch (got {}, expected genus {}). Tetrahedralization likely violated an invariant.",
+            "Connectivity surgery aborted: handle-subspace dimension mismatch (got {}, \
+             expected genus {}). Pipeline state: surface V/E/F={}/{}/{}, tet T/E/cells={}/{}/{}. \
+             Most common cause: the input surface and the TetGen-produced volume disagree on \
+             which 1-cycles bound — e.g. TetGen produced an interior that's topologically \
+             different from the handlebody we inferred from χ, because the surface is \
+             non-orientable, self-intersecting, or has a non-watertight shell that nevertheless \
+             happens to pass the 2-incidence manifold check.",
             hs.cycles.len(),
-            target_g
+            target_g,
+            // Surface stats are accessible from `hs.surface_edges` and the
+            // input mesh; we report them inline so the operator doesn't
+            // have to cross-reference earlier log lines.
+            original_mesh.vert_ids().len(),
+            hs.surface_edges.len(),
+            original_mesh.face_ids().len(),
+            tb.n_triangles(),
+            tb.n_edges(),
+            tm.n_tets(),
         );
         return None;
     }
@@ -1669,6 +1833,41 @@ fn attach_handle_cycles(
     );
 
     Some(())
+}
+
+/// Walks every face of `mesh` and checks that each undirected edge is
+/// traversed in opposite directions by its two incident faces. If two
+/// faces traverse the same edge in the same direction, the mesh is
+/// either non-orientable or has at least one flipped triangle in its
+/// storage — both make TetGen produce a malformed interior. Returns
+/// `Err(diagnostic)` describing the first offending edge.
+fn check_face_winding_consistent(mesh: &Mesh<INPUT>) -> Result<(), String> {
+    // For each directed edge (x, y) we've seen, remember the face it came
+    // from. A consistent orientation means every undirected edge is seen
+    // exactly once in each direction: (x, y) by face A and (y, x) by
+    // face B. Seeing the same directed edge twice = same winding on both
+    // sides = inconsistent.
+    let mut seen_directed: HashMap<(VertKey<INPUT>, VertKey<INPUT>), [VertKey<INPUT>; 3]> =
+        HashMap::new();
+    for fid in mesh.face_ids() {
+        let verts: Vec<_> = mesh.vertices(fid).collect();
+        if verts.len() != 3 {
+            return Err(format!(
+                "non-triangular face (vertex count = {})",
+                verts.len()
+            ));
+        }
+        let face = [verts[0], verts[1], verts[2]];
+        for &(x, y) in &[(face[0], face[1]), (face[1], face[2]), (face[2], face[0])] {
+            if let Some(prev_face) = seen_directed.insert((x, y), face) {
+                return Err(format!(
+                    "directed edge ({:?}, {:?}) traversed twice — first by face {:?}, then by face {:?}",
+                    x, y, prev_face, face
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Computes the edge quadric matrix (Eq 4 in paper).

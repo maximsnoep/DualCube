@@ -6,6 +6,7 @@
 //! [`TetMesh`] is the discrete model of the solid `V` from which we will
 //! compute the handle subspace `K = ker(H₁(S) → H₁(V))`.
 
+use log::{info, warn};
 use mehsh::prelude::{HasPosition, HasVertices, Mesh, Vector3D, VertKey};
 use tritet::Tetgen;
 
@@ -168,6 +169,42 @@ pub fn tetrahedralize(mesh: &Mesh<INPUT>) -> Result<TetMesh, TetError> {
             tet.out_cell_point(i, 2) as u32,
             tet.out_cell_point(i, 3) as u32,
         ]);
+    }
+
+    let steiner = n_out.saturating_sub(n_input_vertices);
+    info!(
+        "TetGen produced {} tetrahedra from {} surface vertices ({} Steiner points added, {} surface triangles).",
+        n_tet, n_input_vertices, steiner, triangles.len()
+    );
+
+    // Sanity-check that TetGen kept the input surface vertices at the
+    // first `n_input_vertices` indices in the *correct order*. If it
+    // didn't, every downstream computation that looks up T-edges by
+    // input-vertex pair (`tet_boundary.edge_col(a, b)`) will silently
+    // address the wrong edge — and the handle-subspace test becomes
+    // garbage.
+    let mut drifted = 0usize;
+    let mut max_drift: f64 = 0.0;
+    for (i, &v) in vert_ids.iter().enumerate() {
+        let expected = mesh.position(v);
+        let got = vertices[i];
+        let dx = (got.x - expected.x).abs();
+        let dy = (got.y - expected.y).abs();
+        let dz = (got.z - expected.z).abs();
+        let drift = dx + dy + dz;
+        let scale = expected.x.abs() + expected.y.abs() + expected.z.abs() + 1.0;
+        if drift > 1e-9 * scale {
+            drifted += 1;
+            if drift > max_drift {
+                max_drift = drift;
+            }
+        }
+    }
+    if drifted > 0 {
+        warn!(
+            "Tetrahedralize: {} of {} surface vertices drifted from their input positions (max drift {}). TetGen may have reordered/merged vertices; edge-column lookups by input-vertex pair would address the wrong edge.",
+            drifted, n_input_vertices, max_drift
+        );
     }
 
     Ok(TetMesh {

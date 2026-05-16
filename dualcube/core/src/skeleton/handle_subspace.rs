@@ -25,6 +25,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
+use log::{info, warn};
 use mehsh::prelude::{HasVertices, Mesh, VertKey};
 
 use super::f2_rref::F2Matrix;
@@ -60,10 +61,14 @@ impl HandleSubspace {
 ///
 /// The input mesh `mesh` should be the original closed orientable input
 /// surface; `tet_boundary` must come from `build_tet_boundary` applied to
-/// the result of `tetrahedralize(mesh)`.
+/// the result of `tetrahedralize(mesh)`. `target_g` is the expected
+/// number of handle generators (= genus of the input surface, if it
+/// bounds a handlebody); the tagged-Gauss pass early-exits once it has
+/// found that many independent K basis members.
 pub fn compute_handle_subspace(
     mesh: &Mesh<INPUT>,
     tet_boundary: &TetBoundaryComplex,
+    target_g: usize,
 ) -> HandleSubspace {
     // ---- Step 1: enumerate surface vertices, edges, and faces. ----
     let vert_ids: Vec<VertKey<INPUT>> = mesh.vert_ids();
@@ -141,10 +146,26 @@ pub fn compute_handle_subspace(
         }
     }
 
-    // ---- Step 4: reduce ∂₂^T and build its pivot map. ----
+    // ---- Step 4: reduce ∂₂^T so its rows pivot uniquely (REF). The
+    // tagged-Gauss pass below initialises its pivot table directly from
+    // these rows — it doesn't need a separate `pivot_map`.
     let mut tet_d2 = tet_boundary.boundary_2.clone();
     tet_d2.reduce();
-    let tet_b1_pivots = tet_d2.pivot_map();
+    let surface_b1_rank = surface_d2.rank();
+    let surface_z1_dim =
+        (surface_edges.len() as i64) - (n_verts as i64) + 1;
+    let surface_h1_dim = surface_z1_dim - (surface_b1_rank as i64);
+    info!(
+        "Handle-subspace: surface V={}, E={}, F={}; tet T={}, E={}; rank(∂₂^S)={}, rank(∂₂^T)={}; β₁(S)={}.",
+        n_verts,
+        surface_edges.len(),
+        surface_faces.len(),
+        tet_boundary.n_triangles(),
+        tet_boundary.n_edges(),
+        surface_b1_rank,
+        tet_d2.rank(),
+        surface_h1_dim,
+    );
 
     // Translation table: surface edge index → T-edge column index.
     // Input surface vertices keep their indices in T (see TetMesh docs),
@@ -160,61 +181,200 @@ pub fn compute_handle_subspace(
         })
         .collect();
 
-    // ---- Step 5: for each non-tree edge, build the fundamental cycle and ----
-    // ---- test whether it bounds in T (= handle loop). ----
-    let mut handle_candidates: Vec<Vec<u32>> = Vec::new();
+    // Sanity-check the lifting: GF(2) sum of "lift each surface edge"
+    // must give a distinct column for each edge. If two surface edges land
+    // in the same T column, the surface 1-skeleton wasn't preserved
+    // injectively by TetGen and everything below this point is suspect.
+    {
+        let mut seen: HashSet<u32> = HashSet::with_capacity(surface_to_t_col.len());
+        let mut collisions = 0usize;
+        for &c in &surface_to_t_col {
+            if !seen.insert(c) {
+                collisions += 1;
+            }
+        }
+        if collisions > 0 {
+            warn!(
+                "Handle-subspace: surface→T lifting has {} duplicate column(s) ({} surface edges, {} unique T cols). The handle test relies on injectivity.",
+                collisions, surface_to_t_col.len(), seen.len()
+            );
+        }
+    }
+
+    // ---- Step 5 + 6 (combined): tagged Gauss elimination over T-edges. ----
+    //
+    // Each non-tree edge gives one fundamental cycle of `S`. The
+    // straightforward "test each cycle individually for K membership"
+    // approach fails when `K`'s non-zero classes are only representable
+    // as *sums* of multiple fundamental cycles (which happens whenever
+    // the spanning tree gives an unfortunate basis for `H₁(S)`).
+    //
+    // To find such combinations we track, for every row in the running
+    // RREF, a `tag` = the set of fundamental-cycle indices whose lifted
+    // sum produced that row. Initial state:
+    //   * `B₁(T)` rows: tag = ∅ (they're tet-face boundaries, not
+    //     combinations of surface cycles).
+    //   * Each lifted cycle `i`: tag = {i}.
+    // During reduction we XOR both the T-edge chain and the tag in
+    // lockstep, so the tag stays consistent with the chain's pedigree.
+    //
+    // When a row reduces to the empty chain in T-edge space, its tag is
+    // exactly a subset of fundamental cycles whose sum lies in `B₁(T)`,
+    // i.e. a *K element*. We then build that K element's surface chain
+    // and reduce against `B₁(S) ∪ already-chosen K basis` to test
+    // independence in `H₁(S)`. Stop as soon as we have `target_g`
+    // independent K basis members.
+    let edges_in_t: &[[u32; 2]] = &tet_boundary.edges;
+
+    // Build every fundamental cycle up front so we can rebuild surface
+    // chains from tags on demand.
+    let mut all_cycles: HashMap<u32, Vec<u32>> = HashMap::new();
     for edge_idx in 0..(surface_edges.len() as u32) {
+        if !tree_edges.contains(&edge_idx) {
+            let cycle = fundamental_cycle_on_surface(
+                edge_idx,
+                &surface_edges,
+                &parent_vertex,
+                &parent_edge,
+            );
+            all_cycles.insert(edge_idx, cycle);
+        }
+    }
+
+    // Pivots in T-edge space, each storing the chain and its tag pedigree.
+    // Initialised with the (filtered) B₁(T) row span — empty tags.
+    let mut tagged_pivots: HashMap<u32, (Vec<u32>, Vec<u32>)> = HashMap::new();
+    for row in tet_d2.rows() {
+        if let Some(&leading) = row.first() {
+            tagged_pivots.insert(leading, (row.clone(), Vec::new()));
+        }
+    }
+
+    // K-basis pivot system on surface edges: starts as B₁(S) pivots and
+    // grows with each K basis member added.
+    let mut k_basis_pivots: HashMap<u32, Vec<u32>> = HashMap::new();
+    for row in surface_d2.rows() {
+        if let Some(&leading) = row.first() {
+            k_basis_pivots.insert(leading, row.clone());
+        }
+    }
+
+    let mut chosen: Vec<Vec<u32>> = Vec::new();
+    let mut tested = 0usize;
+    let mut bound_in_t = 0usize;
+    let mut bound_individually = 0usize;
+    let mut bound_multi = 0usize;
+    let mut sample_non_bounding: Vec<(usize, usize, usize)> = Vec::new();
+    let mut non_cycle_chains = 0usize;
+    // For dim(image H₁(S) → H₁(T)) we just count how many lifted cycles
+    // survived to become new tagged_pivots beyond the B₁(T) initial set.
+    let mut dim_image = 0usize;
+
+    'cycles: for edge_idx in 0..(surface_edges.len() as u32) {
         if tree_edges.contains(&edge_idx) {
             continue;
         }
-        let cycle = fundamental_cycle_on_surface(
-            edge_idx,
-            &surface_edges,
-            &parent_vertex,
-            &parent_edge,
-        );
+        let cycle = &all_cycles[&edge_idx];
 
-        // Lift to a 1-chain in C₁(T).
-        let mut lifted: Vec<u32> = cycle.iter().map(|&i| surface_to_t_col[i as usize]).collect();
-        lifted.sort();
+        let mut chain: Vec<u32> = cycle
+            .iter()
+            .map(|&i| surface_to_t_col[i as usize])
+            .collect();
+        chain.sort();
+        let chain_len_before = chain.len();
+        let mut tag: Vec<u32> = vec![edge_idx];
 
-        if tet_d2.reduce_against(&tet_b1_pivots, &mut lifted) {
-            // Reduced to zero — the cycle bounds in T, it's a handle.
-            handle_candidates.push(cycle);
+        tested += 1;
+
+        // Reduce in T-edge space; XOR tags in lockstep.
+        loop {
+            let Some(&leading) = chain.first() else { break; };
+            if let Some((p_chain, p_tag)) = tagged_pivots.get(&leading) {
+                chain = xor_sorted(&chain, p_chain);
+                tag = xor_sorted(&tag, p_tag);
+                continue;
+            }
+            break;
         }
-    }
 
-    // ---- Step 6: extract a basis of K modulo B₁(S). ----
-    // Stage the surface-boundary rows as the initial pivot system, then add
-    // candidates one at a time; a candidate joins the basis iff reducing it
-    // against the existing pivots yields a non-zero residue.
-    let mut pivots: HashMap<u32, Vec<u32>> = HashMap::new();
-    for row in surface_d2.rows() {
-        if let Some(&leading) = row.first() {
-            // After `reduce()` each non-empty row already pivots its leading
-            // column, so the insert is unique.
-            pivots.insert(leading, row.clone());
-        }
-    }
-    let mut chosen: Vec<Vec<u32>> = Vec::new();
-    for candidate in handle_candidates {
-        let mut residue = candidate.clone();
-        while let Some(&leading) = residue.first() {
-            if let Some(pivot_row) = pivots.get(&leading) {
-                residue = xor_sorted(&residue, pivot_row);
+        if chain.is_empty() {
+            bound_in_t += 1;
+            if tag.len() == 1 {
+                bound_individually += 1;
             } else {
+                bound_multi += 1;
+            }
+
+            // `tag` indexes a sum of fundamental cycles whose lift is in
+            // B₁(T) — a K element. Build its surface chain.
+            let mut surface_chain: Vec<u32> = Vec::new();
+            for &cyc_idx in &tag {
+                surface_chain = xor_sorted(&surface_chain, &all_cycles[&cyc_idx]);
+            }
+
+            // Reduce mod (B₁(S) ∪ chosen K basis).
+            let mut residue = surface_chain.clone();
+            loop {
+                let Some(&leading) = residue.first() else { break; };
+                if let Some(pivot) = k_basis_pivots.get(&leading) {
+                    residue = xor_sorted(&residue, pivot);
+                    continue;
+                }
                 break;
             }
+            if !residue.is_empty() {
+                k_basis_pivots.insert(residue[0], residue);
+                chosen.push(surface_chain);
+                if chosen.len() >= target_g {
+                    break 'cycles;
+                }
+            }
+        } else {
+            // Sanity: a surface 1-cycle lifted should be a 1-cycle in T.
+            // If not, the lift isn't a chain map.
+            if !chain_is_cycle_in_tet(&chain, edges_in_t) {
+                non_cycle_chains += 1;
+            }
+            if sample_non_bounding.len() < 5 {
+                sample_non_bounding.push((cycle.len(), chain_len_before, chain.len()));
+            }
+            // Independent in H₁(T): adds a new dim to the image.
+            dim_image += 1;
+            tagged_pivots.insert(chain[0], (chain, tag));
         }
-        if !residue.is_empty() {
-            // The candidate is independent of B₁(S) and the already-chosen
-            // handle cycles. Keep the *original* cycle (a clean fundamental
-            // cycle on S) as the basis element, but file the *residue* as
-            // the new pivot.
-            let pivot_col = residue[0];
-            pivots.insert(pivot_col, residue);
-            chosen.push(candidate);
-        }
+    }
+
+    info!(
+        "Handle-subspace: tested {} fundamental cycles, {} bound in T (= K elements): {} singleton-cycles, {} multi-cycle sums. dim(image H₁(S)→H₁(T)) = {}. Extracted K basis of size {} (target {}).",
+        tested,
+        bound_in_t,
+        bound_individually,
+        bound_multi,
+        dim_image,
+        chosen.len(),
+        target_g,
+    );
+    if non_cycle_chains > 0 {
+        warn!(
+            "Handle-subspace: {} lifted residues were NOT cycles in T (∂_T ≠ 0). This means the lift `surface edge → T edge` is not a chain map — most likely cause: TetGen renumbered surface vertices, so `edge_col(a, b)` returns the column for a different T edge.",
+            non_cycle_chains,
+        );
+    }
+    let algebraic_k_dim = surface_h1_dim - (dim_image as i64);
+    if (chosen.len() as i64) != algebraic_k_dim {
+        warn!(
+            "Handle-subspace: extracted basis disagrees with algebraic K dim — got {}, expected β₁(S) − dim(image) = {} − {} = {}. Most likely cause: the handlebody assumption (TetGen filling = solid bounded by S) is wrong, or `target_g` early-exit fired before we found all K basis members.",
+            chosen.len(),
+            surface_h1_dim,
+            dim_image,
+            algebraic_k_dim,
+        );
+    }
+    if !sample_non_bounding.is_empty() && dim_image == 0 {
+        warn!(
+            "Handle-subspace: no lifted cycle escaped B₁(T) yet some samples had non-empty residues: {:?}",
+            sample_non_bounding,
+        );
     }
 
     HandleSubspace {
@@ -255,6 +415,23 @@ fn fundamental_cycle_on_surface(
         .collect();
     cycle.sort();
     cycle
+}
+
+/// Tests whether a 1-chain (given as a sorted list of T-edge column
+/// indices) is a cycle in the tet complex — i.e. every vertex appears in
+/// an even number of incident edges. Used as a sanity check that the
+/// lift `surface edge → T edge` is actually a chain map; if it isn't,
+/// the lifted residue won't be a cycle.
+fn chain_is_cycle_in_tet(chain: &[u32], edges: &[[u32; 2]]) -> bool {
+    let mut parity: HashMap<u32, bool> = HashMap::new();
+    for &col in chain {
+        let [a, b] = edges[col as usize];
+        let pa = parity.entry(a).or_insert(false);
+        *pa = !*pa;
+        let pb = parity.entry(b).or_insert(false);
+        *pb = !*pb;
+    }
+    parity.values().all(|&p| !p)
 }
 
 /// Symmetric difference of two sorted-distinct `u32` slices.
@@ -389,7 +566,7 @@ mod tests {
         let mesh = build_tetrahedron_surface();
         let tm = tetrahedralize(&mesh).expect("tetgen failed");
         let tb = build_tet_boundary(&tm);
-        let k = compute_handle_subspace(&mesh, &tb);
+        let k = compute_handle_subspace(&mesh, &tb, 0);
         assert_eq!(k.genus(), 0, "tetrahedron is genus 0 → no handles");
         assert_eq!(k.cycles.len(), 0);
     }
@@ -400,7 +577,7 @@ mod tests {
         let mesh = build_cube_surface();
         let tm = tetrahedralize(&mesh).expect("tetgen failed");
         let tb = build_tet_boundary(&tm);
-        let k = compute_handle_subspace(&mesh, &tb);
+        let k = compute_handle_subspace(&mesh, &tb, 0);
         assert_eq!(k.genus(), 0, "cube is genus 0 → no handles");
         assert_eq!(k.cycles.len(), 0);
     }
@@ -411,7 +588,7 @@ mod tests {
         let mesh = build_torus_surface(20, 10);
         let tm = tetrahedralize(&mesh).expect("tetgen failed");
         let tb = build_tet_boundary(&tm);
-        let k = compute_handle_subspace(&mesh, &tb);
+        let k = compute_handle_subspace(&mesh, &tb, 1);
         assert_eq!(k.genus(), 1, "torus is genus 1 → exactly one handle");
         assert_eq!(k.cycles.len(), 1);
         assert!(!k.cycles[0].is_empty(), "handle cycle should have edges");
@@ -424,7 +601,7 @@ mod tests {
         let mesh = build_torus_surface(16, 8);
         let tm = tetrahedralize(&mesh).expect("tetgen failed");
         let tb = build_tet_boundary(&tm);
-        let k = compute_handle_subspace(&mesh, &tb);
+        let k = compute_handle_subspace(&mesh, &tb, 1);
         let n_edges = k.surface_edges.len() as u32;
         for cycle in &k.cycles {
             for &edge_idx in cycle {
