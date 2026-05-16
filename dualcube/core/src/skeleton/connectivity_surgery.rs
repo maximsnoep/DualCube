@@ -4,6 +4,12 @@
 //! "Skeleton Extraction by Mesh Contraction" paper. After mesh contraction,
 //! the mesh is thin but still 2D. This step collapses edges until only
 //! a 1D skeleton remains.
+//!
+//! On top of the paper's strict Dey–Edelsbrunner link condition we run a
+//! homology-aware variant that admits handle-killing collapses on
+//! positive-genus inputs while still rejecting any collapse that would
+//! destroy an essential tunnel cycle of the solid. The geometry and
+//! correctness argument lives in `HOMOLOGY_PRESERVING_SURGERY.md`.
 
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
@@ -62,9 +68,10 @@ impl Eq for CollapseCandidate {}
 
 /// Boundary matrix ∂₂ over GF(2) plus the maps needed to address rows by
 /// face triple and columns by undirected edge, plus a basis of the handle
-/// subspace `K ⊆ H₁(S; ℤ/2)`. Maintained throughout surgery so the
-/// legality check can probe what β₁ and dim(K) would become after a
-/// hypothetical collapse.
+/// subspace `K ⊆ H₁(S; ℤ/2)` and a cached RREF of `B₁(X) + K`.
+/// Maintained throughout surgery so [`SurgeryContext::check_link_condition`]
+/// can decide in O(shared neighbours · cycle length) per candidate whether
+/// any corner-cycle `γ_w` has tunnel content.
 #[derive(Clone)]
 struct BoundaryMatrix {
     matrix: F2Matrix,
@@ -107,8 +114,24 @@ impl BoundaryMatrix {
     /// `B₁(X) + K`. The live `matrix` is left untouched so its rows still
     /// correspond to face row indices via `face_to_row`.
     fn rebuild_pivots(&mut self) {
-        let mut combined: Vec<Vec<u32>> = self.matrix.rows().to_vec();
-        combined.extend(self.handle_cycles.iter().cloned());
+        // Skip empty rows — both the cleared face rows in `matrix` (which
+        // accumulate as collapses proceed) and any handle cycles that
+        // have died. They contribute nothing to the row span; filtering
+        // them out keeps `reduce()` from looping over a steadily-growing
+        // pile of no-ops.
+        let mut combined: Vec<Vec<u32>> = self
+            .matrix
+            .rows()
+            .iter()
+            .filter(|r| !r.is_empty())
+            .cloned()
+            .collect();
+        combined.extend(
+            self.handle_cycles
+                .iter()
+                .filter(|c| !c.is_empty())
+                .cloned(),
+        );
         let mut m = F2Matrix::from_rows(combined);
         m.reduce();
         self.aug_pivot_map = m.pivot_map();
@@ -117,8 +140,9 @@ impl BoundaryMatrix {
 }
 
 /// The set of changes a candidate collapse u → v would make to the
-/// boundary-matrix state. Computed once per legality check and re-used to
-/// either probe (on a snapshot) or commit (on the live matrix).
+/// boundary-matrix state. Computed once per collapse and applied either
+/// to a snapshot (in [`SurgeryContext::simulate_post_collapse_stats`], a
+/// diagnostic) or to the live matrix (in [`SurgeryContext::collapse_edge`]).
 struct CollapseDelta {
     /// Faces incident to edge (u, v): rows to clear; map entries to drop.
     faces_removed: Vec<[VIdx; 3]>,
@@ -132,6 +156,12 @@ struct CollapseDelta {
     /// Column-merge ops to apply: `(keep, drop)`. `keep` survives in
     /// edge_to_col; `drop` becomes the zero column.
     edge_col_merges: Vec<(u32, u32)>,
+    /// `(u, w)` edge keys whose column got merged into the corresponding
+    /// `(v, w)` column. These keys need to be removed from `edge_to_col`
+    /// after the column merge — parallel to `edge_col_merges`, in the
+    /// same order. Stored explicitly so apply doesn't have to scan all
+    /// of `edge_to_col` looking for keys whose value lives in `dropped`.
+    dropped_edge_keys: Vec<[VIdx; 2]>,
     /// Edges (u, w) for non-shared neighbors w: their column survives but
     /// the key in edge_to_col is renamed from (u, w) to (v, w).
     edge_renames: Vec<([VIdx; 2], [VIdx; 2])>,
@@ -225,14 +255,14 @@ struct SurgeryContext {
     /// Initially each vertex maps to itself, then accumulates as vertices merge.
     vertex_to_original: HashMap<VIdx, Vec<VertKey<INPUT>>>,
 
-    /// Genus of the closed orientable input surface. The legality check
-    /// requires `β₁(X) − dim K(X) = g` throughout surgery — i.e. the
-    /// quotient `H₁(X) / K(X) ≅ H₁(V)` keeps full rank.
+    /// Genus of the closed orientable input surface. Used by the
+    /// preprocessing sanity check and by the stuck-state diagnostics;
+    /// the per-candidate legality check no longer reads it directly
+    /// (it tests `γ_w`'s tunnel content against the cached pivots).
     target_g: usize,
 
-    /// Boundary matrix ∂₂ tracked across collapses, plus the handle-subspace
-    /// generators and the surface 2-cycle chain. Always populated for a
-    /// valid closed orientable input.
+    /// Boundary matrix ∂₂ + handle-subspace basis + cached RREF of
+    /// `B₁(X) + K`. Always populated for a valid closed orientable input.
     boundary_matrix: BoundaryMatrix,
 }
 
@@ -477,10 +507,10 @@ impl SurgeryContext {
     /// non-zero residue ⇒ tunnel content (reject the whole collapse).
     fn check_link_condition(&self, u: VIdx, v: VIdx) -> bool {
         let bm = &self.boundary_matrix;
-        let uv_col = match bm.edge_to_col.get(&sort_edge(u, v)) {
-            Some(&c) => c,
-            None => return true, // no live (u,v) edge — nothing to probe
-        };
+        // Caller (`is_legal_collapse_candidate`) has already gated on
+        // `edge_has_faces`, which means `(u, v)` is incident to at least
+        // one active face → its column entry is live in `edge_to_col`.
+        let uv_col = bm.edge_to_col[&sort_edge(u, v)];
         let n_u = &self.neighbors[&u];
         let n_v = &self.neighbors[&v];
 
@@ -523,9 +553,9 @@ impl SurgeryContext {
         &self,
         u: VIdx,
         v: VIdx,
-    ) -> Option<(i64, i64, i64)> {
+    ) -> (i64, i64, i64) {
         let bm = &self.boundary_matrix;
-        let delta = self.compute_collapse_delta(u, v)?;
+        let delta = self.compute_collapse_delta(u, v);
 
         let mut snap = bm.clone();
         Self::apply_collapse_delta(&mut snap, &delta);
@@ -551,14 +581,14 @@ impl SurgeryContext {
         let new_f = (self.active_faces.len() as i64) - delta.delta_f as i64;
         let new_beta_2 = new_f - new_rank as i64;
 
-        Some((new_beta_1, new_dim_k, new_beta_2))
+        (new_beta_1, new_dim_k, new_beta_2)
     }
 
     /// Computes what the (face_to_row, edge_to_col, matrix) state would
-    /// change to under a hypothetical collapse u → v. Returns `None` only
-    /// if u and v aren't both adjacent in the current `neighbors` map
-    /// (which `is_legal_collapse_candidate` gates against anyway).
-    fn compute_collapse_delta(&self, u: VIdx, v: VIdx) -> Option<CollapseDelta> {
+    /// change to under a hypothetical collapse u → v. Pure; mutates
+    /// nothing. Caller must have already gated on adjacency
+    /// (`is_legal_collapse_candidate` does this).
+    fn compute_collapse_delta(&self, u: VIdx, v: VIdx) -> CollapseDelta {
         let bm = &self.boundary_matrix;
         let n_u = &self.neighbors[&u];
         let n_v = &self.neighbors[&v];
@@ -607,12 +637,16 @@ impl SurgeryContext {
         }
 
         // Per-shared-neighbor column merge: keep the (v, w) column, drop
-        // the (u, w) column.
+        // the (u, w) column. We also remember each (u, w) edge key so the
+        // apply step can drop it from edge_to_col directly.
         let mut edge_col_merges = Vec::with_capacity(shared.len());
+        let mut dropped_edge_keys = Vec::with_capacity(shared.len());
         for &w in &shared {
+            let uw_key = sort_edge(u, w);
             let col_keep = bm.edge_to_col[&sort_edge(v, w)];
-            let col_drop = bm.edge_to_col[&sort_edge(u, w)];
+            let col_drop = bm.edge_to_col[&uw_key];
             edge_col_merges.push((col_keep, col_drop));
+            dropped_edge_keys.push(uw_key);
         }
 
         // Edges (u, w) for non-shared w: same column, new key.
@@ -630,17 +664,18 @@ impl SurgeryContext {
         let delta_e = 1 + shared.len(); // (u, v) + one duplicate per shared
         let delta_f = faces_removed.len() + faces_merged.len();
 
-        Some(CollapseDelta {
+        CollapseDelta {
             faces_removed,
             faces_merged,
             faces_renamed,
             edge_col_merges,
+            dropped_edge_keys,
             edge_renames,
             removed_uv_edge: sort_edge(u, v),
             delta_v,
             delta_e,
             delta_f,
-        })
+        }
     }
 
     /// Applies a [`CollapseDelta`] in place to the given boundary matrix,
@@ -707,16 +742,12 @@ impl SurgeryContext {
             }
         }
 
-        // 6. Drop edge_to_col entries pointing at columns that got merged
-        //    away (the (u, w) keys for shared neighbors). The (v, w) keys
-        //    already point to the kept column.
-        if !delta.edge_col_merges.is_empty() {
-            let dropped: HashSet<u32> = delta
-                .edge_col_merges
-                .iter()
-                .map(|&(_, d)| d)
-                .collect();
-            bm.edge_to_col.retain(|_, col| !dropped.contains(col));
+        // 6. Drop edge_to_col entries for the (u, w) keys whose columns
+        //    got merged away. The (v, w) keys already point to the kept
+        //    column. Direct removals (O(shared)) rather than a `retain`
+        //    scan over all of edge_to_col (O(E)).
+        for key in &delta.dropped_edge_keys {
+            bm.edge_to_col.remove(key);
         }
 
         // 7. Drop the (u, v) edge entry. Its column is now the zero column
@@ -777,7 +808,8 @@ impl SurgeryContext {
 
     /// Logs a full diagnostic of the stuck state: aggregate counts, the
     /// connected-component structure of the sub-complex still carrying
-    /// faces, and a per-directed-edge β₁ probe for every remaining face.
+    /// faces, and a per-directed-edge probe (link-check verdict plus
+    /// hypothetical β₁, dim K, β₂) for every remaining face.
     ///
     /// Intended to fire once when surgery exits with `active_faces`
     /// non-empty. The point is to make it obvious whether we're stuck on a
@@ -914,19 +946,16 @@ impl SurgeryContext {
             .get(&u)
             .is_some_and(|neighbor_set| neighbor_set.contains(&v));
         let has_faces = adjacent && !u_dead && !v_dead && self.edge_has_faces(u, v);
-        let stats = if has_faces {
-            self.simulate_post_collapse_stats(u, v)
-        } else {
-            None
-        };
         let link_ok = has_faces && self.check_link_condition(u, v);
 
-        let stats_str = match stats {
-            Some((b, k, b2)) => format!(
+        let stats_str = if has_faces {
+            let (b, k, b2) = self.simulate_post_collapse_stats(u, v);
+            format!(
                 "new_β₁={}, new_dim_K={}, new_β₂={} (target g={})",
                 b, k, b2, self.target_g,
-            ),
-            None => "post-collapse stats unavailable".to_string(),
+            )
+        } else {
+            "post-collapse stats unavailable".to_string()
         };
         format!(
             "{:?}->{:?}[dead u/v={}/{}, adj={}, faces={}, link_ok={}, {}]",
@@ -934,46 +963,78 @@ impl SurgeryContext {
         )
     }
 
-    /// Performs edge collapse: u merges into v.
-    /// Attempts a single **free-face elementary collapse** if one is
-    /// available. A face is "free" when at least one of its three edges
-    /// is incident only to that face (no other active face has it). The
-    /// collapse removes the face and that free edge, which is a textbook
-    /// CW elementary collapse: a deformation retraction, so β₁, dim K,
-    /// and β₂ are all preserved exactly. The legality criterion can't
-    /// reject this operation, so we don't check it.
+    /// Builds the initial `edge → incident-face count` map used by the
+    /// free-face cleanup loop. Maintained incrementally afterwards by
+    /// [`Self::try_free_face_collapse`].
+    fn build_edge_face_count(&self) -> HashMap<[VIdx; 2], usize> {
+        let mut counts: HashMap<[VIdx; 2], usize> = HashMap::new();
+        for face in &self.active_faces {
+            let [a, b, c] = *face;
+            *counts.entry(sort_edge(a, b)).or_insert(0) += 1;
+            *counts.entry(sort_edge(b, c)).or_insert(0) += 1;
+            *counts.entry(sort_edge(a, c)).or_insert(0) += 1;
+        }
+        counts
+    }
+
+    /// Performs a single **free-face elementary collapse** if one is
+    /// available, using a caller-maintained `edge_face_count`. A face is
+    /// "free" when at least one of its three edges is incident only to
+    /// that face. The collapse removes the face and that free edge — a
+    /// textbook CW elementary collapse: a deformation retraction, so β₁,
+    /// dim K, and β₂ are all preserved exactly. The legality criterion
+    /// can't reject this operation, so we don't check it.
+    ///
+    /// On success the `edge_face_count` is updated in place: the free
+    /// edge entry is dropped, and the two other face edges have their
+    /// counts decremented.
     ///
     /// Returns `true` if a collapse was performed. Caller is expected to
     /// loop until this returns `false`, after which no free faces remain.
-    fn try_free_face_collapse(&mut self) -> bool {
-        // Count how many active faces each edge is incident to.
-        let mut edge_face_count: HashMap<[VIdx; 2], usize> = HashMap::new();
-        for face in &self.active_faces {
-            let [a, b, c] = *face;
-            *edge_face_count.entry(sort_edge(a, b)).or_insert(0) += 1;
-            *edge_face_count.entry(sort_edge(b, c)).or_insert(0) += 1;
-            *edge_face_count.entry(sort_edge(a, c)).or_insert(0) += 1;
-        }
-
+    fn try_free_face_collapse(
+        &mut self,
+        edge_face_count: &mut HashMap<[VIdx; 2], usize>,
+    ) -> bool {
         // Look for a face that owns at least one count-1 edge.
-        let faces_snapshot: Vec<[VIdx; 3]> = self.active_faces.iter().copied().collect();
-        for face in faces_snapshot {
+        let mut picked: Option<([VIdx; 3], [VIdx; 2])> = None;
+        for &face in &self.active_faces {
             let [a, b, c] = face;
             for &(x, y) in &[(a, b), (b, c), (a, c)] {
                 let edge = sort_edge(x, y);
                 if edge_face_count.get(&edge).copied().unwrap_or(0) == 1 {
-                    self.do_free_face_collapse(face, edge);
-                    return true;
+                    picked = Some((face, edge));
+                    break;
                 }
             }
+            if picked.is_some() {
+                break;
+            }
         }
-        false
+        let Some((face, free_edge)) = picked else {
+            return false;
+        };
+
+        // Update the incidence counts before mutating the mesh state:
+        // the free edge disappears entirely; the other two face edges
+        // each lose one incident face.
+        let [a, b, c] = face;
+        for &(x, y) in &[(a, b), (b, c), (a, c)] {
+            let e = sort_edge(x, y);
+            if e == free_edge {
+                edge_face_count.remove(&e);
+            } else if let Some(cnt) = edge_face_count.get_mut(&e) {
+                *cnt -= 1;
+            }
+        }
+
+        self.do_free_face_collapse(face, free_edge);
+        true
     }
 
     /// Performs a free-face elementary collapse: remove `face` and the
     /// `free_edge` (which must currently be incident only to `face`).
-    /// Updates the boundary matrix, handle cycles, surface 2-chain, and
-    /// the live face/edge/neighbor maps.
+    /// Updates the boundary matrix, handle cycles, and the live
+    /// face/edge/neighbor maps, then rebuilds the cached pivot RREF.
     fn do_free_face_collapse(&mut self, face: [VIdx; 3], free_edge: [VIdx; 2]) {
         let bm = &mut self.boundary_matrix;
         let face_row = bm.face_to_row.get(&face).copied();
@@ -1029,7 +1090,6 @@ impl SurgeryContext {
 
     fn collapse_edge(&mut self, u: VIdx, v: VIdx) {
         // Compute the boundary-matrix delta against the pre-collapse state.
-        // This is `None` for genus-0 inputs where we don't track the matrix.
         let delta = self.compute_collapse_delta(u, v);
 
         // Merge quadrics
@@ -1105,10 +1165,8 @@ impl SurgeryContext {
         // Commit the boundary-matrix delta to the live state and refresh
         // the cached pivot RREF used by `check_link_condition`. Handle
         // cycles are evolved inside `apply_collapse_delta`.
-        if let Some(delta) = delta {
-            Self::apply_collapse_delta(&mut self.boundary_matrix, &delta);
-            self.boundary_matrix.rebuild_pivots();
-        }
+        Self::apply_collapse_delta(&mut self.boundary_matrix, &delta);
+        self.boundary_matrix.rebuild_pivots();
     }
 
 
@@ -1281,7 +1339,7 @@ pub fn extract_skeleton(
 
             if legal_candidates > 0 {
                 warn!(
-                    "Heap is empty despite legal collapse candidates; this indicates candidate starvation from stale-entry dropping."
+                    "Heap is empty despite legal collapse candidates; the surgery loop's re-add fan-out missed an edge that should have stayed reachable."
                 );
             }
 
@@ -1339,8 +1397,13 @@ pub fn extract_skeleton(
     // clean up disk-like remnants (preserve homotopy exactly: no β₁,
     // dim K, or β₂ change). Doesn't help with closed-sub-complex
     // remnants (e.g. residual torus cores) — those have no free edges.
+    //
+    // The edge-incidence count is built once and then maintained
+    // incrementally by each `try_free_face_collapse` so the cleanup loop
+    // is O(F) total work rather than O(F²).
     let mut free_face_collapses = 0;
-    while ctx.try_free_face_collapse() {
+    let mut edge_face_count = ctx.build_edge_face_count();
+    while ctx.try_free_face_collapse(&mut edge_face_count) {
         collapses += 1;
         free_face_collapses += 1;
     }
