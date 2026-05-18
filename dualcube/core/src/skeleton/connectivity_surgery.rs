@@ -1381,6 +1381,7 @@ pub struct FailedSurgeryDiagnostic {
 pub fn extract_skeleton(
     contracted_mesh: &Mesh<CONTRACTION>,
     original_mesh: &Mesh<INPUT>,
+    refine_embedding: bool,
 ) -> (CurveSkeleton, Option<FailedSurgeryDiagnostic>) {
     let Some(mut ctx) = SurgeryContext::new(contracted_mesh, original_mesh) else {
         // Preprocessing already logged the reason.
@@ -1547,7 +1548,9 @@ pub fn extract_skeleton(
             ctx.positions.len() - ctx.is_dead.len()
         );
         let mut skeleton = ctx.to_curve_skeleton(original_mesh, true);
-        skeleton.refine_embeddings(original_mesh);
+        if refine_embedding {
+            skeleton.refine_embeddings(original_mesh);
+        }
         (skeleton, None)
     } else {
         warn!(

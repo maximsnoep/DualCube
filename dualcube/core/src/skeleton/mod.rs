@@ -145,7 +145,7 @@ impl SkeletonData {
     ) -> (Option<Polycube>, Option<Quad>) {
         // Reuse contraction
         let (curve_skeleton, mut cleaned_skeleton, failed_surgery) =
-            surgery_and_simplification(&mesh, &self.contraction_mesh);
+            surgery_and_simplification(&mesh, &self.contraction_mesh, refine_embedding);
 
         // Reuse pipeline post simplifcation
         let (labeled, history, polycube_and_skeleton) = post_simplification_stage(
@@ -309,7 +309,7 @@ pub fn get_skeleton_based_mapping(
     let contracted_mesh = contract_mesh(&mesh, 50);
 
     let (raw_curve_skeleton, mut cleaned_skeleton, failed_surgery) =
-        surgery_and_simplification(&mesh, &contracted_mesh);
+        surgery_and_simplification(&mesh, &contracted_mesh, refine_embedding);
 
     let (labeled, history, polycube_and_skeleton) = post_simplification_stage(
         mesh,
@@ -351,8 +351,9 @@ pub fn get_skeleton_based_mapping(
 fn surgery_and_simplification(
     mesh: &Arc<Mesh<INPUT>>,
     contracted_mesh: &Mesh<CONTRACTION>,
+    refine_embedding: bool,
 ) -> (CurveSkeleton, CurveSkeleton, Option<FailedSurgeryDiagnostic>) {
-    let (curve_skeleton, failed_surgery) = extract_skeleton(contracted_mesh, mesh);
+    let (curve_skeleton, failed_surgery) = extract_skeleton(contracted_mesh, mesh, refine_embedding);
 
     let mut cleaned_skeleton = curve_skeleton.clone();
     simplify_skeleton(&mut cleaned_skeleton, mesh);
