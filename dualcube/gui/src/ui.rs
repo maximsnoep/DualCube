@@ -1246,6 +1246,7 @@ pub fn update(
                                         &mut conf.convexity_merge_slack,
                                         0.0..=1.0,
                                     );
+                                    ui.checkbox(&mut conf.refine_embedding, "refine embedding");
 
                                     // Skeleton controls
                                     if let Some(skeleton_data) = &solution.current_solution.skeleton

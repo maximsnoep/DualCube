@@ -141,6 +141,7 @@ impl SkeletonData {
         convexity_threshold: f64,
         convexity_merge_threshold: f64,
         omega: usize,
+        refine_embedding: bool,
     ) -> (Option<Polycube>, Option<Quad>) {
         // Reuse contraction
         let (curve_skeleton, mut cleaned_skeleton, failed_surgery) =
@@ -153,6 +154,7 @@ impl SkeletonData {
             convexity_merge_threshold,
             &mut cleaned_skeleton,
             omega,
+            refine_embedding,
         );
 
         let (polycube, polycube_skeleton, quad) = match polycube_and_skeleton {
@@ -256,6 +258,7 @@ impl SkeletonData {
         convexity_threshold: f64,
         convexity_merge_threshold: f64,
         omega: usize,
+        refine_embedding: bool,
     ) -> (Option<Polycube>, Option<Quad>) {
         let Some(cleaned) = &self.cleaned_skeleton else {
             return (None, None);
@@ -276,6 +279,7 @@ impl SkeletonData {
             convexity_merge_threshold,
             &mut skeleton,
             omega,
+            refine_embedding,
         );
 
         let (polycube, polycube_skeleton, quad) = match polycube_and_skeleton {
@@ -299,6 +303,7 @@ pub fn get_skeleton_based_mapping(
     convexity_threshold: f64,
     convexity_merge_threshold: f64,
     omega: usize,
+    refine_embedding: bool,
 ) -> (SkeletonData, Option<Polycube>, Option<Quad>) {
     // Start by doing contraction
     let contracted_mesh = contract_mesh(&mesh, 50);
@@ -312,6 +317,7 @@ pub fn get_skeleton_based_mapping(
         convexity_merge_threshold,
         &mut cleaned_skeleton,
         omega,
+        refine_embedding,
     );
 
     let (polycube, polycube_skeleton, quad) = match polycube_and_skeleton {
@@ -363,6 +369,7 @@ fn post_simplification_stage(
     convexity_merge_threshold: f64,
     cleaned_skeleton: &mut CurveSkeleton,
     omega: usize,
+    refine_embedding: bool,
 ) -> (
     Option<LabeledCurveSkeleton>,
     VolumeCollapseHistory,
@@ -381,7 +388,9 @@ fn post_simplification_stage(
 
     // Before labeling (which uses geometric node position), refine position again.
     // Positions likely are not accurate anymore after merges and splits and such.
-    cleaned_skeleton.refine_embeddings(&mesh);
+    if refine_embedding {
+        cleaned_skeleton.refine_embeddings(&mesh);
+    }
 
     // Orthogonalize the curve skeleton
     let labeled = greedy_orthogonalization(&*cleaned_skeleton, &mesh);

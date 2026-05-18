@@ -126,6 +126,7 @@ async fn run_job(job: Job) -> Option<JobResult> {
                 configuration.convexity_threshold,
                 configuration.convexity_merge_slack,
                 configuration.omega,
+                configuration.refine_embedding,
             );
             Some(JobResult::SkeletonCalculated((solution, configuration)))
         }
@@ -138,6 +139,7 @@ async fn run_job(job: Job) -> Option<JobResult> {
                 configuration.convexity_threshold,
                 configuration.convexity_merge_slack,
                 configuration.omega,
+                configuration.refine_embedding,
             );
             Some(JobResult::SkeletonCalculated((solution, configuration)))
         }
@@ -152,6 +154,7 @@ async fn run_job(job: Job) -> Option<JobResult> {
                 configuration.omega,
                 SUBDIVISION_DFS_CALLS_PER_ROUND,
                 SUBDIVISION_MAX_ROUNDS,
+                configuration.refine_embedding,
             );
             Some(JobResult::SkeletonCalculated((solution, configuration)))
         }
@@ -365,6 +368,7 @@ async fn run_job(job: Job) -> Option<JobResult> {
                 configuration.convexity_threshold,
                 configuration.convexity_merge_slack,
                 configuration.omega,
+                configuration.refine_embedding,
             );
             Some(JobResult::SkeletonCalculated((solution, configuration)))
         }
