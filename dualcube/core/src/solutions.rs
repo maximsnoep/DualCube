@@ -176,11 +176,17 @@ impl Solution {
         convexity_threshold: f64,
         convexity_merge_threshold: f64,
         omega: usize,
+        refine_embedding: bool,
     ) {
         let mesh = self.mesh_ref.clone();
         if let Some(data) = &mut self.skeleton {
-            let (polycube, quad) =
-                data.update_convexity(mesh, convexity_threshold, convexity_merge_threshold, omega);
+            let (polycube, quad) = data.update_convexity(
+                mesh,
+                convexity_threshold,
+                convexity_merge_threshold,
+                omega,
+                refine_embedding,
+            );
             self.polycube = polycube;
             self.quad = quad;
         } else {
@@ -189,6 +195,7 @@ impl Solution {
                 convexity_threshold,
                 convexity_merge_threshold,
                 omega,
+                refine_embedding,
             );
             self.skeleton = Some(skeleton);
             self.polycube = polycube;
@@ -215,9 +222,15 @@ impl Solution {
         convexity_threshold: f64,
         convexity_merge_threshold: f64,
         omega: usize,
+        refine_embedding: bool,
     ) {
         if self.skeleton.is_none() {
-            self.calculate_skeleton(convexity_threshold, convexity_merge_threshold, omega);
+            self.calculate_skeleton(
+                convexity_threshold,
+                convexity_merge_threshold,
+                omega,
+                refine_embedding,
+            );
         }
         let mesh = self.mesh_ref.clone();
         let Some(data) = &mut self.skeleton else {
@@ -250,9 +263,15 @@ impl Solution {
         omega: usize,
         max_dfs_calls_per_round: u64,
         max_rounds: usize,
+        refine_embedding: bool,
     ) {
         if self.skeleton.is_none() {
-            self.calculate_skeleton(convexity_threshold, convexity_merge_threshold, omega);
+            self.calculate_skeleton(
+                convexity_threshold,
+                convexity_merge_threshold,
+                omega,
+                refine_embedding,
+            );
         }
         let mesh = self.mesh_ref.clone();
         let Some(data) = &mut self.skeleton else {
@@ -289,6 +308,7 @@ impl Solution {
         convexity_threshold: f64,
         convexity_merge_threshold: f64,
         omega: usize,
+        refine_embedding: bool,
     ) {
         let mesh = self.mesh_ref.clone();
         if let Some(data) = &mut self.skeleton {
@@ -298,6 +318,7 @@ impl Solution {
                 convexity_threshold,
                 convexity_merge_threshold,
                 omega,
+                refine_embedding,
             );
             self.polycube = polycube;
             self.quad = quad;

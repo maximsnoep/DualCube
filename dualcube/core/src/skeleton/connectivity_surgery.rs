@@ -528,6 +528,15 @@ impl SurgeryContext {
                 if self.active_faces.contains(&sort_face(u, v, w)) {
                     continue;
                 }
+                // For target_g == 0 the handlebody is a ball, so
+                // K = ker(H₁(S) → H₁(V)) = 0 (H₁(S) of a sphere is
+                // trivial) and every 1-cycle on the surface is already
+                // a boundary (Z₁ = B₁). γ_w is therefore guaranteed to
+                // reduce to zero against B₁ + K. Skip the F2 reduction
+                // and the per-collapse `rebuild_pivots` it relies on.
+                if self.target_g == 0 {
+                    continue;
+                }
                 // Slow path: build `γ_w` and test for tunnel content via
                 // reduction against `B₁(X) + K`.
                 let vw_col = bm.edge_to_col[&sort_edge(v, w)];
@@ -1148,8 +1157,12 @@ impl SurgeryContext {
         }
 
         // The matrix and handle cycles were both mutated; the cached
-        // pivot RREF is stale until refreshed.
-        self.boundary_matrix.rebuild_pivots();
+        // pivot RREF is stale until refreshed. For target_g == 0 the
+        // cache is never read (see `check_link_condition`), so skip the
+        // rebuild — it's the dominant per-collapse cost.
+        if self.target_g > 0 {
+            self.boundary_matrix.rebuild_pivots();
+        }
     }
 
     fn collapse_edge(&mut self, u: VIdx, v: VIdx) {
@@ -1228,9 +1241,13 @@ impl SurgeryContext {
 
         // Commit the boundary-matrix delta to the live state and refresh
         // the cached pivot RREF used by `check_link_condition`. Handle
-        // cycles are evolved inside `apply_collapse_delta`.
+        // cycles are evolved inside `apply_collapse_delta`. The rebuild
+        // is the dominant per-collapse cost; for target_g == 0 the cache
+        // is never read so we skip it.
         Self::apply_collapse_delta(&mut self.boundary_matrix, &delta);
-        self.boundary_matrix.rebuild_pivots();
+        if self.target_g > 0 {
+            self.boundary_matrix.rebuild_pivots();
+        }
     }
 
 
@@ -1695,10 +1712,13 @@ fn preprocess_topology(
         aug_pivots: F2Matrix::from_rows(Vec::new()),
         aug_pivot_map: HashMap::new(),
     };
-    // Genus-0 path: no handles will be attached later, so this is the
-    // final pivot set. For genus > 0, `attach_handle_cycles` will rebuild
-    // it again after writing the handle generators.
-    bm.rebuild_pivots();
+    // For genus > 0, `attach_handle_cycles` will rebuild the pivot
+    // cache after writing the handle generators. For genus-0 the cache
+    // is never consulted (see the `target_g == 0` short-circuit in
+    // `check_link_condition`), so we leave it empty.
+    if g > 0 {
+        bm.rebuild_pivots();
+    }
     Some((g, bm))
 }
 
