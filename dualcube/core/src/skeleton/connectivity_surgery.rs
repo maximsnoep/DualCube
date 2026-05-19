@@ -96,12 +96,21 @@ struct BoundaryMatrix {
     /// so reducing a 1-chain against [`Self::aug_pivot_map`] returns the
     /// zero residue iff the chain is null-homologous *modulo handles* —
     /// i.e. iff it has no tunnel content. Used by the legality check
-    /// [`SurgeryContext::check_link_condition`] on every candidate, so
-    /// it must be refreshed by [`Self::rebuild_pivots`] after every
-    /// mutation to `matrix` or `handle_cycles`.
+    /// [`SurgeryContext::check_link_condition`] on every candidate.
+    /// Refresh is lazy: mutations set [`Self::pivots_dirty`], and the
+    /// slow path of `check_link_condition` calls
+    /// [`Self::ensure_pivots_fresh`] right before reading the cache.
     aug_pivots: F2Matrix,
     /// Pivot map of [`Self::aug_pivots`].
     aug_pivot_map: HashMap<u32, usize>,
+    /// True when `matrix` or `handle_cycles` has been mutated since the
+    /// last `rebuild_pivots`. The vast majority of collapses don't hit
+    /// the slow path of `check_link_condition` (every shared face-vertex
+    /// neighbour is triangular ⇒ fast path), so refreshing the F2 RREF
+    /// after every mutation is wasted work. The slow path checks this
+    /// flag via `ensure_pivots_fresh` and rebuilds only when actually
+    /// about to consult the cache.
+    pivots_dirty: bool,
 }
 
 impl BoundaryMatrix {
@@ -137,6 +146,19 @@ impl BoundaryMatrix {
         m.reduce();
         self.aug_pivot_map = m.pivot_map();
         self.aug_pivots = m;
+        self.pivots_dirty = false;
+    }
+
+    /// Refreshes the pivot cache only if it's stale. The slow path of
+    /// `check_link_condition` calls this just before reading
+    /// `aug_pivots` / `aug_pivot_map`; the fast path never calls it.
+    /// For collapses whose every shared face-vertex neighbour is
+    /// triangular (the common case during early/mid surgery), this is
+    /// a single bool load.
+    fn ensure_pivots_fresh(&mut self) {
+        if self.pivots_dirty {
+            self.rebuild_pivots();
+        }
     }
 }
 
@@ -506,25 +528,34 @@ impl SurgeryContext {
     /// Test: reduce `γ_w` against `aug_pivot_map`, the cached pivots of
     /// `B₁(X) + K`. Zero residue ⇒ no tunnel content (accept this `w`);
     /// non-zero residue ⇒ tunnel content (reject the whole collapse).
-    fn check_link_condition(&self, u: VIdx, v: VIdx) -> bool {
-        let bm = &self.boundary_matrix;
+    fn check_link_condition(&mut self, u: VIdx, v: VIdx) -> bool {
         // Caller (`is_legal_collapse_candidate`) has already gated on
         // `edge_has_faces`, which means `(u, v)` is incident to at least
         // one active face → its column entry is live in `edge_to_col`.
-        let uv_col = bm.edge_to_col[&sort_edge(u, v)];
-        let n_u = &self.neighbors[&u];
-        let n_v = &self.neighbors[&v];
+        let uv_col = self.boundary_matrix.edge_to_col[&sort_edge(u, v)];
 
-        for &w in n_u {
-            if w == v {
-                continue;
-            }
-            if n_v.contains(&w) {
+        // Walk shared neighbours and split them into fast-path corners
+        // (face `(u, v, w)` exists → `γ_w ∈ B₁` trivially) and slow-path
+        // corners (need an F2 reduction). We collect the slow ones
+        // into a `Vec` first so the subsequent `ensure_pivots_fresh`
+        // call (which mutably borrows `self.boundary_matrix`) doesn't
+        // conflict with the iterator's immutable borrow of
+        // `self.neighbors`.
+        let mut slow_corners: Vec<VIdx> = Vec::new();
+        {
+            let n_u = &self.neighbors[&u];
+            let n_v = &self.neighbors[&v];
+            for &w in n_u {
+                if w == v {
+                    continue;
+                }
+                if !n_v.contains(&w) {
+                    continue;
+                }
                 // Fast path — strict Dey–Edelsbrunner link condition at
                 // this corner: if face `(u,v,w)` exists, then
                 // `γ_w = ∂(u,v,w) ∈ B₁(X)` is already a boundary, so
-                // `[γ_w] = 0` has no tunnel content. Skip the reduction
-                // and move on to the next shared neighbour.
+                // `[γ_w] = 0` has no tunnel content.
                 if self.active_faces.contains(&sort_face(u, v, w)) {
                     continue;
                 }
@@ -533,23 +564,33 @@ impl SurgeryContext {
                 // trivial) and every 1-cycle on the surface is already
                 // a boundary (Z₁ = B₁). γ_w is therefore guaranteed to
                 // reduce to zero against B₁ + K. Skip the F2 reduction
-                // and the per-collapse `rebuild_pivots` it relies on.
+                // and the per-collapse pivot cache it relies on.
                 if self.target_g == 0 {
                     continue;
                 }
-                // Slow path: build `γ_w` and test for tunnel content via
-                // reduction against `B₁(X) + K`.
-                let vw_col = bm.edge_to_col[&sort_edge(v, w)];
-                let uw_col = bm.edge_to_col[&sort_edge(u, w)];
-                let mut residue = [uv_col, vw_col, uw_col];
-                residue.sort();
-                let mut residue = residue.to_vec();
-                if !bm
-                    .aug_pivots
-                    .reduce_against(&bm.aug_pivot_map, &mut residue)
-                {
-                    return false;
-                }
+                slow_corners.push(w);
+            }
+        }
+
+        if slow_corners.is_empty() {
+            return true;
+        }
+
+        // Lazy pivot refresh: every accepted collapse marks the cache
+        // dirty, but we only pay for the rebuild when a slow-path
+        // probe is actually about to read it.
+        self.boundary_matrix.ensure_pivots_fresh();
+        let bm = &self.boundary_matrix;
+        for w in slow_corners {
+            let vw_col = bm.edge_to_col[&sort_edge(v, w)];
+            let uw_col = bm.edge_to_col[&sort_edge(u, w)];
+            let mut residue = vec![uv_col, vw_col, uw_col];
+            residue.sort();
+            if !bm
+                .aug_pivots
+                .reduce_against(&bm.aug_pivot_map, &mut residue)
+            {
+                return false;
             }
         }
         true
@@ -763,10 +804,17 @@ impl SurgeryContext {
         // 7. Drop the (u, v) edge entry. Its column is now the zero column
         //    because every face incident to it was cleared in step 2.
         bm.edge_to_col.remove(&delta.removed_uv_edge);
+
+        // 8. Mark the pivot cache stale. The actual rebuild is deferred
+        //    until the next slow-path call in `check_link_condition`
+        //    (via `ensure_pivots_fresh`), which is rare in practice.
+        bm.pivots_dirty = true;
     }
 
     /// Returns whether directed collapse u -> v is currently legal.
-    fn is_legal_collapse_candidate(&self, u: VIdx, v: VIdx) -> bool {
+    /// Takes `&mut self` because `check_link_condition` may lazily
+    /// refresh the pivot cache on its slow path.
+    fn is_legal_collapse_candidate(&mut self, u: VIdx, v: VIdx) -> bool {
         if self.is_dead.contains(&u) || self.is_dead.contains(&v) {
             return false;
         }
@@ -798,22 +846,28 @@ impl SurgeryContext {
     }
 
     /// Counts all currently legal directed collapse candidates.
-    fn count_legal_collapse_candidates(&self) -> usize {
-        let mut count = 0;
-
-        for (&u, neighbor_set) in &self.neighbors {
-            if self.is_dead.contains(&u) {
-                continue;
-            }
-
-            for &v in neighbor_set {
-                if self.is_legal_collapse_candidate(u, v) {
-                    count += 1;
+    /// Takes `&mut self` because `is_legal_collapse_candidate` may
+    /// lazily refresh the pivot cache.
+    fn count_legal_collapse_candidates(&mut self) -> usize {
+        // Collect directed pairs first so we don't hold a borrow on
+        // `self.neighbors` while calling `is_legal_collapse_candidate`,
+        // which needs `&mut self`.
+        let pairs: Vec<(VIdx, VIdx)> = {
+            let mut p = Vec::new();
+            for (&u, neighbor_set) in &self.neighbors {
+                if self.is_dead.contains(&u) {
+                    continue;
+                }
+                for &v in neighbor_set {
+                    p.push((u, v));
                 }
             }
-        }
-
-        count
+            p
+        };
+        pairs
+            .into_iter()
+            .filter(|&(u, v)| self.is_legal_collapse_candidate(u, v))
+            .count()
     }
 
     /// Logs a full diagnostic of the stuck state: aggregate counts, the
@@ -825,7 +879,7 @@ impl SurgeryContext {
     /// non-empty. The point is to make it obvious whether we're stuck on a
     /// single irreducible "torus core" (a topological obstruction) or on
     /// scattered pathologies (a likely bug).
-    fn dump_stuck_state_diagnostic(&self) {
+    fn dump_stuck_state_diagnostic(&mut self) {
         let v_now = self.positions.len() - self.is_dead.len();
         let f_now = self.active_faces.len();
         let e_now = self.boundary_matrix.edge_to_col.len();
@@ -1001,17 +1055,23 @@ impl SurgeryContext {
             "Per-face per-directed-edge diagnostics ({} faces × 6 edges):",
             f_now
         );
-        for (i, &face) in self.active_faces.iter().enumerate() {
-            let [a, b, c] = face;
+        // Snapshot the face set so the diagnostic call below can take
+        // `&mut self` without conflicting with this iterator's borrow.
+        let faces_snapshot: Vec<[VIdx; 3]> = self.active_faces.iter().copied().collect();
+        for (i, face) in faces_snapshot.iter().enumerate() {
+            let [a, b, c] = *face;
             warn!("  face {} {:?}:", i, face);
-            for &(u, v) in &[(a, b), (b, a), (b, c), (c, b), (a, c), (c, a)] {
-                warn!("    {}", self.edge_diagnostic_summary(u, v));
+            for (u, v) in [(a, b), (b, a), (b, c), (c, b), (a, c), (c, a)] {
+                let summary = self.edge_diagnostic_summary(u, v);
+                warn!("    {}", summary);
             }
         }
     }
 
     /// Returns a one-line diagnostic summary for directed edge u -> v.
-    fn edge_diagnostic_summary(&self, u: VIdx, v: VIdx) -> String {
+    /// Takes `&mut self` because `check_link_condition` may lazily
+    /// refresh the pivot cache.
+    fn edge_diagnostic_summary(&mut self, u: VIdx, v: VIdx) -> String {
         let u_dead = self.is_dead.contains(&u);
         let v_dead = self.is_dead.contains(&v);
         let adjacent = self
@@ -1157,12 +1217,11 @@ impl SurgeryContext {
         }
 
         // The matrix and handle cycles were both mutated; the cached
-        // pivot RREF is stale until refreshed. For target_g == 0 the
-        // cache is never read (see `check_link_condition`), so skip the
-        // rebuild — it's the dominant per-collapse cost.
-        if self.target_g > 0 {
-            self.boundary_matrix.rebuild_pivots();
-        }
+        // pivot RREF is stale until refreshed. We just flag it dirty —
+        // the slow path of `check_link_condition` will refresh on
+        // demand. For target_g == 0 the cache is never read anyway, so
+        // the flag has no effect.
+        self.boundary_matrix.pivots_dirty = true;
     }
 
     fn collapse_edge(&mut self, u: VIdx, v: VIdx) {
@@ -1239,15 +1298,11 @@ impl SurgeryContext {
         // Clear u's neighbor set
         self.neighbors.get_mut(&u).unwrap().clear();
 
-        // Commit the boundary-matrix delta to the live state and refresh
-        // the cached pivot RREF used by `check_link_condition`. Handle
-        // cycles are evolved inside `apply_collapse_delta`. The rebuild
-        // is the dominant per-collapse cost; for target_g == 0 the cache
-        // is never read so we skip it.
+        // Commit the boundary-matrix delta to the live state. The delta
+        // application marks the pivot cache dirty; the rebuild itself
+        // is deferred until the next slow-path read of `aug_pivots`,
+        // which is rare during typical surgery.
         Self::apply_collapse_delta(&mut self.boundary_matrix, &delta);
-        if self.target_g > 0 {
-            self.boundary_matrix.rebuild_pivots();
-        }
     }
 
 
@@ -1714,6 +1769,9 @@ fn preprocess_topology(
         handle_cycles: Vec::new(),
         aug_pivots: F2Matrix::from_rows(Vec::new()),
         aug_pivot_map: HashMap::new(),
+        // `rebuild_pivots` below clears this; for the genus-0 path we
+        // leave it true since the cache is never consulted.
+        pivots_dirty: true,
     };
     // For genus > 0, `attach_handle_cycles` will rebuild the pivot
     // cache after writing the handle generators. For genus-0 the cache
@@ -2026,7 +2084,7 @@ mod tests {
 
     /// Try to classify why an `is_legal_collapse_candidate` returned false (or, if it
     /// passed, the cost is stale). Returns Some if a rejection reason applies.
-    fn rejection_reason(ctx: &SurgeryContext, c: &CollapseCandidate) -> Option<RejectReason> {
+    fn rejection_reason(ctx: &mut SurgeryContext, c: &CollapseCandidate) -> Option<RejectReason> {
         if ctx.is_dead.contains(&c.u) || ctx.is_dead.contains(&c.v) {
             return Some(RejectReason::Dead);
         }
@@ -2171,7 +2229,7 @@ mod tests {
                 };
 
                 if !link_ok {
-                    match rejection_reason(&ctx, &c) {
+                    match rejection_reason(&mut ctx, &c) {
                         Some(RejectReason::Dead) => rejected_dead += 1,
                         Some(RejectReason::NotAdjacent) => rejected_not_adjacent += 1,
                         Some(RejectReason::NoFaces) => rejected_no_faces += 1,
@@ -2296,7 +2354,7 @@ mod tests {
     fn link_condition_probe_middle_ring_edge() {
         let (mesh, vmap): (Mesh<CONTRACTION>, _) = build_cylinder();
         let (input_mesh, _): (Mesh<INPUT>, _) = build_cylinder();
-        let ctx = SurgeryContext::new(&mesh, &input_mesh).expect("preprocessing failed in test");
+        let mut ctx = SurgeryContext::new(&mesh, &input_mesh).expect("preprocessing failed in test");
         let idx_of = |k: VIdx| -> usize { *vmap.id(&k).expect("vmap missing key") };
 
         let r = 10usize;
