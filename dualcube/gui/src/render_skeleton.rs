@@ -4,7 +4,7 @@ use bevy::prelude::{Color, *};
 use dualcube::polycube::POLYCUBE;
 use dualcube::prelude::*;
 use dualcube::skeleton::curve_skeleton::CurveSkeletonSpatial;
-use dualcube::skeleton::generate_loops::{CrossingMap, FacePointMap};
+use dualcube::skeleton::generate_loops::{CrossingMap, FacePointMap, RoutingDiagnostics};
 use dualcube::skeleton::orthogonalize::{AxisSign, LabeledCurveSkeleton};
 use itertools::Itertools;
 use mehsh::integrations::bevy::MeshBuilder;
@@ -667,6 +667,45 @@ pub fn create_crossing_point_gizmos(
 
             gizmos.sphere(Isometry3d::from_translation(center), radius, color);
         }
+    }
+
+    gizmos
+}
+
+/// Creates gizmos visualizing routing failures so the user can see where loop generation got
+/// stuck: each dropped loop is drawn as an axis-coloured polyline (with straight chords across
+/// the segments that failed), and each failed segment is marked with red spheres at the two
+/// control points it could not connect plus a red line spanning the gap.
+pub fn create_routing_diagnostics_gizmos(
+    diagnostics: &RoutingDiagnostics,
+    mesh: &mehsh::prelude::Mesh<INPUT>,
+    translation: Vector3D,
+    scale: f64,
+) -> GizmoAsset {
+    let mut gizmos = GizmoAsset::new();
+    let red = Color::srgb(1.0, 0.0, 0.0);
+    const MARKER_RADIUS: f32 = 0.4;
+
+    // Dropped loops: how far each got before being abandoned.
+    for (direction, edges) in &diagnostics.dropped_loops {
+        if edges.is_empty() {
+            continue;
+        }
+        let positions: Vec<Vec3> = edges
+            .iter()
+            .map(|&e| world_to_view(mesh.position(e), translation, scale))
+            .collect();
+        let color = colors::to_bevy(colors::from_direction(*direction, None, None));
+        gizmos.linestrip(positions, color);
+    }
+
+    // Failed segments: the gaps the router could not connect.
+    for &(src, tgt) in &diagnostics.failed_segments {
+        let a = world_to_view(mesh.position(src), translation, scale);
+        let b = world_to_view(mesh.position(tgt), translation, scale);
+        gizmos.sphere(Isometry3d::from_translation(a), MARKER_RADIUS, red);
+        gizmos.sphere(Isometry3d::from_translation(b), MARKER_RADIUS, red);
+        gizmos.line(a, b, red);
     }
 
     gizmos

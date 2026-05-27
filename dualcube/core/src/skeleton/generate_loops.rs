@@ -42,12 +42,27 @@ pub enum LoopGenerationError {
     // TODO other error variants
 }
 
+/// Diagnostics about loops that could not be routed, for GUI visualization. Lets the user
+/// see WHICH loops were dropped, how far they got, and WHERE a segment failed to connect.
+/// Recomputed each `generate_loops` call; not persisted.
+#[derive(Debug, Clone, Default)]
+pub struct RoutingDiagnostics {
+    /// Loops dropped because at least one segment failed to route. Each entry is the loop's
+    /// axis and the raw single-half-edge path it had built before being abandoned (segments
+    /// that did route are present; failed segments appear as gaps / straight chords).
+    pub dropped_loops: Vec<(PrincipalDirection, Vec<EdgeID>)>,
+    /// Control-point pairs `(src, tgt)` that a segment's Dijkstra could not connect — the
+    /// gaps where routing got stuck.
+    pub failed_segments: Vec<(EdgeID, EdgeID)>,
+}
+
 /// Generates surface-embedded loops from a polycube and polycube map.
 pub fn generate_loops(
     skeleton_data: &SkeletonData,
     mesh: &Mesh<INPUT>,
-) -> Result<(SlotMap<LoopID, Loop>, CrossingMap, FacePointMap), LoopGenerationError> {
+) -> Result<(SlotMap<LoopID, Loop>, CrossingMap, FacePointMap, RoutingDiagnostics), LoopGenerationError> {
     let mut map: SlotMap<LoopID, Loop> = SlotMap::with_key();
+    let mut diagnostics = RoutingDiagnostics::default();
 
     let skeleton: &LabeledCurveSkeleton = skeleton_data
         .labeled_skeleton
@@ -64,6 +79,7 @@ pub fn generate_loops(
         skeleton,
         mesh,
         &mut map,
+        &mut diagnostics,
     );
 
     // Pathing (and the boundary face-walk) produce loops with one half-edge per crossed
@@ -77,7 +93,7 @@ pub fn generate_loops(
         l.edges = expand_to_double_halfedges(raw, mesh);
     }
 
-    Ok((map, crossings, face_points))
+    Ok((map, crossings, face_points, diagnostics))
 }
 
 /// Calculates for each patch-patch boundary the appropriate loop and crossing points for the other two loop types.
@@ -729,6 +745,7 @@ fn pathing_for_loops(
     skeleton: &LabeledCurveSkeleton,
     mesh: &Mesh<INPUT>,
     map: &mut SlotMap<LoopID, Loop>,
+    diagnostics: &mut RoutingDiagnostics,
 ) {
     // All edges that serve as intersection points between loops of different axis types.
     // Edges adjacent to these in a completed loop's path are fully blocked (both directions)
@@ -879,6 +896,7 @@ fn pathing_for_loops(
                             src, tgt, loop_axis, i + 1, n
                         );
                         path_ok = false;
+                        diagnostics.failed_segments.push((src, tgt));
                     }
                 }
             }
@@ -890,8 +908,11 @@ fn pathing_for_loops(
                 // 4-arm guarantee: fully block edges adjacent to control points.
                 block_adjacent_to_control_points(&loop_edges, &all_control_points, &mut blocked, mesh);
                 map.insert(Loop { edges: loop_edges, direction: loop_axis });
+            } else {
+                // Dropped loop: record how far it got so the GUI can show where it broke.
+                // `blocked` is untouched — the dropped loop leaves no routing trace.
+                diagnostics.dropped_loops.push((loop_axis, loop_edges));
             }
-            // On failure: blocked is untouched — the dropped loop leaves no trace.
         }
     }
 }

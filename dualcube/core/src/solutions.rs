@@ -1,7 +1,7 @@
 use crate::layout::LayoutError;
 use crate::polycube::POLYCUBE;
 use crate::prelude::*;
-use crate::skeleton::generate_loops::{CrossingMap, FacePointMap, generate_loops};
+use crate::skeleton::generate_loops::{CrossingMap, FacePointMap, RoutingDiagnostics, generate_loops};
 use crate::skeleton::{get_skeleton_based_mapping, SkeletonData};
 use crate::{
     dual::{Dual, PropertyViolationError},
@@ -129,6 +129,11 @@ pub struct Solution {
     #[serde(skip, default)]
     pub face_points: Option<FacePointMap>,
 
+    /// Diagnostics about loops that failed to route (dropped loops + failed segments), for the
+    /// GUI "routing diagnostics" overlay. Not serialized — recomputed when loops are generated.
+    #[serde(skip, default)]
+    pub routing_diagnostics: Option<RoutingDiagnostics>,
+
     pub dual: Result<Dual, PropertyViolationError>,
     pub polycube: Option<Polycube>,
     pub layout: Option<Layout>,
@@ -160,6 +165,7 @@ impl Solution {
             skeleton: None,
             loop_crossings: None,
             face_points: None,
+            routing_diagnostics: None,
             dual: Err(PropertyViolationError::default()),
             polycube: None,
             layout: None,
@@ -202,14 +208,15 @@ impl Solution {
             self.quad = quad;
         }
         let loops = generate_loops(self.skeleton.as_ref().unwrap(), &self.mesh_ref);
-        if let Ok((loops, crossings, face_points)) = loops {
+        if let Ok((loops, crossings, face_points, diagnostics)) = loops {
             self.loops = loops;
             self.loop_crossings = Some(crossings);
             self.face_points = Some(face_points);
-            self.recompute_occupied();
-            if let Err(e) = self.reconstruct_solution(false, 1) {
-                log::warn!("Failed to reconstruct solution after skeleton update: {e}");
-            }
+            self.routing_diagnostics = Some(diagnostics);
+            // self.recompute_occupied();
+            // if let Err(e) = self.reconstruct_solution(false, 1) {
+            //     log::warn!("Failed to reconstruct solution after skeleton update: {e}");
+            // }
         }
     }
 
@@ -241,10 +248,11 @@ impl Solution {
         self.quad = quad;
 
         let loops = generate_loops(self.skeleton.as_ref().unwrap(), &self.mesh_ref);
-        if let Ok((loops, crossings, face_points)) = loops {
+        if let Ok((loops, crossings, face_points, diagnostics)) = loops {
             self.loops = loops;
             self.loop_crossings = Some(crossings);
             self.face_points = Some(face_points);
+            self.routing_diagnostics = Some(diagnostics);
             self.recompute_occupied();
             if let Err(e) = self.reconstruct_solution(false, 1) {
                 log::warn!("Failed to reconstruct solution after backtracking retry: {e}");
@@ -287,10 +295,11 @@ impl Solution {
         self.quad = quad;
 
         let loops = generate_loops(self.skeleton.as_ref().unwrap(), &self.mesh_ref);
-        if let Ok((loops, crossings, face_points)) = loops {
+        if let Ok((loops, crossings, face_points, diagnostics)) = loops {
             self.loops = loops;
             self.loop_crossings = Some(crossings);
             self.face_points = Some(face_points);
+            self.routing_diagnostics = Some(diagnostics);
             self.recompute_occupied();
             if let Err(e) = self.reconstruct_solution(false, 1) {
                 log::warn!(
@@ -325,10 +334,11 @@ impl Solution {
         }
         if let Some(skeleton_data) = self.skeleton.as_ref() {
             let loops = generate_loops(skeleton_data, &self.mesh_ref);
-            if let Ok((loops, crossings, face_points)) = loops {
+            if let Ok((loops, crossings, face_points, diagnostics)) = loops {
                 self.loops = loops;
                 self.loop_crossings = Some(crossings);
                 self.face_points = Some(face_points);
+                self.routing_diagnostics = Some(diagnostics);
                 self.recompute_occupied();
                 if let Err(e) = self.reconstruct_solution(false, 1) {
                     log::warn!("Failed to reconstruct solution after manual skeleton edit: {e}");
