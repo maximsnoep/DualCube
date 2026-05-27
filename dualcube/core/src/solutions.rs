@@ -206,10 +206,10 @@ impl Solution {
             self.loops = loops;
             self.loop_crossings = Some(crossings);
             self.face_points = Some(face_points);
-            // self.recompute_occupied();
-            // if let Err(e) = self.reconstruct_solution(false, 1) {
-            //     log::warn!("Failed to reconstruct solution after skeleton update: {e}");
-            // }
+            self.recompute_occupied();
+            if let Err(e) = self.reconstruct_solution(false, 1) {
+                log::warn!("Failed to reconstruct solution after skeleton update: {e}");
+            }
         }
     }
 

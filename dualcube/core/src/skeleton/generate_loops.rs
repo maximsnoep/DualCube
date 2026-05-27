@@ -6,7 +6,7 @@ use std::{
 use bimap::BiHashMap;
 use ordered_float::OrderedFloat;
 use log::{error, warn};
-use mehsh::prelude::{HasFaces, HasPosition, HasVertices, Mesh, Vector3D};
+use mehsh::prelude::{HasEdges, HasFaces, HasPosition, HasVertices, Mesh, Vector3D};
 use petgraph::{
     graph::{EdgeIndex, NodeIndex},
     visit::{EdgeRef, IntoEdgeReferences, IntoNodeReferences},
@@ -474,10 +474,19 @@ const SHARED_EDGE_MULTIPLIER: f64 = 8.0;
 ///
 /// Faces adjacent to blocked/used edges incur a `SHARED_EDGE_MULTIPLIER` cost penalty,
 /// encouraging paths to stay away from existing loops even when parallel traversal is allowed.
+///
+/// `forced_first`, when `Some(e)`, requires the path's FIRST step (out of a source face) to be
+/// exactly `e`. `forced_last`, when `Some(e)`, requires the path's LAST step (into a target
+/// face) to be exactly `e`. These enforce the straight-through (quad-diagonal) crossing rule at
+/// the control points: a loop must leave a crossing via the diagonal partner of how it arrived,
+/// and the closing segment must arrive matching the first segment's departure.
+///
 /// Returns `None` if no path exists.
 fn surface_path_intermediates(
     source: EdgeID,
     target: EdgeID,
+    forced_first: Option<EdgeID>,
+    forced_last: Option<EdgeID>,
     blocked: &HashSet<EdgeID>,
     used: &HashSet<EdgeID>,
     mesh: &Mesh<INPUT>,
@@ -552,11 +561,23 @@ fn surface_path_intermediates(
         let face_verts: Vec<VertID> = mesh.vertices(face).collect();
         let n = face_verts.len();
         let centroid_a = face_centroid(face);
+        // A source face is one seeded with no incoming edge. Leaving it, `forced_first`
+        // (if set) is the only edge permitted, so the loop departs the crossing via the
+        // required diagonal side.
+        let is_source = prev.get(&face).map(|p| p.1.is_none()).unwrap_or(false);
 
         for i in 0..n {
             let a = face_verts[i];
             let b = face_verts[(i + 1) % n];
             let Some((edge, _)) = mesh.edge_between_verts(a, b) else { continue };
+
+            if is_source {
+                if let Some(ff) = forced_first {
+                    if edge != ff {
+                        continue;
+                    }
+                }
+            }
 
             if blocked.contains(&edge) || used.contains(&edge) {
                 continue;
@@ -568,6 +589,17 @@ fn surface_path_intermediates(
             else {
                 continue;
             };
+
+            // Entering a target face is only allowed via `forced_last` (if set), so the
+            // closing segment arrives at the start crossing on the required diagonal side.
+            let entering_target = target_face_set.contains(&next_face);
+            if entering_target {
+                if let Some(fl) = forced_last {
+                    if edge != fl {
+                        continue;
+                    }
+                }
+            }
 
             let edge_mid = edge_midpoint_pos(edge, mesh);
             let centroid_b = face_centroid(next_face);
@@ -583,7 +615,7 @@ fn surface_path_intermediates(
                 dist.insert(next_face, new_cost);
                 prev.insert(next_face, (face, Some(edge)));
 
-                if target_face_set.contains(&next_face) {
+                if entering_target {
                     found = Some(next_face);
                     break 'dijkstra;
                 }
@@ -632,6 +664,62 @@ fn block_adjacent_to_control_points(
             }
         }
     }
+}
+
+/// Records a committed loop's edge occupancy into `blocked`.
+///
+/// For every edge `e` the loop uses we always block `twin(e)` (no other loop may cross
+/// it in the opposite direction). For NON-control-point edges we additionally block `e`
+/// itself, so the geometric edge is fully occupied and no later loop can reuse it in
+/// either direction. Control-point edges are exempt on the forward half so the designated
+/// crossings can still occur there.
+///
+/// This is the geometric-edge–occupancy rule. The earlier `map(twin)`-only blocking was
+/// inherited from the flow-graph representation (where a loop carries BOTH halves of every
+/// crossed edge, so blocking all twins already blocked both halves). The skeleton router
+/// carries a single half-edge per crossing, so twin-only blocking left the forward halves
+/// open, letting later loops run over committed loops and form illegal non-CP crossings.
+fn block_loop_occupancy(
+    loop_edges: &[EdgeID],
+    all_control_points: &HashSet<EdgeID>,
+    blocked: &mut HashSet<EdgeID>,
+    mesh: &Mesh<INPUT>,
+) {
+    for &e in loop_edges {
+        blocked.insert(mesh.twin(e));
+        let is_cp = all_control_points.contains(&e) || all_control_points.contains(&mesh.twin(e));
+        if !is_cp {
+            blocked.insert(e);
+        }
+    }
+}
+
+/// Given a quad side `side` of the control-point edge `cp` (an edge in one of `cp`'s two
+/// incident triangles), returns the diagonally-opposite side: the edge in the OTHER incident
+/// triangle that shares NO vertex with `side`. Returns `None` if `side` is not a side of one
+/// of `cp`'s two triangles.
+///
+/// The crossing rule: a loop crossing at `cp` must enter one triangle and leave the other via
+/// diagonal-partner sides (so it cuts diagonally across the quad). The two loops meeting at `cp`
+/// then occupy the two distinct diagonals, giving the 4 distinct arms `Dual` requires.
+fn quad_diagonal_partner(side: EdgeID, cp: EdgeID, mesh: &Mesh<INPUT>) -> Option<EdgeID> {
+    let side_face = mesh.face(side);
+    let cp_face = mesh.face(cp);
+    let cp_twin_face = mesh.face(mesh.twin(cp));
+    let other_face = if side_face == cp_face {
+        cp_twin_face
+    } else if side_face == cp_twin_face {
+        cp_face
+    } else {
+        return None;
+    };
+    let a = mesh.root(side);
+    let b = mesh.toor(side);
+    mesh.edges(other_face).find(|&e| {
+        let r = mesh.root(e);
+        let t = mesh.toor(e);
+        r != a && r != b && t != a && t != b
+    })
 }
 
 fn pathing_for_loops(
@@ -686,16 +774,15 @@ fn pathing_for_loops(
                 })
                 .collect();
 
-        // Blocked edges: reverse half-edges of all loops established before this direction.
-        // Only the twin (reverse direction) of each loop edge is blocked. This prevents crossing
-        // (a new path cannot traverse the same geometric edge in the opposite direction to an
-        // existing loop) while allowing parallel traversal (same direction is still open).
-        // Additionally, edges adjacent to control points are fully blocked (both directions)
-        // to guarantee 4 distinct arms at every intersection.
-        let mut blocked: HashSet<EdgeID> = map.values()
-            .flat_map(|l| l.edges.iter().copied())
-            .map(|e| mesh.twin(e))
-            .collect();
+        // Blocked edges: geometric-edge occupancy of all loops established before this
+        // direction. Both halves of every non-control-point edge are blocked (true
+        // edge-disjointness), and only the reverse half of control-point edges, so the
+        // designated crossings remain shareable. Additionally, edges adjacent to control
+        // points are fully blocked to guarantee 4 distinct arms at every intersection.
+        let mut blocked: HashSet<EdgeID> = HashSet::new();
+        for l in map.values() {
+            block_loop_occupancy(&l.edges, &all_control_points, &mut blocked, mesh);
+        }
         for l in map.values() {
             block_adjacent_to_control_points(&l.edges, &all_control_points, &mut blocked, mesh);
         }
@@ -732,19 +819,58 @@ fn pathing_for_loops(
                 }
             }
 
-            // Second pass: connect consecutive control points via surface path.
+            // Second pass: connect consecutive control points via surface path. Each crossing
+            // must be diagonal: a loop leaves a control point via the quad-diagonal partner of
+            // the side it arrived on, so it cuts straight across the crossing edge's two
+            // triangles. `forced_first` enforces this departure for every segment after the
+            // first; `forced_last` closes the loop by making the final segment arrive at the
+            // start control point matching the first segment's departure.
             let n = control_points.len();
             let mut loop_edges = Vec::new();
             let mut used_in_loop: HashSet<EdgeID> = HashSet::new();
             let mut path_ok = true;
+            let mut seg0_first: Option<EdgeID> = None;
             for i in 0..n {
                 let src = control_points[i];
                 let tgt = control_points[(i + 1) % n];
+
+                // Depart `src` via the diagonal partner of how the previous segment arrived
+                // (its last edge `prev_last`; `twin(prev_last)` is that edge as seen from src's
+                // arrival triangle). The first segment has no predecessor, so it starts free.
+                let forced_first = if i == 0 {
+                    None
+                } else {
+                    let prev_last = *loop_edges.last().expect("previous segment pushed edges");
+                    quad_diagonal_partner(mesh.twin(prev_last), src, mesh)
+                };
+
+                // The closing segment must arrive at the start control point (`tgt == cp0`) on
+                // the diagonal partner of the first segment's departure side, so that crossing
+                // is diagonal too. `forced_last` is the edge crossed INTO the arrival triangle.
+                let forced_last = if i == n - 1 {
+                    seg0_first
+                        .and_then(|f| quad_diagonal_partner(f, tgt, mesh))
+                        .map(|partner| mesh.twin(partner))
+                } else {
+                    None
+                };
+
                 loop_edges.push(src);
                 used_in_loop.insert(src);
-                match surface_path_intermediates(src, tgt, &blocked, &used_in_loop, mesh) {
+                match surface_path_intermediates(src, tgt, forced_first, forced_last, &blocked, &used_in_loop, mesh) {
                     Some(inter) => {
-                        used_in_loop.extend(inter.iter().copied());
+                        if i == 0 {
+                            seg0_first = inter.first().copied();
+                        }
+                        // Honest self-avoidance: block BOTH halves of each intermediate so the
+                        // loop cannot later run back along its own path (anti-parallel via the
+                        // twin) and close a degenerate self-overlapping cycle. Forward-only
+                        // blocking left the twins open — the intra-loop version of the
+                        // inter-loop occupancy bug.
+                        for &e in &inter {
+                            used_in_loop.insert(e);
+                            used_in_loop.insert(mesh.twin(e));
+                        }
                         loop_edges.extend(inter);
                     }
                     None => {
@@ -758,8 +884,9 @@ fn pathing_for_loops(
             }
 
             if path_ok {
-                // Directional blocking: prevent future loops from crossing this one.
-                blocked.extend(loop_edges.iter().map(|&e| mesh.twin(e)));
+                // Record this loop's edge occupancy: both halves of non-CP edges (so future
+                // loops cannot reuse them in either direction), reverse half of CP edges.
+                block_loop_occupancy(&loop_edges, &all_control_points, &mut blocked, mesh);
                 // 4-arm guarantee: fully block edges adjacent to control points.
                 block_adjacent_to_control_points(&loop_edges, &all_control_points, &mut blocked, mesh);
                 map.insert(Loop { edges: loop_edges, direction: loop_axis });
