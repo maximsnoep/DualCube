@@ -355,12 +355,18 @@ pub fn create_failed_surgery_face_mesh(
     for &[a, b, c] in triangles {
         let raw = (b - a).cross(&(c - a));
         let normal = if raw.norm() > 1e-12 { raw.normalize() } else { FALLBACK_NORMAL };
+        let back_normal = -normal;
         let pa = a * scale + translation;
         let pb = b * scale + translation;
         let pc = c * scale + translation;
+        // Front face
         builder.add_vertex(&pa, &normal, &RED);
         builder.add_vertex(&pb, &normal, &RED);
         builder.add_vertex(&pc, &normal, &RED);
+        // Back face
+        builder.add_vertex(&pa, &back_normal, &RED);
+        builder.add_vertex(&pc, &back_normal, &RED);
+        builder.add_vertex(&pb, &back_normal, &RED);
     }
 
     builder.build()
