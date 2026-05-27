@@ -66,6 +66,17 @@ pub fn generate_loops(
         &mut map,
     );
 
+    // Pathing (and the boundary face-walk) produce loops with one half-edge per crossed
+    // geometric edge. The downstream `Dual` builder requires both halves of every crossed
+    // edge: it detects crossings by canonicalizing to the higher half-edge (`edge > twin(edge)`)
+    // and its quad-walk assumes each edge's twin sits adjacent to it in the sequence
+    // (see `solutions::check_loop` for the canonical alternating twin/same-face form).
+    // We expand AFTER pathing so the routing's blocking still operates on the raw single-half form.
+    for (_, l) in map.iter_mut() {
+        let raw = std::mem::take(&mut l.edges);
+        l.edges = expand_to_double_halfedges(raw, mesh);
+    }
+
     Ok((map, crossings, face_points))
 }
 
@@ -381,6 +392,66 @@ fn get_loop(boundary: BoundaryLoop, direction: PrincipalDirection) -> Loop {
         edges: boundary.edge_midpoints,
         direction,
     }
+}
+
+/// Expands a loop recorded as one half-edge per crossed geometric edge into the
+/// canonical form the downstream `Dual` builder expects: a sequence in which
+/// consecutive entries are always either twins of one another or share a face
+/// (so every crossed edge appears as both of its half-edges).
+///
+/// Inserts the bridging half-edges produced by `bridge_edges` between each pair of
+/// consecutive originals, skipping any insert already present to avoid duplicates.
+fn expand_to_double_halfedges(edges: Vec<EdgeID>, mesh: &Mesh<INPUT>) -> Vec<EdgeID> {
+    let n = edges.len();
+    if n < 2 {
+        return edges;
+    }
+    let mut present: HashSet<EdgeID> = edges.iter().copied().collect();
+    let mut expanded = Vec::with_capacity(2 * n);
+    for i in 0..n {
+        let from = edges[i];
+        let to = edges[(i + 1) % n];
+
+        expanded.push(from);
+        for inserted in bridge_edges(from, to, mesh) {
+            if present.contains(&inserted) {
+                continue;
+            }
+            present.insert(inserted);
+            expanded.push(inserted);
+        }
+    }
+    expanded
+}
+
+/// Returns the half-edges to insert between `from` and `to` so that consecutive entries
+/// in the resulting sequence are always either twins of one another or share a face.
+fn bridge_edges(from: EdgeID, to: EdgeID, mesh: &Mesh<INPUT>) -> Vec<EdgeID> {
+    if mesh.twin(from) == to || mesh.face(from) == mesh.face(to) {
+        return vec![];
+    }
+    let twin_from = mesh.twin(from);
+    let twin_to = mesh.twin(to);
+    // Single-edge bridge: twin(from) shares face with `to`.
+    if mesh.face(twin_from) == mesh.face(to) {
+        return vec![twin_from];
+    }
+    // Single-edge bridge: twin(to) shares face with `from`.
+    if mesh.face(twin_to) == mesh.face(from) {
+        return vec![twin_to];
+    }
+    // Two-edge bridge: [twin(from), twin(to)] — the inserted twins themselves share
+    // a face. Concretely: from in F0, to in F2, twin(from) and twin(to) both in F1.
+    // The expanded sub-sequence is then [from, twin(from), twin(to), to] with the
+    // pairs being (twins, share-face, twins).
+    if mesh.face(twin_from) == mesh.face(twin_to) {
+        return vec![twin_from, twin_to];
+    }
+    panic!(
+        "bridge_edges: cannot bridge half-edges {:?} (face {:?}, twin_face {:?}) and {:?} (face {:?}, twin_face {:?})",
+        from, mesh.face(from), mesh.face(twin_from),
+        to, mesh.face(to), mesh.face(twin_to)
+    );
 }
 
 /// Cost multiplier applied when entering or leaving a face that has at least one blocked edge.
