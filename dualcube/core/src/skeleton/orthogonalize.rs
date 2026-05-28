@@ -602,6 +602,7 @@ pub fn backtracking_orthogonalization_capped(
             primary: pref[0],
             preference_weight,
             pref_vector,
+            sign_vector: disp,
         }
     };
 
@@ -846,14 +847,22 @@ fn tree_path_edges(
     path
 }
 
-/// One edge's search plan: the edge id, a primary axis preference, the displacement-style
-/// vector used to pick the preferred sign, and a weight used for ordering / score bound.
+/// One edge's search plan: the edge id, a primary axis preference, the vector used to pick
+/// the preferred AXIS (boundary normal when available), the vector used to pick the preferred
+/// SIGN (always the edge displacement a->b), and a weight used for ordering / score bound.
+///
+/// Axis and sign use different vectors on purpose. The boundary-plane normal is a better axis
+/// estimator (`.abs()` makes axis selection orientation-independent), but its orientation is an
+/// arbitrary eigenvector output, so using it for the sign produces non-deterministic, sometimes
+/// physically-wrong signs (the regional-flip bug). The displacement `pos(b) - pos(a)` is
+/// deterministic and points the way the edge actually goes, so the sign comes from it.
 #[derive(Clone)]
 struct EdgePlan {
     edge: EdgeIndex,
     primary: PrincipalDirection,
     preference_weight: i64,
     pref_vector: nalgebra::Vector3<f64>,
+    sign_vector: nalgebra::Vector3<f64>,
 }
 
 /// Backtracking over cycle edges only. Cycle closure is checked the moment the last edge
@@ -906,7 +915,7 @@ fn dfs_cycle_edges(
     let cycles_for_edge = edge_to_cycles.get(&plan.edge).unwrap_or(&empty_cycles);
 
     for cand in candidate_axes {
-        let preferred_sign = axis_sign_from_value(axis_value(plan.pref_vector, cand));
+        let preferred_sign = axis_sign_from_value(axis_value(plan.sign_vector, cand));
         for sign in [preferred_sign, preferred_sign.flipped()] {
             if axis_sign_conflict_around_node(partial, a, a, cand, sign)
                 || axis_sign_conflict_around_node(partial, b, a, cand, sign)
@@ -1106,7 +1115,7 @@ fn greedy_label_bridge(
 ) -> bool {
     let (a, b) = partial.edge_endpoints(edge).unwrap();
     for cand in preferred_axes_from_displacement(plan.pref_vector) {
-        let preferred_sign = axis_sign_from_value(axis_value(plan.pref_vector, cand));
+        let preferred_sign = axis_sign_from_value(axis_value(plan.sign_vector, cand));
         for sign in [preferred_sign, preferred_sign.flipped()] {
             if axis_sign_conflict_around_node(partial, a, a, cand, sign)
                 || axis_sign_conflict_around_node(partial, b, a, cand, sign)
@@ -1513,13 +1522,12 @@ pub fn greedy_orthogonalization(
                     let orig_b = *node_map
                         .get_by_right(&b)
                         .expect("Partial node not found in map");
+                    // SIGN comes from the edge displacement (a->b), NOT the boundary normal.
+                    // The normal's orientation is an arbitrary eigenvector output; using it for
+                    // the sign causes non-deterministic, sometimes physically-wrong signs (the
+                    // regional-flip bug). The axis above still uses the normal (orientation-free).
                     let disp_ab = curve_skeleton[orig_b].position - curve_skeleton[orig_a].position;
-                    let sign_vector = boundary_normals
-                        .get(&eidx)
-                        .copied()
-                        .flatten()
-                        .unwrap_or(disp_ab);
-                    let preferred_sign = axis_sign_from_value(axis_value(sign_vector, cand));
+                    let preferred_sign = axis_sign_from_value(axis_value(disp_ab, cand));
                     let sign_candidates = [preferred_sign, preferred_sign.flipped()];
 
                     for sign in sign_candidates {
