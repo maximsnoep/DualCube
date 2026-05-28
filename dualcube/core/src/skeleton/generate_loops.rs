@@ -478,6 +478,23 @@ fn bridge_edges(from: EdgeID, to: EdgeID, mesh: &Mesh<INPUT>) -> Vec<EdgeID> {
 /// Cost multiplier applied when entering or leaving a face that has at least one blocked edge.
 const SHARED_EDGE_MULTIPLIER: f64 = 8.0;
 
+/// Control-point "moat": a steep, distance-graded cost penalty for routing a loop's body
+/// through faces near ANY control point. Indexed by face-hop distance to the nearest control
+/// point; distances beyond the array length incur no penalty (factor 1.0).
+///
+/// Why: two perpendicular loops crossing at a control point must each leave room for the other.
+/// Without this, a loop that turns one step after crossing runs its body straight down the
+/// partner's exit corridor and walls it off. Making the crossing neighbourhood expensive pushes
+/// loops to leave crossings promptly and swing wide when they must turn, so the partner can
+/// always thread out. This is a pure cost (Dijkstra still finds any existing path), so it can
+/// never make the loop being routed fail or reintroduce illegal crossings — it only reshapes the
+/// chosen path to leave space for later loops.
+const CP_MOAT_PENALTY: [f64; 4] = [30.0, 10.0, 4.0, 2.0];
+
+/// Largest face-hop distance the moat field records (= last penalized distance). Beyond this,
+/// faces are absent from the field and incur no penalty.
+const CP_MOAT_RADIUS: u32 = (CP_MOAT_PENALTY.len() as u32) - 1;
+
 /// Dijkstra's on the mesh dual graph to find the shortest intermediate path between two
 /// control-point edges, using geodesic (face-centroid -> edge-midpoint -> face-centroid) cost.
 ///
@@ -510,6 +527,7 @@ fn surface_path_intermediates(
     forced_last: Option<EdgeID>,
     blocked: &HashSet<EdgeID>,
     used: &HashSet<EdgeID>,
+    cp_distance: &HashMap<FaceID, u32>,
     mesh: &Mesh<INPUT>,
 ) -> Option<Vec<EdgeID>> {
     let faces_of = |e: EdgeID| -> Vec<FaceID> {
@@ -629,6 +647,15 @@ fn surface_path_intermediates(
             // Penalize entering a face adjacent to blocked edges.
             if face_touches_blocked(next_face, edge) {
                 step_cost *= SHARED_EDGE_MULTIPLIER;
+            }
+
+            // Control-point moat: penalize routing the body near any crossing, steeply graded by
+            // distance, so loops leave crossings promptly and swing wide rather than walling off a
+            // perpendicular partner's exit corridor. Pure cost — never blocks an otherwise-valid path.
+            if let Some(&d) = cp_distance.get(&next_face) {
+                if (d as usize) < CP_MOAT_PENALTY.len() {
+                    step_cost *= CP_MOAT_PENALTY[d as usize];
+                }
             }
 
             let new_cost = cost + step_cost;
@@ -771,23 +798,20 @@ fn in_open_cyclic(pos: usize, lo_excl: usize, hi_excl: usize) -> bool {
     }
 }
 
-/// Reachability gate: starting at face `start`, can a path that never crosses a `walls` edge
-/// reach a face touching NONE of `this_boundary`'s edges — i.e. escape this boundary's strip
-/// into the patch interior? If a crossing's side is a small pocket created by the boundary
-/// bending back, the BFS stays trapped and this returns false. Pure connectivity, no geometry.
-fn escapes_boundary(
-    start: FaceID,
-    this_boundary: &HashSet<EdgeID>,
-    walls: &HashSet<EdgeID>,
-    mesh: &Mesh<INPUT>,
-) -> bool {
+/// Reachability gate: starting at face `start`, can a path that never crosses a boundary edge
+/// (`walls` = every boundary loop's edges) reach a face touching NO boundary at all — i.e. the
+/// patch INTERIOR? Reaching merely "off the current boundary" is too weak: a single clear edge
+/// into a face that is then boxed in by another boundary one step later would falsely pass.
+/// Requiring the interior means a crossing whose exit is trapped in any boundary pocket fails.
+/// Pure connectivity, no geometry.
+fn reaches_interior(start: FaceID, walls: &HashSet<EdgeID>, mesh: &Mesh<INPUT>) -> bool {
     let mut visited: HashSet<FaceID> = HashSet::new();
     let mut queue: VecDeque<FaceID> = VecDeque::new();
     visited.insert(start);
     queue.push_back(start);
     while let Some(f) = queue.pop_front() {
-        if mesh.edges(f).all(|e| !this_boundary.contains(&e)) {
-            return true; // reached a face off this boundary — escaped the strip
+        if mesh.edges(f).all(|e| !walls.contains(&e)) {
+            return true; // a fully-interior face: no boundary edge — escaped every pocket
         }
         for e in mesh.edges(f) {
             if walls.contains(&e) {
@@ -866,8 +890,6 @@ fn repair_boundary_crossings(
         if n < 3 {
             continue;
         }
-        let this_boundary: HashSet<EdgeID> =
-            edges.iter().flat_map(|&e| [e, mesh.twin(e)]).collect();
         let pos_of: HashMap<EdgeID, usize> =
             edges.iter().enumerate().map(|(i, &e)| (e, i)).collect();
 
@@ -876,8 +898,10 @@ fn repair_boundary_crossings(
                 return false;
             }
             let cp = edges[pos];
-            escapes_boundary(mesh.face(cp), &this_boundary, &walls, mesh)
-                && escapes_boundary(mesh.face(mesh.twin(cp)), &this_boundary, &walls, mesh)
+            // Both sides of the crossing must reach the patch interior, so the orthogonal loop
+            // isn't boxed in just after crossing.
+            reaches_interior(mesh.face(cp), &walls, mesh)
+                && reaches_interior(mesh.face(mesh.twin(cp)), &walls, mesh)
         };
 
         // Snapshot crossings of this boundary in current cyclic order; neighbours' ORIGINAL
@@ -934,6 +958,37 @@ fn repair_boundary_crossings(
     }
 }
 
+/// Multi-source BFS giving each face its hop distance to the nearest control point, capped at
+/// `CP_MOAT_RADIUS`. Faces farther than the cap are absent from the map (treated as no penalty).
+fn control_point_distance_field(
+    control_points: &HashSet<EdgeID>,
+    mesh: &Mesh<INPUT>,
+) -> HashMap<FaceID, u32> {
+    let mut dist: HashMap<FaceID, u32> = HashMap::new();
+    let mut queue: VecDeque<FaceID> = VecDeque::new();
+    for &cp in control_points {
+        for f in [mesh.face(cp), mesh.face(mesh.twin(cp))] {
+            if dist.insert(f, 0).is_none() {
+                queue.push_back(f);
+            }
+        }
+    }
+    while let Some(f) = queue.pop_front() {
+        let d = dist[&f];
+        if d >= CP_MOAT_RADIUS {
+            continue;
+        }
+        for e in mesh.edges(f) {
+            let nf = mesh.face(mesh.twin(e));
+            if !dist.contains_key(&nf) {
+                dist.insert(nf, d + 1);
+                queue.push_back(nf);
+            }
+        }
+    }
+    dist
+}
+
 fn pathing_for_loops(
     boundary_map: BiHashMap<EdgeIndex, LoopID>,
     crossings: CrossingMap,
@@ -951,6 +1006,11 @@ fn pathing_for_loops(
         .flat_map(|m| m.values().copied())
         .chain(face_points.values().flat_map(|m| m.values().copied()))
         .collect();
+
+    // Face-hop distance from every face to the nearest control point, capped at the moat radius.
+    // Used to steeply penalize routing a loop's body through crossing neighbourhoods so loops
+    // leave room for the perpendicular partner crossing the same point (see `CP_MOAT_PENALTY`).
+    let cp_distance = control_point_distance_field(&all_control_points, mesh);
 
     for &loop_axis in &ALL_DIRS {
         // Crossings visited by this loop axis: a crossing on a boundary with direction D and
@@ -1074,7 +1134,7 @@ fn pathing_for_loops(
 
                 loop_edges.push(src);
                 used_in_loop.insert(src);
-                match surface_path_intermediates(src, tgt, forced_first, forced_last, &blocked, &used_in_loop, mesh) {
+                match surface_path_intermediates(src, tgt, forced_first, forced_last, &blocked, &used_in_loop, &cp_distance, mesh) {
                     Some(inter) => {
                         if i == 0 {
                             seg0_first = inter.first().copied();
