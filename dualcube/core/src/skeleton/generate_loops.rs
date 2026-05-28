@@ -836,12 +836,14 @@ fn pathing_for_loops(
                 }
             }
 
-            // Second pass: connect consecutive control points via surface path. Each crossing
-            // must be diagonal: a loop leaves a control point via the quad-diagonal partner of
-            // the side it arrived on, so it cuts straight across the crossing edge's two
-            // triangles. `forced_first` enforces this departure for every segment after the
-            // first; `forced_last` closes the loop by making the final segment arrive at the
-            // start control point matching the first segment's departure.
+            // Second pass: connect consecutive control points via surface path. Every crossing
+            // must be diagonal AND oriented toward where the loop is actually going. For each
+            // control point we pick its EXIT quad side as the one pointing toward the NEXT
+            // control point (a globally-known direction — it never depends on the curving free
+            // path, so no drift / spiral). The crossing's ENTRY side is that exit's diagonal
+            // partner, keeping the crossing diagonal and leaving the perpendicular pair free for
+            // the other loop. Each segment is then pinned at both ends: it must DEPART `src` via
+            // `src`'s exit side and ARRIVE at `tgt` via the diagonal partner of `tgt`'s exit side.
             let n = control_points.len();
             let mut loop_edges = Vec::new();
             let mut used_in_loop: HashSet<EdgeID> = HashSet::new();
@@ -851,9 +853,11 @@ fn pathing_for_loops(
                 let src = control_points[i];
                 let tgt = control_points[(i + 1) % n];
 
-                // Depart `src` via the diagonal partner of how the previous segment arrived
-                // (its last edge `prev_last`; `twin(prev_last)` is that edge as seen from src's
-                // arrival triangle). The first segment has no predecessor, so it starts free.
+                // Straight-through (topological) crossing: depart `src` via the unique diagonal
+                // partner of the side the previous segment arrived on. `twin(prev_last)` is that
+                // arrival edge as seen from `src`'s arrival triangle; its diagonal partner is the
+                // opposite quad side, so the loop cuts straight across the two triangles. The
+                // first segment has no predecessor, so it starts free.
                 let forced_first = if i == 0 {
                     None
                 } else {
@@ -861,9 +865,9 @@ fn pathing_for_loops(
                     quad_diagonal_partner(mesh.twin(prev_last), src, mesh)
                 };
 
-                // The closing segment must arrive at the start control point (`tgt == cp0`) on
-                // the diagonal partner of the first segment's departure side, so that crossing
-                // is diagonal too. `forced_last` is the edge crossed INTO the arrival triangle.
+                // The closing segment must arrive at the start control point matching the first
+                // segment's departure, so that crossing is diagonal too. `forced_last` is the
+                // edge crossed INTO the arrival triangle.
                 let forced_last = if i == n - 1 {
                     seg0_first
                         .and_then(|f| quad_diagonal_partner(f, tgt, mesh))
