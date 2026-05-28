@@ -69,39 +69,12 @@ pub fn generate_loops(
         .as_ref()
         .ok_or_else(|| LoopGenerationError::MissingLabeledSkeleton)?;
     let (boundary_map, mut crossings) = get_boundaries_and_crossing_points(skeleton, mesh, &mut map);
-    let face_points = compute_face_points(skeleton, mesh);
+    let mut face_points = compute_face_points(skeleton, mesh);
 
-    // TEMP DIAGNOSTIC: do any face points land with a boundary-loop edge inside their crossing
-    // quad (one of the 4 arms the two orthogonal loops need)? `map` holds only boundary loops here.
-    {
-        let mut boundary_edges: HashSet<EdgeID> = HashSet::new();
-        for l in map.values() {
-            for &e in &l.edges {
-                boundary_edges.insert(e);
-                boundary_edges.insert(mesh.twin(e));
-            }
-        }
-        let (mut bad, mut total) = (0usize, 0usize);
-        for (node, slots) in &face_points {
-            for (&(dir, sign), &cp) in slots {
-                total += 1;
-                let arms = mesh.quad(cp);
-                let hits: Vec<EdgeID> = arms
-                    .iter()
-                    .copied()
-                    .filter(|&a| boundary_edges.contains(&a) || boundary_edges.contains(&mesh.twin(a)))
-                    .collect();
-                if !hits.is_empty() {
-                    bad += 1;
-                    warn!(
-                        "FP-quad-boundary: node {:?} slot ({:?},{:?}) cp {:?} arms {:?} boundary-arms {:?}",
-                        node, dir, sign, cp, arms, hits
-                    );
-                }
-            }
-        }
-        warn!("face points with a boundary edge in their quad: {}/{}", bad, total);
-    }
+    // A face point can land on an interior edge whose crossing quad already contains a boundary-loop
+    // edge (one of the 4 arms the two orthogonal loops need), making the 4-arm crossing unroutable.
+    // Relocate such face points to a clear interior edge of the same patch.
+    repair_face_points(skeleton, mesh, &map, &mut face_points);
 
     // Slide each boundary crossing onto a straight, threadable boundary edge so the boundary
     // loop crosses diagonally (leaving the complementary diagonal free for the orthogonal loop)
@@ -460,6 +433,99 @@ pub fn compute_face_points(skeleton: &LabeledCurveSkeleton, mesh: &Mesh<INPUT>) 
     }
 
     result
+}
+
+/// Repair pass after [`compute_face_points`]: a face point can land on an interior edge whose
+/// crossing quad already contains a boundary-loop edge (one of the 4 arms the two orthogonal loops
+/// need). That arm is permanently occupied by the boundary, so the 4-arm crossing can't form and
+/// the loops through this face point are unroutable. For each such face point, relocate it to the
+/// best-direction-aligned interior edge of the same patch whose quad is clear of boundary edges,
+/// preserving the original placement direction. Leaves it in place (logged) if the patch offers no
+/// clear edge (a genuine mesh-resolution limit). Does not touch the working placement logic.
+fn repair_face_points(
+    skeleton: &LabeledCurveSkeleton,
+    mesh: &Mesh<INPUT>,
+    map: &SlotMap<LoopID, Loop>,
+    face_points: &mut FacePointMap,
+) {
+    // All boundary-loop edges (both halves). At this stage `map` holds only the boundary loops.
+    let mut boundary_edges: HashSet<EdgeID> = HashSet::new();
+    for l in map.values() {
+        for &e in &l.edges {
+            boundary_edges.insert(e);
+            boundary_edges.insert(mesh.twin(e));
+        }
+    }
+    let quad_clear = |cp: EdgeID| -> bool {
+        mesh.quad(cp)
+            .iter()
+            .all(|&arm| !boundary_edges.contains(&arm) && !boundary_edges.contains(&mesh.twin(arm)))
+    };
+
+    let (mut invalid, mut repaired, mut unrepairable) = (0usize, 0usize, 0usize);
+
+    for (&node_idx, slots) in face_points.iter_mut() {
+        let node = &skeleton[node_idx];
+        let node_pos = node.skeleton_node.position;
+        let patch_set: HashSet<VertID> = node.skeleton_node.patch_vertices.iter().copied().collect();
+
+        // Same candidate pool as `compute_face_points`: patch-interior mesh edges that are not
+        // themselves boundary-loop edges. Additionally require a clear quad here.
+        let mut seen: HashSet<(VertID, VertID)> = HashSet::new();
+        let mut clear_candidates: Vec<EdgeID> = Vec::new();
+        for &vert in &node.skeleton_node.patch_vertices {
+            for face in mesh.faces(vert) {
+                let verts: Vec<VertID> = mesh.vertices(face).collect();
+                for i in 0..verts.len() {
+                    let a = verts[i];
+                    let b = verts[(i + 1) % verts.len()];
+                    if !patch_set.contains(&a) || !patch_set.contains(&b) {
+                        continue;
+                    }
+                    let key = if a < b { (a, b) } else { (b, a) };
+                    if !seen.insert(key) {
+                        continue;
+                    }
+                    if let Some((e, _)) = mesh.edge_between_verts(a, b) {
+                        if boundary_edges.contains(&e) || boundary_edges.contains(&mesh.twin(e)) {
+                            continue;
+                        }
+                        if quad_clear(e) {
+                            clear_candidates.push(e);
+                        }
+                    }
+                }
+            }
+        }
+
+        for cp in slots.values_mut() {
+            if quad_clear(*cp) {
+                continue;
+            }
+            invalid += 1;
+            // Keep the face point as close as possible to its original direction from the node.
+            let target = (edge_midpoint_pos(*cp, mesh) - node_pos).normalize();
+            let best = clear_candidates.iter().copied().max_by(|&e1, &e2| {
+                let d1 = (edge_midpoint_pos(e1, mesh) - node_pos).normalize().dot(&target);
+                let d2 = (edge_midpoint_pos(e2, mesh) - node_pos).normalize().dot(&target);
+                d1.partial_cmp(&d2).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            match best {
+                Some(new_cp) => {
+                    *cp = new_cp;
+                    repaired += 1;
+                }
+                None => unrepairable += 1,
+            }
+        }
+    }
+
+    if invalid > 0 {
+        warn!(
+            "face points: {} had a boundary edge in their quad, {} relocated, {} unrepairable",
+            invalid, repaired, unrepairable
+        );
+    }
 }
 
 /// Position of an edge's midpoint.
