@@ -2,7 +2,7 @@ use crate::prelude::*;
 use crate::solutions::{Loop, LoopID};
 use grapff::Grapff;
 use itertools::Itertools;
-use log::{error, info};
+use log::{error, info, warn};
 use mehsh::prelude::*;
 use serde::{Deserialize, Serialize};
 use slotmap::SlotMap;
@@ -77,6 +77,13 @@ pub struct Dual {
     intersection_to_edge: HashMap<LoopIntersectionID, EdgeID>,
     loop_segments: HashMap<LoopSegmentID, LoopSegment>,
     loop_regions: HashMap<LoopRegionID, LoopRegion>,
+
+    /// Diagnostic only: for each loop region violating Property 3 (two boundary segments sharing
+    /// the same (axis, side) label), the list of its boundary segments, each as its own contiguous
+    /// run of mesh half-edges. Per-segment (not concatenated) so the GUI can draw each on-surface
+    /// without cross-space chords. Populated by [`Dual::from_lenient`]; empty for a valid dual.
+    #[serde(skip, default)]
+    pub invalid_regions: Vec<Vec<Vec<EdgeID>>>,
 }
 
 #[derive(Error, Debug, Clone, Serialize, Deserialize)]
@@ -113,6 +120,7 @@ impl Dual {
             intersection_to_edge: HashMap::new(),
             loop_segments: HashMap::new(),
             loop_regions: HashMap::new(),
+            invalid_regions: Vec::new(),
         };
 
         // Find all intersections and loop regions induced by the loops, and compute the loop structure
@@ -136,6 +144,76 @@ impl Dual {
         dual.assign_levels();
 
         Ok(dual)
+    }
+
+    /// Diagnostic sibling of [`Dual::from`] that does NOT abort on a Property-3 (invalid face
+    /// boundary) violation. It builds the loop structure, logs every offending region's segments,
+    /// and records each offending region's boundary mesh-edges in `invalid_regions` for the GUI
+    /// overlay. Only `assign_loop_structure` is run (all that's needed to inspect regions); the
+    /// later stages are skipped because they assume a valid structure. Intended purely for
+    /// debugging an `InvalidFaceBoundary` failure — do not use its result for primalization.
+    pub fn from_lenient(mesh_ref: Arc<Mesh<INPUT>>, loops_ref: &SlotMap<LoopID, Loop>) -> Result<Self, PropertyViolationError> {
+        let mut dual = Self {
+            mesh_ref,
+            loops_ref: loops_ref.clone(),
+            loop_structure: mehsh::prelude::Mesh::default(),
+            level_graphs: LevelGraphs::default(),
+            intersection_to_edge: HashMap::new(),
+            loop_segments: HashMap::new(),
+            loop_regions: HashMap::new(),
+            invalid_regions: Vec::new(),
+        };
+        dual.assign_loop_structure()?;
+        let bad_faces = dual.diagnose_invalid_face_boundaries();
+        dual.invalid_regions = bad_faces
+            .iter()
+            .map(|&face| {
+                let mut segments = Vec::new();
+                for segment in dual.loop_structure.edges(face) {
+                    segments.push(dual.segment_to_edges_incl(segment));
+                }
+                segments
+            })
+            .collect();
+        Ok(dual)
+    }
+
+    /// Returns the loop-structure faces that violate Property 3 (two boundary segments sharing the
+    /// same (axis, side) label), logging each offending region's segments and label tally so the
+    /// exact malformed region can be identified.
+    fn diagnose_invalid_face_boundaries(&self) -> Vec<LoopRegionID> {
+        let mut bad = Vec::new();
+        for face_id in self.loop_structure.face_ids() {
+            let mut label_count = [0usize; 6];
+            let mut segments = Vec::new();
+            for edge in self.loop_structure.edges(face_id) {
+                let loop_id = self.segment_to_loop(edge);
+                let direction = self.loops_ref[loop_id].direction;
+                let orientation = self.segment_to_orientation(edge);
+                let idx = match (direction, orientation) {
+                    (PrincipalDirection::X, Orientation::Forwards) => 0,
+                    (PrincipalDirection::X, Orientation::Backwards) => 1,
+                    (PrincipalDirection::Y, Orientation::Forwards) => 2,
+                    (PrincipalDirection::Y, Orientation::Backwards) => 3,
+                    (PrincipalDirection::Z, Orientation::Forwards) => 4,
+                    (PrincipalDirection::Z, Orientation::Backwards) => 5,
+                };
+                label_count[idx] += 1;
+                segments.push((loop_id, direction, orientation));
+            }
+            if label_count.iter().any(|&x| x > 1) {
+                warn!(
+                    "Invalid region (face {:?}): {} boundary segments; \
+                     label tally [X+,X-,Y+,Y-,Z+,Z-]={:?}; segments(loop,axis,side)={:?}",
+                    face_id, segments.len(), label_count, segments
+                );
+                bad.push(face_id);
+            }
+        }
+        if !bad.is_empty() {
+            warn!("Property 3 (invalid face boundary): {} malformed region(s) total.", bad.len());
+        }
+        bad
     }
 
     #[must_use]

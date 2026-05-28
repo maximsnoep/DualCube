@@ -710,3 +710,38 @@ pub fn create_routing_diagnostics_gizmos(
 
     gizmos
 }
+
+/// Visualizes loop regions that violate Property 3 (invalid face boundary). Each region is a list
+/// of boundary segments; every segment is drawn as its own bright-magenta polyline that follows
+/// the actual surface (no cross-space chords), and a magenta sphere marks each region's centroid.
+pub fn create_invalid_region_gizmos(
+    invalid_regions: &[Vec<Vec<EdgeID>>],
+    mesh: &mehsh::prelude::Mesh<INPUT>,
+    translation: Vector3D,
+    scale: f64,
+) -> GizmoAsset {
+    let mut gizmos = GizmoAsset::new();
+    let magenta = Color::srgb(1.0, 0.0, 1.0);
+    const CENTROID_RADIUS: f32 = 0.6;
+
+    for region in invalid_regions {
+        let mut all_positions: Vec<Vec3> = Vec::new();
+        for segment in region {
+            let positions: Vec<Vec3> = segment
+                .iter()
+                .map(|&e| world_to_view(mesh.position(e), translation, scale))
+                .collect();
+            if positions.len() >= 2 {
+                gizmos.linestrip(positions.clone(), magenta);
+            }
+            all_positions.extend(positions);
+        }
+        if !all_positions.is_empty() {
+            let centroid =
+                all_positions.iter().fold(Vec3::ZERO, |acc, &p| acc + p) / all_positions.len() as f32;
+            gizmos.sphere(Isometry3d::from_translation(centroid), CENTROID_RADIUS, magenta);
+        }
+    }
+
+    gizmos
+}

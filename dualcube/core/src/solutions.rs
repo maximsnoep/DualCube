@@ -134,6 +134,12 @@ pub struct Solution {
     #[serde(skip, default)]
     pub routing_diagnostics: Option<RoutingDiagnostics>,
 
+    /// Diagnostic: for each loop region violating Property 3 (invalid face boundary), its boundary
+    /// segments (each a contiguous run of mesh half-edges). Populated when `reconstruct_solution`
+    /// fails with that error, for the GUI "invalid regions" overlay. Empty otherwise. Not serialized.
+    #[serde(skip, default)]
+    pub invalid_regions: Vec<Vec<Vec<EdgeID>>>,
+
     pub dual: Result<Dual, PropertyViolationError>,
     pub polycube: Option<Polycube>,
     pub layout: Option<Layout>,
@@ -147,6 +153,7 @@ pub struct Solution {
 impl Solution {
     pub fn clear(&mut self) {
         self.dual = Err(PropertyViolationError::default());
+        self.invalid_regions = Vec::new();
         self.polycube = None;
         self.layout = None;
         // Note: skeleton is NOT cleared here as it's independent of the loop-based solution // TODO: is this still correct?
@@ -166,6 +173,7 @@ impl Solution {
             loop_crossings: None,
             face_points: None,
             routing_diagnostics: None,
+            invalid_regions: Vec::new(),
             dual: Err(PropertyViolationError::default()),
             polycube: None,
             layout: None,
@@ -213,10 +221,10 @@ impl Solution {
             self.loop_crossings = Some(crossings);
             self.face_points = Some(face_points);
             self.routing_diagnostics = Some(diagnostics);
-            // self.recompute_occupied();
-            // if let Err(e) = self.reconstruct_solution(false, 1) {
-            //     log::warn!("Failed to reconstruct solution after skeleton update: {e}");
-            // }
+            self.recompute_occupied();
+            if let Err(e) = self.reconstruct_solution(false, 1) {
+                log::warn!("Failed to reconstruct solution after skeleton update: {e}");
+            }
         }
     }
 
@@ -1197,7 +1205,17 @@ impl Solution {
             omega
         );
 
-        let dual = Dual::from(self.mesh_ref.clone(), &self.loops)?;
+        let dual = match Dual::from(self.mesh_ref.clone(), &self.loops) {
+            Ok(dual) => dual,
+            Err(e) => {
+                // Diagnostic: rebuild leniently so the malformed loop regions are logged and
+                // surfaced to the GUI "invalid regions" overlay, then propagate the original error.
+                if let Ok(diag) = Dual::from_lenient(self.mesh_ref.clone(), &self.loops) {
+                    self.invalid_regions = diag.invalid_regions;
+                }
+                return Err(e.into());
+            }
+        };
         let polycube = Polycube::from_dual(&dual);
 
         // check all faces of the polycube have a normal

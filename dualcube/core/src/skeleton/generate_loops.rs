@@ -71,6 +71,38 @@ pub fn generate_loops(
     let (boundary_map, mut crossings) = get_boundaries_and_crossing_points(skeleton, mesh, &mut map);
     let face_points = compute_face_points(skeleton, mesh);
 
+    // TEMP DIAGNOSTIC: do any face points land with a boundary-loop edge inside their crossing
+    // quad (one of the 4 arms the two orthogonal loops need)? `map` holds only boundary loops here.
+    {
+        let mut boundary_edges: HashSet<EdgeID> = HashSet::new();
+        for l in map.values() {
+            for &e in &l.edges {
+                boundary_edges.insert(e);
+                boundary_edges.insert(mesh.twin(e));
+            }
+        }
+        let (mut bad, mut total) = (0usize, 0usize);
+        for (node, slots) in &face_points {
+            for (&(dir, sign), &cp) in slots {
+                total += 1;
+                let arms = mesh.quad(cp);
+                let hits: Vec<EdgeID> = arms
+                    .iter()
+                    .copied()
+                    .filter(|&a| boundary_edges.contains(&a) || boundary_edges.contains(&mesh.twin(a)))
+                    .collect();
+                if !hits.is_empty() {
+                    bad += 1;
+                    warn!(
+                        "FP-quad-boundary: node {:?} slot ({:?},{:?}) cp {:?} arms {:?} boundary-arms {:?}",
+                        node, dir, sign, cp, arms, hits
+                    );
+                }
+            }
+        }
+        warn!("face points with a boundary edge in their quad: {}/{}", bad, total);
+    }
+
     // Slide each boundary crossing onto a straight, threadable boundary edge so the boundary
     // loop crosses diagonally (leaving the complementary diagonal free for the orthogonal loop)
     // and the orthogonal loop can actually pass through without being boxed in. Topological.
@@ -98,7 +130,47 @@ pub fn generate_loops(
         l.edges = expand_to_double_halfedges(raw, mesh);
     }
 
+    // Normalize loop winding so all loops of the SAME axis wind the same way about that axis.
+    // The downstream `Dual` derives each segment's side label (Forwards/Backwards) from the loop's
+    // stored edge ORDER; if two parallel same-axis loops are stored with opposite winding, a region
+    // between them gets the same (axis, side) label twice → Property 3 ("Invalid face boundary").
+    // `ccw_next` is supposed to give a consistent winding but inherits any orthogonalization sign
+    // inconsistency, so we enforce consistency directly here via the loop's signed area about its
+    // axis (reversing the edge order flips the winding; it preserves the canonical twin/same-face
+    // alternation since that relation is symmetric). The absolute choice is irrelevant — a global
+    // per-axis flip is just a mirror, which `realize` already canonicalizes — only consistency matters.
+    for (_, l) in map.iter_mut() {
+        if signed_area_about_axis(&l.edges, l.direction, mesh) < 0.0 {
+            l.edges.reverse();
+        }
+    }
+
     Ok((map, crossings, face_points, diagnostics))
+}
+
+/// Signed area of a loop projected onto the plane perpendicular to `axis` (shoelace over edge
+/// midpoints). Its sign encodes the loop's winding direction about `axis`; only the sign, and only
+/// its consistency across loops of the same axis, is meaningful here.
+fn signed_area_about_axis(edges: &[EdgeID], axis: PrincipalDirection, mesh: &Mesh<INPUT>) -> f64 {
+    let project = |p: Vector3D| -> (f64, f64) {
+        match axis {
+            PrincipalDirection::X => (p.y, p.z),
+            PrincipalDirection::Y => (p.z, p.x),
+            PrincipalDirection::Z => (p.x, p.y),
+        }
+    };
+    let pts: Vec<(f64, f64)> = edges
+        .iter()
+        .map(|&e| project(edge_midpoint_pos(e, mesh)))
+        .collect();
+    let n = pts.len();
+    let mut area = 0.0;
+    for i in 0..n {
+        let (x0, y0) = pts[i];
+        let (x1, y1) = pts[(i + 1) % n];
+        area += x0 * y1 - x1 * y0;
+    }
+    area * 0.5
 }
 
 /// Calculates for each patch-patch boundary the appropriate loop and crossing points for the other two loop types.

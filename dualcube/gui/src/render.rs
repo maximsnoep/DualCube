@@ -2,7 +2,7 @@ use crate::render_skeleton::{
     create_crossing_point_gizmos, create_face_point_gizmos, create_failed_surgery_face_mesh,
     create_labeled_skeleton_gizmos, create_patch_boundary_gizmos, create_patch_convexity_mesh,
     create_patch_mesh, create_polycube_patch_boundary_gizmos, create_polycube_patch_mesh,
-    create_routing_diagnostics_gizmos, create_skeleton_gizmos,
+    create_invalid_region_gizmos, create_routing_diagnostics_gizmos, create_skeleton_gizmos,
 };
 use crate::ui::UiResource;
 use crate::{colors, MainMesh, PerpetualGizmos};
@@ -436,6 +436,7 @@ pub fn update_render_settings(
                 // | (Objects::InputMesh, "patches")
                 | (Objects::InputMesh, "cuts")
                 | (Objects::InputMesh, "routing failures")
+                | (Objects::InputMesh, "invalid regions")
                 // | (Objects::InputMesh, "virtual mesh debug")
                 | (Objects::InputMesh, "uv long edges")
                 // | (Objects::InputMesh, "uv patches")
@@ -1486,6 +1487,14 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                     let diag_gizmos =
                         create_routing_diagnostics_gizmos(diagnostics, input, translation, scale);
                     render_obj.gizmo(diag_gizmos, 25., -0.00018, "routing failures");
+                }
+
+                // Invalid loop regions (Property 3 violations): malformed regions surfaced when
+                // dual reconstruction fails with "Invalid face boundary".
+                if !solution.invalid_regions.is_empty() {
+                    let invalid_gizmos =
+                        create_invalid_region_gizmos(&solution.invalid_regions, input, translation, scale);
+                    render_obj.gizmo(invalid_gizmos, 25., -0.000181, "invalid regions");
                 }
 
                 let mut patch_convexity_mesh: Option<bevy::mesh::Mesh> = None;
