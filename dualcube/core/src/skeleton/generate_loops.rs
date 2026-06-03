@@ -6,7 +6,7 @@ use std::{
 use bimap::BiHashMap;
 use ordered_float::OrderedFloat;
 use log::{error, warn};
-use mehsh::prelude::{HasEdges, HasFaces, HasPosition, HasVertices, Mesh, Vector3D};
+use mehsh::prelude::{HasEdges, HasFaces, HasNormal, HasPosition, HasVertices, Mesh, Vector3D};
 use petgraph::{
     graph::{EdgeIndex, NodeIndex},
     visit::{EdgeRef, IntoEdgeReferences, IntoNodeReferences},
@@ -633,8 +633,35 @@ const CP_MOAT_PENALTY: [f64; 4] = [30.0, 10.0, 4.0, 2.0];
 /// faces are absent from the field and incur no penalty.
 const CP_MOAT_RADIUS: u32 = (CP_MOAT_PENALTY.len() as u32) - 1;
 
-/// Dijkstra's on the mesh dual graph to find the shortest intermediate path between two
-/// control-point edges, using geodesic (face-centroid -> edge-midpoint -> face-centroid) cost.
+/// Alignment routing cost (mirrors the flow-graph loop cost in `gui/src/main.rs`).
+///
+/// Each routing step turns within a face, entering by one edge and leaving by another. The
+/// in-face travel direction `d` (between the two edge midpoints), rotated 90° about the face
+/// normal `n`, gives the loop's local *separating* direction `d × n`, which should align with the
+/// loop's target axis Δ. We charge a per-step penalty for misalignment, **integrated over arc
+/// length**: `step_cost = length * (LAMBDA_DIST + W_ALIGN * misalignment)`, where
+/// `misalignment = 1 - |cos∠(d × n, Δ)| ∈ [0, 1]` (0 = perfectly aligned, 1 = perpendicular).
+///
+/// - Orientation-folded via `|cos|`, so a loop running "backwards" along its axis is not penalized
+///   (a loop separates the same way in either traversal direction).
+/// - Scale-invariant: both terms scale with `length`, so relative path costs do not depend on mesh
+///   size. This is the arc-length integral `∫ (λ + W·misalignment) ds`, the continuous "niceness"
+///   functional, rather than the flow graph's per-turn `angle³` (its state is turns, ours is faces).
+/// - `LAMBDA_DIST` is the distance floor: it keeps the old geodesic behavior as a regularizer so
+///   that among equally-aligned paths the shorter/compacter one wins and the router cannot meander
+///   for free. Alignment is *primary* (`W_ALIGN ≫ LAMBDA_DIST`); distance only breaks ties.
+/// - The moat / shared-edge multipliers still apply on top, so this never makes a path infeasible.
+const W_ALIGN: f64 = 8.0;
+
+/// Distance-floor weight in the routing cost; see [`W_ALIGN`]. Keeping it at the old base unit
+/// (1.0) preserves geodesic behavior as a tie-breaker/regularizer beneath the alignment term.
+const LAMBDA_DIST: f64 = 1.0;
+
+/// Dijkstra's on the mesh dual graph to find the best intermediate path between two
+/// control-point edges. The step cost is the alignment-primary, distance-regularized measure
+/// described on [`W_ALIGN`] (a geodesic distance floor plus an arc-length-integrated misalignment
+/// penalty that biases the path to follow the loop's principal axis), scaled by the moat /
+/// shared-edge multipliers below.
 ///
 /// Returns the mesh edges crossed between `source` and `target`, **exclusive** of both.
 /// The caller is responsible for pushing `source` before and `target` after this list.
@@ -666,8 +693,12 @@ fn surface_path_intermediates(
     blocked: &HashSet<EdgeID>,
     used: &HashSet<EdgeID>,
     cp_distance: &HashMap<FaceID, u32>,
+    loop_axis: PrincipalDirection,
     mesh: &Mesh<INPUT>,
 ) -> Option<Vec<EdgeID>> {
+    // Target axis Δ for the alignment cost (see `W_ALIGN`): the loop should locally separate
+    // along its own principal axis.
+    let target_axis: Vector3D = loop_axis.into();
     let faces_of = |e: EdgeID| -> Vec<FaceID> {
         let a = mesh.root(e);
         let b = mesh.toor(e);
@@ -780,7 +811,28 @@ fn surface_path_intermediates(
 
             let edge_mid = edge_midpoint_pos(edge, mesh);
             let centroid_b = face_centroid(next_face);
-            let mut step_cost = (centroid_a - edge_mid).norm() + (edge_mid - centroid_b).norm();
+            let length = (centroid_a - edge_mid).norm() + (edge_mid - centroid_b).norm();
+
+            // Alignment cost (see `W_ALIGN`). The in-face turn goes from the edge we ENTERED
+            // `face` by (recorded in `prev`) to the edge `edge` we are leaving by; both midpoints
+            // lie on `face`, so this is exactly the flow-graph quantity charged per face. Rotating
+            // that displacement about the face normal and comparing to the target axis gives the
+            // misalignment. Source faces have no entry edge, so the first step out of a source
+            // incurs no alignment penalty.
+            let mut misalignment = 0.0;
+            if let Some((_, Some(entry_edge))) = prev.get(&face) {
+                let d = edge_mid - edge_midpoint_pos(*entry_edge, mesh);
+                let cross = d.cross(&mesh.normal(face));
+                let cn = cross.norm();
+                if cn > 1e-12 {
+                    // Orientation-folded: |cos| treats Δ and -Δ alike.
+                    misalignment = 1.0 - (cross / cn).dot(&target_axis).abs();
+                }
+            }
+
+            // Arc-length integral of (distance floor + misalignment): alignment is primary,
+            // distance regularizes. Scale-invariant since both terms scale with `length`.
+            let mut step_cost = length * (LAMBDA_DIST + W_ALIGN * misalignment);
 
             // Penalize entering a face adjacent to blocked edges.
             if face_touches_blocked(next_face, edge) {
@@ -1272,7 +1324,7 @@ fn pathing_for_loops(
 
                 loop_edges.push(src);
                 used_in_loop.insert(src);
-                match surface_path_intermediates(src, tgt, forced_first, forced_last, &blocked, &used_in_loop, &cp_distance, mesh) {
+                match surface_path_intermediates(src, tgt, forced_first, forced_last, &blocked, &used_in_loop, &cp_distance, loop_axis, mesh) {
                     Some(inter) => {
                         if i == 0 {
                             seg0_first = inter.first().copied();
