@@ -365,8 +365,12 @@ pub fn compute_face_points(skeleton: &LabeledCurveSkeleton, mesh: &Mesh<INPUT>) 
             );
         }
 
+        // Patch border for centrality-based placement (keep face points off the rim).
+        let border_positions = patch_border_positions(skeleton, node_idx, mesh);
+
         // Fill missing slots (only directions without a skeleton edge)
         let mut interior_points: HashMap<(PrincipalDirection, AxisSign), EdgeID> = HashMap::new();
+        let mut chosen: HashSet<EdgeID> = HashSet::new();
 
         for dir in ALL_DIRS {
             for sign in ALL_SIGNS {
@@ -393,17 +397,18 @@ pub fn compute_face_points(skeleton: &LabeledCurveSkeleton, mesh: &Mesh<INPUT>) 
                         }
                     };
 
-                let best = *candidates
-                    .iter()
-                    .max_by(|&&e1, &&e2| {
-                        let v1 = (edge_midpoint_pos(e1, mesh) - node_pos).normalize();
-                        let v2 = (edge_midpoint_pos(e2, mesh) - node_pos).normalize();
-                        let dot1 = v1.dot(&target_dir);
-                        let dot2 = v2.dot(&target_dir);
-                        dot1.partial_cmp(&dot2).unwrap_or(std::cmp::Ordering::Equal)
-                    })
-                    .expect("candidates is non-empty");
+                // Most central (far-from-border) candidate, steered toward `target_dir`.
+                let best = best_face_point_candidate(
+                    &candidates,
+                    &chosen,
+                    node_pos,
+                    target_dir,
+                    &border_positions,
+                    mesh,
+                )
+                .expect("candidates is non-empty");
 
+                chosen.insert(best);
                 let best_pos = edge_midpoint_pos(best, mesh);
                 known_dirs.push((best_pos - node_pos).normalize());
                 interior_points.insert((dir, sign), best);
@@ -498,21 +503,34 @@ fn repair_face_points(
             }
         }
 
+        let border_positions = patch_border_positions(skeleton, node_idx, mesh);
+        // Slots that already sit on a clear quad keep their edge; reserve those so a relocation
+        // can't land on top of them.
+        let mut chosen: HashSet<EdgeID> = slots
+            .values()
+            .filter(|&&cp| quad_clear(cp))
+            .copied()
+            .collect();
+
         for cp in slots.values_mut() {
             if quad_clear(*cp) {
                 continue;
             }
             invalid += 1;
-            // Keep the face point as close as possible to its original direction from the node.
+            // Keep the face point as close as possible to its original direction from the node,
+            // but relocate using the same centrality-biased scoring as initial placement.
             let target = (edge_midpoint_pos(*cp, mesh) - node_pos).normalize();
-            let best = clear_candidates.iter().copied().max_by(|&e1, &e2| {
-                let d1 = (edge_midpoint_pos(e1, mesh) - node_pos).normalize().dot(&target);
-                let d2 = (edge_midpoint_pos(e2, mesh) - node_pos).normalize().dot(&target);
-                d1.partial_cmp(&d2).unwrap_or(std::cmp::Ordering::Equal)
-            });
-            match best {
+            match best_face_point_candidate(
+                &clear_candidates,
+                &chosen,
+                node_pos,
+                target,
+                &border_positions,
+                mesh,
+            ) {
                 Some(new_cp) => {
                     *cp = new_cp;
+                    chosen.insert(new_cp);
                     repaired += 1;
                 }
                 None => unrepairable += 1,
@@ -533,6 +551,88 @@ fn edge_midpoint_pos(e: EdgeID, mesh: &Mesh<INPUT>) -> Vector3D {
     let a = mesh.position(mesh.root(e));
     let b = mesh.position(mesh.toor(e));
     (a + b) * 0.5
+}
+
+/// Midpoint positions of the patch border around a skeleton node: the edge midpoints of every
+/// incident skeleton edge's boundary loop. Used to score face-point placement by distance from the
+/// border (see [`face_point_score`]).
+fn patch_border_positions(
+    skeleton: &LabeledCurveSkeleton,
+    node_idx: NodeIndex,
+    mesh: &Mesh<INPUT>,
+) -> Vec<Vector3D> {
+    let mut positions = Vec::new();
+    for edge_ref in skeleton.edges(node_idx) {
+        for &e in &edge_ref.weight().boundary_loop.edge_midpoints {
+            positions.push(edge_midpoint_pos(e, mesh));
+        }
+    }
+    positions
+}
+
+/// Pick the best face-point candidate edge for a slot. The score balances two competing forces:
+///
+/// - **Alignment** (the strong *spreading* force, like the old angle heuristic): the normalized dot
+///   of the candidate's direction-from-node against the slot's `target_dir`, in `[-1, 1]`. This is
+///   what pushes the (up to) six slots of a node apart into distinct angular sectors so they don't
+///   collapse together — essential for low-degree nodes with many face points sharing one patch.
+/// - **Centrality** (the *anti-rim* force): distance from the patch border, normalized by the most
+///   interior candidate's distance to `[0, 1]`. This keeps the chosen edge off the rim so the two
+///   crossing loops pass through without detouring out and back (the zigzag cause).
+///
+/// `score = centrality + FP_DIRECTION_BIAS * alignment`, maximized. With `FP_DIRECTION_BIAS` above
+/// ~0.55 the alignment force dominates enough to prevent center-collapse, while staying low enough
+/// that the anti-rim force still pulls the placement inward — the equilibrium is "in the right
+/// sector, a bit inside the rim." Candidates already chosen for another slot of the same node are
+/// preferred-against (so two slots can't land on one edge); falls back to the best overall when all
+/// are taken. With an empty border, centrality is 0 and placement is purely directional.
+fn best_face_point_candidate(
+    candidates: &[EdgeID],
+    chosen: &HashSet<EdgeID>,
+    node_pos: Vector3D,
+    target_dir: Vector3D,
+    border: &[Vector3D],
+    mesh: &Mesh<INPUT>,
+) -> Option<EdgeID> {
+    let border_dist = |e: EdgeID| -> f64 {
+        if border.is_empty() {
+            0.0
+        } else {
+            let m = edge_midpoint_pos(e, mesh);
+            border
+                .iter()
+                .map(|&p| (m - p).norm())
+                .fold(f64::INFINITY, f64::min)
+        }
+    };
+    // Interiority scale = how far the most interior candidate sits from the border.
+    let max_border_dist = candidates
+        .iter()
+        .map(|&e| border_dist(e))
+        .fold(0.0_f64, f64::max);
+
+    let score = |e: EdgeID| -> f64 {
+        let centrality = if max_border_dist > 0.0 {
+            border_dist(e) / max_border_dist
+        } else {
+            0.0
+        };
+        let alignment = (edge_midpoint_pos(e, mesh) - node_pos)
+            .normalize()
+            .dot(&target_dir);
+        centrality + FP_DIRECTION_BIAS * alignment
+    };
+    let cmp = |&e1: &EdgeID, &e2: &EdgeID| {
+        score(e1)
+            .partial_cmp(&score(e2))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    };
+    candidates
+        .iter()
+        .copied()
+        .filter(|e| !chosen.contains(e))
+        .max_by(cmp)
+        .or_else(|| candidates.iter().copied().max_by(cmp))
 }
 
 /// Shortest angular distance between two angles in radians.
@@ -656,6 +756,13 @@ const W_ALIGN: f64 = 8.0;
 /// Distance-floor weight in the routing cost; see [`W_ALIGN`]. Keeping it at the old base unit
 /// (1.0) preserves geodesic behavior as a tie-breaker/regularizer beneath the alignment term.
 const LAMBDA_DIST: f64 = 1.0;
+
+/// Weight of the directional (alignment) force relative to the centrality (anti-rim) force when
+/// placing face points; both are normalized to ~unit scale, so this is dimensionless. It must be
+/// large enough that alignment spreads a node's slots into distinct sectors (no center-collapse)
+/// yet small enough that centrality still pulls each placement off the patch rim. See
+/// [`best_face_point_candidate`].
+const FP_DIRECTION_BIAS: f64 = 1.5;
 
 /// Dijkstra's on the mesh dual graph to find the best intermediate path between two
 /// control-point edges. The step cost is the alignment-primary, distance-regularized measure
