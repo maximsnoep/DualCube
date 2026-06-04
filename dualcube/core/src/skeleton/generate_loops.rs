@@ -738,12 +738,16 @@ const CP_MOAT_RADIUS: u32 = (CP_MOAT_PENALTY.len() as u32) - 1;
 /// Each routing step turns within a face, entering by one edge and leaving by another. The
 /// in-face travel direction `d` (between the two edge midpoints), rotated 90° about the face
 /// normal `n`, gives the loop's local *separating* direction `d × n`, which should align with the
-/// loop's target axis Δ. We charge a per-step penalty for misalignment, **integrated over arc
-/// length**: `step_cost = length * (LAMBDA_DIST + W_ALIGN * misalignment)`, where
-/// `misalignment = 1 - |cos∠(d × n, Δ)| ∈ [0, 1]` (0 = perfectly aligned, 1 = perpendicular).
+/// loop's *signed* target Δ (oriented by the loop's fixed winding direction; see `winding_sign` in
+/// `surface_path_intermediates`). We charge a per-step penalty for misalignment, **integrated over
+/// arc length**: `step_cost = length * (LAMBDA_DIST + W_ALIGN * misalignment)`, where
+/// `misalignment = 1 - cos∠(d × n, ±Δ) ∈ [0, 2]` (0 = forward-aligned, 1 = perpendicular,
+/// 2 = reversed winding).
 ///
-/// - Orientation-folded via `|cos|`, so a loop running "backwards" along its axis is not penalized
-///   (a loop separates the same way in either traversal direction).
+/// - Signed, NOT folded. Folding with `|cos|` made winding forward and backward cost the same, so a
+///   zigzag (alternating across the axis) was free — the zigzag source. Signing it against the
+///   loop's single fixed winding makes reversal cost ~2×, so a smooth bulge always beats a zigzag
+///   even past a badly-placed crossing.
 /// - Scale-invariant: both terms scale with `length`, so relative path costs do not depend on mesh
 ///   size. This is the arc-length integral `∫ (λ + W·misalignment) ds`, the continuous "niceness"
 ///   functional, rather than the flow graph's per-turn `angle³` (its state is turns, ours is faces).
@@ -801,11 +805,14 @@ fn surface_path_intermediates(
     used: &HashSet<EdgeID>,
     cp_distance: &HashMap<FaceID, u32>,
     loop_axis: PrincipalDirection,
+    winding_sign: f64,
     mesh: &Mesh<INPUT>,
 ) -> Option<Vec<EdgeID>> {
-    // Target axis Δ for the alignment cost (see `W_ALIGN`): the loop should locally separate
-    // along its own principal axis.
-    let target_axis: Vector3D = loop_axis.into();
+    // Signed target Δ for the alignment cost (see `W_ALIGN`): the loop should locally separate
+    // along its own principal axis, wound in a single CONSISTENT direction (`winding_sign`, fixed
+    // per loop). Signing it — rather than folding with |cos| — makes a step that reverses the
+    // winding cost ~2×, so a smooth bulge always beats a zigzag even past a badly-placed crossing.
+    let signed_target: Vector3D = Vector3D::from(loop_axis) * winding_sign;
     let faces_of = |e: EdgeID| -> Vec<FaceID> {
         let a = mesh.root(e);
         let b = mesh.toor(e);
@@ -932,8 +939,9 @@ fn surface_path_intermediates(
                 let cross = d.cross(&mesh.normal(face));
                 let cn = cross.norm();
                 if cn > 1e-12 {
-                    // Orientation-folded: |cos| treats Δ and -Δ alike.
-                    misalignment = 1.0 - (cross / cn).dot(&target_axis).abs();
+                    // Signed against the loop's fixed winding direction: 0 = forward-aligned,
+                    // 1 = perpendicular, 2 = reversed winding. NOT folded, so reversal is costly.
+                    misalignment = 1.0 - (cross / cn).dot(&signed_target);
                 }
             }
 
@@ -1398,6 +1406,16 @@ fn pathing_for_loops(
             // the other loop. Each segment is then pinned at both ends: it must DEPART `src` via
             // `src`'s exit side and ARRIVE at `tgt` via the diagonal partner of `tgt`'s exit side.
             let n = control_points.len();
+            // Winding sign of this loop about its axis, from the coarse control-point polygon.
+            // Fixed for the whole loop so every segment's alignment cost references the SAME
+            // winding direction — this is what makes reversing (zigzagging) consistently expensive
+            // instead of free. If the convention is ever inverted, all loops would route backwards
+            // (easy to spot), and flipping this sign fixes it.
+            let winding_sign = if signed_area_about_axis(&control_points, loop_axis, mesh) >= 0.0 {
+                -1.0
+            } else {
+                1.0
+            };
             let mut loop_edges = Vec::new();
             let mut used_in_loop: HashSet<EdgeID> = HashSet::new();
             let mut path_ok = true;
@@ -1431,7 +1449,7 @@ fn pathing_for_loops(
 
                 loop_edges.push(src);
                 used_in_loop.insert(src);
-                match surface_path_intermediates(src, tgt, forced_first, forced_last, &blocked, &used_in_loop, &cp_distance, loop_axis, mesh) {
+                match surface_path_intermediates(src, tgt, forced_first, forced_last, &blocked, &used_in_loop, &cp_distance, loop_axis, winding_sign, mesh) {
                     Some(inter) => {
                         if i == 0 {
                             seg0_first = inter.first().copied();
