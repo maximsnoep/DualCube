@@ -803,6 +803,7 @@ fn surface_path_intermediates(
     forced_last: Option<EdgeID>,
     blocked: &HashSet<EdgeID>,
     used: &HashSet<EdgeID>,
+    control_points: &HashSet<EdgeID>,
     cp_distance: &HashMap<FaceID, u32>,
     loop_axis: PrincipalDirection,
     winding_sign: f64,
@@ -902,6 +903,19 @@ fn surface_path_intermediates(
             }
 
             if blocked.contains(&edge) || used.contains(&edge) {
+                continue;
+            }
+
+            // The loop's BODY must never thread a control-point edge: a loop's own crossings are
+            // segment endpoints (`src`/`tgt`), never intermediates. The forward half of every CP is
+            // left open in `blocked` so the designated PERPENDICULAR partner can cross there, but
+            // that exemption is axis-blind — without this, a same-axis loop's body could run through
+            // another loop's crossing (the "dropped yellow loop over a yellow boundary's crossing"
+            // case). An explicitly forced first/last arm is exempt (it may legitimately be a CP).
+            if (control_points.contains(&edge) || control_points.contains(&mesh.twin(edge)))
+                && Some(edge) != forced_first
+                && Some(edge) != forced_last
+            {
                 continue;
             }
 
@@ -1449,7 +1463,7 @@ fn pathing_for_loops(
 
                 loop_edges.push(src);
                 used_in_loop.insert(src);
-                match surface_path_intermediates(src, tgt, forced_first, forced_last, &blocked, &used_in_loop, &cp_distance, loop_axis, winding_sign, mesh) {
+                match surface_path_intermediates(src, tgt, forced_first, forced_last, &blocked, &used_in_loop, &all_control_points, &cp_distance, loop_axis, winding_sign, mesh) {
                     Some(inter) => {
                         if i == 0 {
                             seg0_first = inter.first().copied();
@@ -1488,6 +1502,46 @@ fn pathing_for_loops(
                 // `blocked` is untouched — the dropped loop leaves no routing trace.
                 diagnostics.dropped_loops.push((loop_axis, loop_edges));
             }
+        }
+    }
+
+    // INVARIANT CHECK: the committed loops must cross only at designated control points. Each loop
+    // is recorded on both halves of every geometric edge it uses, so a geometric edge's loop set is
+    // the same from either half. A non-CP edge shared by 2 loops, or any edge touched by >=3 loops,
+    // is an illegal crossing the router produced. Cheap, and a permanent safety net — especially for
+    // when the blocking model is relaxed later (it would immediately flag a real spurious crossing).
+    {
+        let mut occ: HashMap<EdgeID, HashSet<LoopID>> = HashMap::new();
+        for (lid, l) in map.iter() {
+            for &e in &l.edges {
+                occ.entry(e).or_default().insert(lid);
+                occ.entry(mesh.twin(e)).or_default().insert(lid);
+            }
+        }
+        let mut visited: HashSet<EdgeID> = HashSet::new();
+        let mut three_plus = 0usize;
+        let mut spurious = 0usize;
+        for (&e, lids) in &occ {
+            if !visited.insert(e) {
+                continue;
+            }
+            visited.insert(mesh.twin(e));
+            if lids.len() >= 3 {
+                three_plus += 1;
+                warn!("AUDIT >=3: geo-edge {:?} used by loops {:?}", e, lids);
+            } else if lids.len() == 2 {
+                let is_cp = all_control_points.contains(&e)
+                    || all_control_points.contains(&mesh.twin(e));
+                if !is_cp {
+                    spurious += 1;
+                }
+            }
+        }
+        if three_plus > 0 || spurious > 0 {
+            warn!(
+                "AUDIT: {} geo-edges with >=3 loops, {} non-CP geo-edges shared by exactly 2 loops (spurious crossings)",
+                three_plus, spurious
+            );
         }
     }
 }
