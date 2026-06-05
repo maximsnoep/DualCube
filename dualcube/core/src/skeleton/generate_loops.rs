@@ -74,11 +74,9 @@ pub fn generate_loops(
     // all-interior with nothing to anchor on. With >=1 boundary, interior crossings happen naturally
     // via layered routing, so no face points are computed (and none are rendered).
     let single_node = skeleton.edge_references().count() == 0;
-    let mut face_points = if single_node {
-        let mut fp = compute_face_points(skeleton, mesh);
-        // Relocate any face point whose crossing quad already contains a boundary-loop edge.
-        repair_face_points(skeleton, mesh, &map, &mut fp);
-        fp
+    // A 1-node skeleton has no boundary loops, so face points need no boundary-clearance repair.
+    let face_points = if single_node {
+        compute_face_points(skeleton, mesh)
     } else {
         FacePointMap::new()
     };
@@ -447,112 +445,6 @@ pub fn compute_face_points(skeleton: &LabeledCurveSkeleton, mesh: &Mesh<INPUT>) 
     result
 }
 
-/// Repair pass after [`compute_face_points`]: a face point can land on an interior edge whose
-/// crossing quad already contains a boundary-loop edge (one of the 4 arms the two orthogonal loops
-/// need). That arm is permanently occupied by the boundary, so the 4-arm crossing can't form and
-/// the loops through this face point are unroutable. For each such face point, relocate it to the
-/// best-direction-aligned interior edge of the same patch whose quad is clear of boundary edges,
-/// preserving the original placement direction. Leaves it in place (logged) if the patch offers no
-/// clear edge (a genuine mesh-resolution limit). Does not touch the working placement logic.
-fn repair_face_points(
-    skeleton: &LabeledCurveSkeleton,
-    mesh: &Mesh<INPUT>,
-    map: &SlotMap<LoopID, Loop>,
-    face_points: &mut FacePointMap,
-) {
-    // All boundary-loop edges (both halves). At this stage `map` holds only the boundary loops.
-    let mut boundary_edges: HashSet<EdgeID> = HashSet::new();
-    for l in map.values() {
-        for &e in &l.edges {
-            boundary_edges.insert(e);
-            boundary_edges.insert(mesh.twin(e));
-        }
-    }
-    let quad_clear = |cp: EdgeID| -> bool {
-        mesh.quad(cp)
-            .iter()
-            .all(|&arm| !boundary_edges.contains(&arm) && !boundary_edges.contains(&mesh.twin(arm)))
-    };
-
-    let (mut invalid, mut repaired, mut unrepairable) = (0usize, 0usize, 0usize);
-
-    for (&node_idx, slots) in face_points.iter_mut() {
-        let node = &skeleton[node_idx];
-        let node_pos = node.skeleton_node.position;
-        let patch_set: HashSet<VertID> = node.skeleton_node.patch_vertices.iter().copied().collect();
-
-        // Same candidate pool as `compute_face_points`: patch-interior mesh edges that are not
-        // themselves boundary-loop edges. Additionally require a clear quad here.
-        let mut seen: HashSet<(VertID, VertID)> = HashSet::new();
-        let mut clear_candidates: Vec<EdgeID> = Vec::new();
-        for &vert in &node.skeleton_node.patch_vertices {
-            for face in mesh.faces(vert) {
-                let verts: Vec<VertID> = mesh.vertices(face).collect();
-                for i in 0..verts.len() {
-                    let a = verts[i];
-                    let b = verts[(i + 1) % verts.len()];
-                    if !patch_set.contains(&a) || !patch_set.contains(&b) {
-                        continue;
-                    }
-                    let key = if a < b { (a, b) } else { (b, a) };
-                    if !seen.insert(key) {
-                        continue;
-                    }
-                    if let Some((e, _)) = mesh.edge_between_verts(a, b) {
-                        if boundary_edges.contains(&e) || boundary_edges.contains(&mesh.twin(e)) {
-                            continue;
-                        }
-                        if quad_clear(e) {
-                            clear_candidates.push(e);
-                        }
-                    }
-                }
-            }
-        }
-
-        let border_positions = patch_border_positions(skeleton, node_idx, mesh);
-        // Slots that already sit on a clear quad keep their edge; reserve those so a relocation
-        // can't land on top of them.
-        let mut chosen: HashSet<EdgeID> = slots
-            .values()
-            .filter(|&&cp| quad_clear(cp))
-            .copied()
-            .collect();
-
-        for cp in slots.values_mut() {
-            if quad_clear(*cp) {
-                continue;
-            }
-            invalid += 1;
-            // Keep the face point as close as possible to its original direction from the node,
-            // but relocate using the same centrality-biased scoring as initial placement.
-            let target = (edge_midpoint_pos(*cp, mesh) - node_pos).normalize();
-            match best_face_point_candidate(
-                &clear_candidates,
-                &chosen,
-                node_pos,
-                target,
-                &border_positions,
-                mesh,
-            ) {
-                Some(new_cp) => {
-                    *cp = new_cp;
-                    chosen.insert(new_cp);
-                    repaired += 1;
-                }
-                None => unrepairable += 1,
-            }
-        }
-    }
-
-    if invalid > 0 {
-        warn!(
-            "face points: {} had a boundary edge in their quad, {} relocated, {} unrepairable",
-            invalid, repaired, unrepairable
-        );
-    }
-}
-
 /// Position of an edge's midpoint.
 fn edge_midpoint_pos(e: EdgeID, mesh: &Mesh<INPUT>) -> Vector3D {
     let a = mesh.position(mesh.root(e));
@@ -746,7 +638,7 @@ const CP_MOAT_RADIUS: u32 = (CP_MOAT_PENALTY.len() as u32) - 1;
 /// in-face travel direction `d` (between the two edge midpoints), rotated 90° about the face
 /// normal `n`, gives the loop's local *separating* direction `d × n`, which should align with the
 /// loop's *signed* target Δ (oriented by the loop's fixed winding direction; see `winding_sign` in
-/// `surface_path_intermediates`). We charge a per-step penalty for misalignment, **integrated over
+/// `surface_path_layered`). We charge a per-step penalty for misalignment, **integrated over
 /// arc length**: `step_cost = length * (LAMBDA_DIST + W_ALIGN * misalignment)`, where
 /// `misalignment = 1 - cos∠(d × n, ±Δ) ∈ [0, 2]` (0 = forward-aligned, 1 = perpendicular,
 /// 2 = reversed winding).
@@ -775,255 +667,21 @@ const LAMBDA_DIST: f64 = 1.0;
 /// [`best_face_point_candidate`].
 const FP_DIRECTION_BIAS: f64 = 1.5;
 
-/// Dijkstra's on the mesh dual graph to find the best intermediate path between two
-/// control-point edges. The step cost is the alignment-primary, distance-regularized measure
-/// described on [`W_ALIGN`] (a geodesic distance floor plus an arc-length-integrated misalignment
-/// penalty that biases the path to follow the loop's principal axis), scaled by the moat /
-/// shared-edge multipliers below.
+/// Dijkstra over the mesh dual graph (state = face) that routes from `source` to `target` while
+/// crossing an ORDERED list of committed `partners` exactly once each, in order. The cost is the
+/// alignment-primary, distance-regularized measure on [`W_ALIGN`] scaled by the moat / shared-edge
+/// multipliers. The search state is `(face, layer)` with `layer ∈ 0..=k` (`k = partners.len()`);
+/// crossing an edge of `partners[layer]` is a one-way transition `layer -> layer+1`, realized as an
+/// atomic straight-through (diagonal) crossing: the loop enters the crossing face on its arm, cuts
+/// across the partner's edge, and exits on the diagonal partner (`quad_diagonal_partner`). Because
+/// the partner's own arms are already in `blocked`, the loop necessarily enters/exits on the
+/// complementary diagonal, so the 4 arms stay distinct *by construction* — no separate 4-arm check
+/// is needed. Out-of-order partner crossings are forbidden. With `partners` empty this is a plain
+/// shortest free path between the two anchors.
 ///
-/// Returns the mesh edges crossed between `source` and `target`, **exclusive** of both.
-/// The caller is responsible for pushing `source` before and `target` after this list.
-///
-/// `blocked` contains the reverse half-edges of existing loops (twin of each traversed edge).
-/// A path cannot traverse a half-edge that is in `blocked`, which prevents crossing an existing
-/// loop in the opposite direction while still allowing parallel (same-direction) traversal.
-///
-/// `used` contains half-edges already traversed by the current loop being traced. This prevents
-/// self-intersection: a loop cannot reuse an edge it already traversed (even in the same direction).
-/// Unlike `blocked`, `used` is scoped to a single loop and discarded afterward so that later loops
-/// can still share those edges in parallel.
-///
-/// Faces adjacent to blocked/used edges incur a `SHARED_EDGE_MULTIPLIER` cost penalty,
-/// encouraging paths to stay away from existing loops even when parallel traversal is allowed.
-///
-/// `forced_first`, when `Some(e)`, requires the path's FIRST step (out of a source face) to be
-/// exactly `e`. `forced_last`, when `Some(e)`, requires the path's LAST step (into a target
-/// face) to be exactly `e`. These enforce the straight-through (quad-diagonal) crossing rule at
-/// the control points: a loop must leave a crossing via the diagonal partner of how it arrived,
-/// and the closing segment must arrive matching the first segment's departure.
-///
-/// Returns `None` if no path exists.
-fn surface_path_intermediates(
-    source: EdgeID,
-    target: EdgeID,
-    forced_first: Option<EdgeID>,
-    forced_last: Option<EdgeID>,
-    blocked: &HashSet<EdgeID>,
-    used: &HashSet<EdgeID>,
-    control_points: &HashSet<EdgeID>,
-    cp_distance: &HashMap<FaceID, u32>,
-    loop_axis: PrincipalDirection,
-    winding_sign: f64,
-    mesh: &Mesh<INPUT>,
-) -> Option<Vec<EdgeID>> {
-    // Signed target Δ for the alignment cost (see `W_ALIGN`): the loop should locally separate
-    // along its own principal axis, wound in a single CONSISTENT direction (`winding_sign`, fixed
-    // per loop). Signing it — rather than folding with |cos| — makes a step that reverses the
-    // winding cost ~2×, so a smooth bulge always beats a zigzag even past a badly-placed crossing.
-    let signed_target: Vector3D = Vector3D::from(loop_axis) * winding_sign;
-    let faces_of = |e: EdgeID| -> Vec<FaceID> {
-        let a = mesh.root(e);
-        let b = mesh.toor(e);
-        let set_a: HashSet<FaceID> = mesh.faces(a).collect();
-        mesh.faces(b).filter(|f| set_a.contains(f)).collect()
-    };
-
-    let face_centroid = |f: FaceID| -> Vector3D {
-        let verts: Vec<VertID> = mesh.vertices(f).collect();
-        let n = verts.len() as f64;
-        verts.iter().fold(Vector3D::zeros(), |acc, &v| acc + mesh.position(v)) / n
-    };
-
-    // Returns true if the face has at least one edge in `blocked` or `used` (other than `except`).
-    // Checks both half-edges of each geometric edge: with directional blocking only one
-    // half-edge per geometric edge is in `blocked`, depending on which direction was traversed.
-    // `except` is from the source face's perspective; its twin is this face's view of the same
-    // geometric edge, so both are excluded to avoid counting the entry edge as a blocked neighbor.
-    let face_touches_blocked = |f: FaceID, except: EdgeID| -> bool {
-        let except_twin = mesh.twin(except);
-        let verts: Vec<VertID> = mesh.vertices(f).collect();
-        let n = verts.len();
-        for i in 0..n {
-            let a = verts[i];
-            let b = verts[(i + 1) % n];
-            if let Some((e, _)) = mesh.edge_between_verts(a, b) {
-                if e != except && e != except_twin {
-                    let twin = mesh.twin(e);
-                    if blocked.contains(&e) || blocked.contains(&twin)
-                        || used.contains(&e) || used.contains(&twin)
-                    {
-                        return true;
-                    }
-                }
-            }
-        }
-        false
-    };
-
-    let source_faces = faces_of(source);
-    let target_face_set: HashSet<FaceID> = faces_of(target).into_iter().collect();
-
-    // If source and target already share a face, no intermediate edges are needed.
-    if source_faces.iter().any(|f| target_face_set.contains(f)) {
-        return Some(vec![]);
-    }
-
-    // Dijkstra. dist: best known cost to reach a face.
-    // prev: face -> (parent_face, edge_used_to_reach_it).
-    // Heap entries: (Reverse(cost), face).
-    let mut dist: HashMap<FaceID, f64> = HashMap::new();
-    let mut prev: HashMap<FaceID, (FaceID, Option<EdgeID>)> = HashMap::new();
-    let mut heap: BinaryHeap<(std::cmp::Reverse<OrderedFloat<f64>>, FaceID)> = BinaryHeap::new();
-
-    for &sf in &source_faces {
-        dist.insert(sf, 0.0);
-        prev.insert(sf, (sf, None));
-        heap.push((std::cmp::Reverse(OrderedFloat(0.0)), sf));
-    }
-
-    let mut found: Option<FaceID> = None;
-
-    'dijkstra: while let Some((std::cmp::Reverse(OrderedFloat(cost)), face)) = heap.pop() {
-        if dist.get(&face).copied().unwrap_or(f64::INFINITY) < cost {
-            continue; // stale entry
-        }
-
-        let face_verts: Vec<VertID> = mesh.vertices(face).collect();
-        let n = face_verts.len();
-        let centroid_a = face_centroid(face);
-        // A source face is one seeded with no incoming edge. Leaving it, `forced_first`
-        // (if set) is the only edge permitted, so the loop departs the crossing via the
-        // required diagonal side.
-        let is_source = prev.get(&face).map(|p| p.1.is_none()).unwrap_or(false);
-
-        for i in 0..n {
-            let a = face_verts[i];
-            let b = face_verts[(i + 1) % n];
-            let Some((edge, _)) = mesh.edge_between_verts(a, b) else { continue };
-
-            if is_source {
-                if let Some(ff) = forced_first {
-                    if edge != ff {
-                        continue;
-                    }
-                }
-            }
-
-            if blocked.contains(&edge) || used.contains(&edge) {
-                continue;
-            }
-
-            // The loop's BODY must never thread a control-point edge: a loop's own crossings are
-            // segment endpoints (`src`/`tgt`), never intermediates. The forward half of every CP is
-            // left open in `blocked` so the designated PERPENDICULAR partner can cross there, but
-            // that exemption is axis-blind — without this, a same-axis loop's body could run through
-            // another loop's crossing (the "dropped yellow loop over a yellow boundary's crossing"
-            // case). An explicitly forced first/last arm is exempt (it may legitimately be a CP).
-            if (control_points.contains(&edge) || control_points.contains(&mesh.twin(edge)))
-                && Some(edge) != forced_first
-                && Some(edge) != forced_last
-            {
-                continue;
-            }
-
-            // The adjacent face across this edge.
-            let set_a: HashSet<FaceID> = mesh.faces(a).collect();
-            let Some(next_face) = mesh.faces(b).find(|&f| set_a.contains(&f) && f != face)
-            else {
-                continue;
-            };
-
-            // Entering a target face is only allowed via `forced_last` (if set), so the
-            // closing segment arrives at the start crossing on the required diagonal side.
-            let entering_target = target_face_set.contains(&next_face);
-            if entering_target {
-                if let Some(fl) = forced_last {
-                    if edge != fl {
-                        continue;
-                    }
-                }
-            }
-
-            let edge_mid = edge_midpoint_pos(edge, mesh);
-            let centroid_b = face_centroid(next_face);
-            let length = (centroid_a - edge_mid).norm() + (edge_mid - centroid_b).norm();
-
-            // Alignment cost (see `W_ALIGN`). The in-face turn goes from the edge we ENTERED
-            // `face` by (recorded in `prev`) to the edge `edge` we are leaving by; both midpoints
-            // lie on `face`, so this is exactly the flow-graph quantity charged per face. Rotating
-            // that displacement about the face normal and comparing to the target axis gives the
-            // misalignment. Source faces have no entry edge, so the first step out of a source
-            // incurs no alignment penalty.
-            let mut misalignment = 0.0;
-            if let Some((_, Some(entry_edge))) = prev.get(&face) {
-                let d = edge_mid - edge_midpoint_pos(*entry_edge, mesh);
-                let cross = d.cross(&mesh.normal(face));
-                let cn = cross.norm();
-                if cn > 1e-12 {
-                    // Signed against the loop's fixed winding direction: 0 = forward-aligned,
-                    // 1 = perpendicular, 2 = reversed winding. NOT folded, so reversal is costly.
-                    misalignment = 1.0 - (cross / cn).dot(&signed_target);
-                }
-            }
-
-            // Arc-length integral of (distance floor + misalignment): alignment is primary,
-            // distance regularizes. Scale-invariant since both terms scale with `length`.
-            let mut step_cost = length * (LAMBDA_DIST + W_ALIGN * misalignment);
-
-            // Penalize entering a face adjacent to blocked edges.
-            if face_touches_blocked(next_face, edge) {
-                step_cost *= SHARED_EDGE_MULTIPLIER;
-            }
-
-            // Control-point moat: penalize routing the body near any crossing, steeply graded by
-            // distance, so loops leave crossings promptly and swing wide rather than walling off a
-            // perpendicular partner's exit corridor. Pure cost — never blocks an otherwise-valid path.
-            if let Some(&d) = cp_distance.get(&next_face) {
-                if (d as usize) < CP_MOAT_PENALTY.len() {
-                    step_cost *= CP_MOAT_PENALTY[d as usize];
-                }
-            }
-
-            let new_cost = cost + step_cost;
-            if new_cost < dist.get(&next_face).copied().unwrap_or(f64::INFINITY) {
-                dist.insert(next_face, new_cost);
-                prev.insert(next_face, (face, Some(edge)));
-
-                if entering_target {
-                    found = Some(next_face);
-                    break 'dijkstra;
-                }
-
-                heap.push((std::cmp::Reverse(OrderedFloat(new_cost)), next_face));
-            }
-        }
-    }
-
-    // Reconstruct intermediate edges (source and target excluded).
-    let end_face = found?;
-    let mut path: Vec<EdgeID> = Vec::new();
-    let mut current = end_face;
-    loop {
-        let (parent, edge_opt) = prev[&current];
-        match edge_opt {
-            None => break, // reached a start face
-            Some(edge) => path.push(edge),
-        }
-        current = parent;
-    }
-    path.reverse();
-    Some(path)
-}
-
-/// Layered variant of [`surface_path_intermediates`]: routes from `source` to `target` while
-/// crossing an ORDERED list of committed `partners` exactly once each, in order. The search state is
-/// `(face, layer)` with `layer ∈ 0..=k` (`k = partners.len()`); crossing an edge of `partners[layer]`
-/// is a one-way transition `layer -> layer+1`, realized as an atomic straight-through (diagonal)
-/// crossing: the loop enters the crossing face on its arm, cuts across the partner's edge, and exits
-/// on the diagonal partner (`quad_diagonal_partner`). Because the partner's own arms are already in
-/// `blocked`, the loop necessarily enters/exits on the complementary diagonal, so the 4 arms stay
-/// distinct *by construction* — no separate 4-arm check is needed. Out-of-order partner crossings
-/// are forbidden. With `partners` empty this is equivalent to `surface_path_intermediates`.
+/// `forced_first`/`forced_last` pin the first/last step (the boundary-crossing diagonal at each
+/// anchor). `blocked` holds committed loops' occupancy; `used` the current loop's own edges (self-
+/// avoidance); `control_points` the boundary-crossing edges the body must not thread.
 ///
 /// Returns the intermediate mesh edges (source/target exclusive), or `None` if no such path exists.
 fn surface_path_layered(
@@ -1618,11 +1276,12 @@ fn pathing_for_loops(
                 })
                 .collect();
 
-        // Blocked edges: geometric-edge occupancy of all loops established before this
-        // direction. Both halves of every non-control-point edge are blocked (true
-        // edge-disjointness), and only the reverse half of control-point edges, so the
-        // designated crossings remain shareable. Additionally, edges adjacent to control
-        // points are fully blocked to guarantee 4 distinct arms at every intersection.
+        // Blocked edges: geometric-edge occupancy of all loops committed before this axis. Both
+        // halves of every non-anchor edge are blocked (true edge-disjointness), and only the reverse
+        // half of boundary-crossing anchors, so the boundary crossings stay shareable. Edges adjacent
+        // to anchors are fully blocked for the 4-arm guarantee at boundary crossings. Interior
+        // crossings are instead realized by `surface_path_layered`'s one-way transitions, which
+        // override `blocked` to cross a designated partner exactly once.
         let mut blocked: HashSet<EdgeID> = HashSet::new();
         for l in map.values() {
             block_loop_occupancy(&l.edges, &all_control_points, &mut blocked, mesh);
@@ -1889,15 +1548,15 @@ fn pathing_for_loops(
     }
 }
 
-/// A point on the surface that lies on a loop.
+/// A point on the surface that lies on a loop, produced by the `next_point` traversal.
 ///
-/// - `Crossing`: on a boundary between two patches.
-///   `dir_sign = (A, s)` is the CrossingMap key, where `A = third(loop_axis, boundary_dir)`
-///   and `s` is the sign of the slot the loop was at *before* crossing this boundary.
-///   An L-loop only visits crossings whose `dir_sign` direction ≠ L.
-/// - `FacePoint`: on a node patch. `dir_sign = (A, s)` is the key into `FacePointMap[patch]`,
-///   representing the face the loop is currently sitting on.
-///   An L-loop only visits face points whose `dir_sign` direction ≠ L.
+/// - `Crossing`: a patch-boundary crossing (a pinned anchor). `dir_sign = (A, s)` is the CrossingMap
+///   key, where `A = third(loop_axis, boundary_dir)` and `s` is the sign of the slot the loop was at
+///   *before* crossing this boundary. An L-loop only visits crossings whose `dir_sign` direction ≠ L.
+/// - `FacePoint`: an interior crossing on a node patch, identified by `(patch, dir_sign)`. It maps to
+///   an `Event::Interior` (no pinned edge); the perpendicular partner and location are resolved at
+///   routing time. (Only on a 1-node skeleton, where there are no boundaries, does it resolve to a
+///   pinned `FacePointMap[patch][dir_sign]` edge.) An L-loop only visits these whose direction ≠ L.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum NextPoint {
     Crossing { loop_id: LoopID, dir_sign: (PrincipalDirection, AxisSign) },
