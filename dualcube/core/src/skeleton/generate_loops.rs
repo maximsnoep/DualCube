@@ -640,13 +640,14 @@ const CP_MOAT_RADIUS: u32 = (CP_MOAT_PENALTY.len() as u32) - 1;
 /// loop's *signed* target Δ (oriented by the loop's fixed winding direction; see `winding_sign` in
 /// `surface_path_layered`). We charge a per-step penalty for misalignment, **integrated over
 /// arc length**: `step_cost = length * (LAMBDA_DIST + W_ALIGN * misalignment)`, where
-/// `misalignment = 1 - cos∠(d × n, ±Δ) ∈ [0, 2]` (0 = forward-aligned, 1 = perpendicular,
-/// 2 = reversed winding).
+/// `misalignment = θ^ALIGN_ALPHA` (raw radians), `θ = ∠(d × n, ±Δ)` (0 = forward-aligned, π =
+/// reversed winding). This is the flow-graph / paper `θ^α` cost (see [`ALIGN_ALPHA`]): large angles
+/// are punished steeply so the router prefers the straight/aligned route even when longer.
 ///
 /// - Signed, NOT folded. Folding with `|cos|` made winding forward and backward cost the same, so a
-///   zigzag (alternating across the axis) was free — the zigzag source. Signing it against the
-///   loop's single fixed winding makes reversal cost ~2×, so a smooth bulge always beats a zigzag
-///   even past a badly-placed crossing.
+///   zigzag (alternating across the axis) was free — the zigzag source. Measuring θ against the
+///   loop's single fixed winding (π at reversal) makes a smooth bulge always beat a zigzag, even
+///   past a badly-placed crossing.
 /// - Scale-invariant: both terms scale with `length`, so relative path costs do not depend on mesh
 ///   size. This is the arc-length integral `∫ (λ + W·misalignment) ds`, the continuous "niceness"
 ///   functional, rather than the flow graph's per-turn `angle³` (its state is turns, ours is faces).
@@ -659,6 +660,13 @@ const W_ALIGN: f64 = 8.0;
 /// Distance-floor weight in the routing cost; see [`W_ALIGN`]. Keeping it at the old base unit
 /// (1.0) preserves geodesic behavior as a tie-breaker/regularizer beneath the alignment term.
 const LAMBDA_DIST: f64 = 1.0;
+
+/// Exponent on the misalignment angle (radians) — the flow-graph / paper `θ^α` cost shape, applied
+/// to the RAW angle (not normalized). The paper uses `α = 10`. Higher α penalizes large angles ever
+/// more steeply (e.g. `α = 10`: a 90° turn costs `(π/2)^10 ≈ 92`, a 180° reversal `π^10 ≈ 9.4e4`),
+/// so loops strongly prefer the straight/aligned route even when geometrically longer, while small
+/// turns (`θ < 1` rad) stay cheap. See [`W_ALIGN`].
+const ALIGN_ALPHA: i32 = 10;
 
 /// Weight of the directional (alignment) force relative to the centrality (anti-rim) force when
 /// placing face points; both are normalized to ~unit scale, so this is dimensionless. It must be
@@ -754,7 +762,13 @@ fn surface_path_layered(
             let cross = d.cross(&mesh.normal(face));
             let cn = cross.norm();
             if cn > 1e-12 {
-                misalignment = 1.0 - (cross / cn).dot(&signed_target);
+                // Angle (radians) between the loop's in-plane separating direction `d × n` and its
+                // SIGNED target axis: 0 = forward-aligned, π = reversed winding. Penalized by the
+                // paper's raw `θ^α` cost (NOT normalized): higher α punishes large angles ever more
+                // steeply, so the router strongly prefers the straight (aligned) way even when it is
+                // geometrically longer.
+                let cos = (cross / cn).dot(&signed_target).clamp(-1.0, 1.0);
+                misalignment = cos.acos().powi(ALIGN_ALPHA);
             }
         }
         let mut c = length * (LAMBDA_DIST + W_ALIGN * misalignment);
