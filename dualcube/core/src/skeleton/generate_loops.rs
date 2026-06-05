@@ -97,26 +97,18 @@ pub fn generate_loops(
         &mut diagnostics,
     );
 
-    // Pathing (and the boundary face-walk) produce loops with one half-edge per crossed
-    // geometric edge. The downstream `Dual` builder requires both halves of every crossed
-    // edge: it detects crossings by canonicalizing to the higher half-edge (`edge > twin(edge)`)
-    // and its quad-walk assumes each edge's twin sits adjacent to it in the sequence
-    // (see `solutions::check_loop` for the canonical alternating twin/same-face form).
-    // We expand AFTER pathing so the routing's blocking still operates on the raw single-half form.
+    // Routing produces one half-edge per crossed geometric edge; `Dual` requires both halves (it
+    // canonicalizes crossings to the higher half-edge and its quad-walk expects each edge's twin
+    // adjacent in the sequence). Expand AFTER pathing so blocking still sees the single-half form.
     for (_, l) in map.iter_mut() {
         let raw = std::mem::take(&mut l.edges);
         l.edges = expand_to_double_halfedges(raw, mesh);
     }
 
-    // Normalize loop winding so all loops of the SAME axis wind the same way about that axis.
-    // The downstream `Dual` derives each segment's side label (Forwards/Backwards) from the loop's
-    // stored edge ORDER; if two parallel same-axis loops are stored with opposite winding, a region
-    // between them gets the same (axis, side) label twice → Property 3 ("Invalid face boundary").
-    // `ccw_next` is supposed to give a consistent winding but inherits any orthogonalization sign
-    // inconsistency, so we enforce consistency directly here via the loop's signed area about its
-    // axis (reversing the edge order flips the winding; it preserves the canonical twin/same-face
-    // alternation since that relation is symmetric). The absolute choice is irrelevant — a global
-    // per-axis flip is just a mirror, which `realize` already canonicalizes — only consistency matters.
+    // Normalize winding so all same-axis loops wind the same way. `Dual` derives each segment's side
+    // label from the stored edge ORDER, so two parallel same-axis loops with opposite winding would
+    // double a region's (axis, side) label → Property 3 ("Invalid face boundary"). Reversing the edge
+    // list flips winding while preserving the twin/same-face alternation; only consistency matters.
     for (_, l) in map.iter_mut() {
         if signed_area_about_axis(&l.edges, l.direction, mesh) < 0.0 {
             l.edges.reverse();
@@ -612,60 +604,23 @@ fn bridge_edges(from: EdgeID, to: EdgeID, mesh: &Mesh<INPUT>) -> Vec<EdgeID> {
     );
 }
 
-/// Cost multiplier applied when entering or leaving a face that has at least one blocked edge.
-const SHARED_EDGE_MULTIPLIER: f64 = 8.0;
-
-/// Control-point "moat": a steep, distance-graded cost penalty for routing a loop's body
-/// through faces near ANY control point. Indexed by face-hop distance to the nearest control
-/// point; distances beyond the array length incur no penalty (factor 1.0).
-///
-/// Why: two perpendicular loops crossing at a control point must each leave room for the other.
-/// Without this, a loop that turns one step after crossing runs its body straight down the
-/// partner's exit corridor and walls it off. Making the crossing neighbourhood expensive pushes
-/// loops to leave crossings promptly and swing wide when they must turn, so the partner can
-/// always thread out. This is a pure cost (Dijkstra still finds any existing path), so it can
-/// never make the loop being routed fail or reintroduce illegal crossings — it only reshapes the
-/// chosen path to leave space for later loops.
-const CP_MOAT_PENALTY: [f64; 4] = [30.0, 10.0, 4.0, 2.0];
-
-/// Largest face-hop distance the moat field records (= last penalized distance). Beyond this,
-/// faces are absent from the field and incur no penalty.
-const CP_MOAT_RADIUS: u32 = (CP_MOAT_PENALTY.len() as u32) - 1;
-
-/// Alignment routing cost (mirrors the flow-graph loop cost in `gui/src/main.rs`).
-///
-/// Each routing step turns within a face, entering by one edge and leaving by another. The
-/// in-face travel direction `d` (between the two edge midpoints), rotated 90° about the face
-/// normal `n`, gives the loop's local *separating* direction `d × n`, which should align with the
-/// loop's *signed* target Δ (oriented by the loop's fixed winding direction; see `winding_sign` in
-/// `surface_path_layered`). We charge a per-step penalty for misalignment, **integrated over
-/// arc length**: `step_cost = length * (LAMBDA_DIST + W_ALIGN * misalignment)`, where
-/// `misalignment = θ^ALIGN_ALPHA` (raw radians), `θ = ∠(d × n, ±Δ)` (0 = forward-aligned, π =
-/// reversed winding). This is the flow-graph / paper `θ^α` cost (see [`ALIGN_ALPHA`]): large angles
-/// are punished steeply so the router prefers the straight/aligned route even when longer.
-///
-/// - Signed, NOT folded. Folding with `|cos|` made winding forward and backward cost the same, so a
-///   zigzag (alternating across the axis) was free — the zigzag source. Measuring θ against the
-///   loop's single fixed winding (π at reversal) makes a smooth bulge always beat a zigzag, even
-///   past a badly-placed crossing.
-/// - Scale-invariant: both terms scale with `length`, so relative path costs do not depend on mesh
-///   size. This is the arc-length integral `∫ (λ + W·misalignment) ds`, the continuous "niceness"
-///   functional, rather than the flow graph's per-turn `angle³` (its state is turns, ours is faces).
-/// - `LAMBDA_DIST` is the distance floor: it keeps the old geodesic behavior as a regularizer so
-///   that among equally-aligned paths the shorter/compacter one wins and the router cannot meander
-///   for free. Alignment is *primary* (`W_ALIGN ≫ LAMBDA_DIST`); distance only breaks ties.
-/// - The moat / shared-edge multipliers still apply on top, so this never makes a path infeasible.
+/// Weight of the alignment penalty in the per-step routing cost:
+/// `step_cost = length * (LAMBDA_DIST + W_ALIGN * θ^ALIGN_ALPHA)`, where `θ = ∠(d × n, ±Δ)` is the
+/// angle between the loop's local separating direction (`d × n`, its in-face travel `d` rotated 90°
+/// about the face normal) and its signed target axis Δ (signed by the loop's winding; 0 = forward-
+/// aligned, π = reversed). The penalty is integrated over arc length and signed (not folded), so
+/// winding reversal is maximal — this is what stops zigzagging. Alignment is primary
+/// (`W_ALIGN ≫ LAMBDA_DIST`).
 const W_ALIGN: f64 = 8.0;
 
-/// Distance-floor weight in the routing cost; see [`W_ALIGN`]. Keeping it at the old base unit
-/// (1.0) preserves geodesic behavior as a tie-breaker/regularizer beneath the alignment term.
+/// Distance-floor weight in the routing cost (see [`W_ALIGN`]): a geodesic regularizer/tie-breaker
+/// beneath the alignment term, so among equally-aligned paths the shorter one wins.
 const LAMBDA_DIST: f64 = 1.0;
 
-/// Exponent on the misalignment angle (radians) — the flow-graph / paper `θ^α` cost shape, applied
-/// to the RAW angle (not normalized). The paper uses `α = 10`. Higher α penalizes large angles ever
-/// more steeply (e.g. `α = 10`: a 90° turn costs `(π/2)^10 ≈ 92`, a 180° reversal `π^10 ≈ 9.4e4`),
-/// so loops strongly prefer the straight/aligned route even when geometrically longer, while small
-/// turns (`θ < 1` rad) stay cheap. See [`W_ALIGN`].
+/// Exponent on the misalignment angle (radians), raw `θ^α` like the flow-graph / paper cost (paper
+/// uses 10). Higher α punishes large angles ever more steeply (`α = 10`: 90° → `(π/2)^10 ≈ 92`,
+/// 180° → `π^10 ≈ 9.4e4`), so loops strongly prefer the straight/aligned route even when longer,
+/// while small turns stay cheap. See [`W_ALIGN`].
 const ALIGN_ALPHA: i32 = 10;
 
 /// Weight of the directional (alignment) force relative to the centrality (anti-rim) force when
@@ -677,8 +632,8 @@ const FP_DIRECTION_BIAS: f64 = 1.5;
 
 /// Dijkstra over the mesh dual graph (state = face) that routes from `source` to `target` while
 /// crossing an ORDERED list of committed `partners` exactly once each, in order. The cost is the
-/// alignment-primary, distance-regularized measure on [`W_ALIGN`] scaled by the moat / shared-edge
-/// multipliers. The search state is `(face, layer)` with `layer ∈ 0..=k` (`k = partners.len()`);
+/// alignment-primary, distance-regularized measure on [`W_ALIGN`]. The search state is
+/// `(face, layer)` with `layer ∈ 0..=k` (`k = partners.len()`);
 /// crossing an edge of `partners[layer]` is a one-way transition `layer -> layer+1`, realized as an
 /// atomic straight-through (diagonal) crossing: the loop enters the crossing face on its arm, cuts
 /// across the partner's edge, and exits on the diagonal partner (`quad_diagonal_partner`). Because
@@ -701,7 +656,6 @@ fn surface_path_layered(
     blocked: &HashSet<EdgeID>,
     used: &HashSet<EdgeID>,
     control_points: &HashSet<EdgeID>,
-    cp_distance: &HashMap<FaceID, u32>,
     loop_axis: PrincipalDirection,
     winding_sign: f64,
     mesh: &Mesh<INPUT>,
@@ -719,26 +673,6 @@ fn surface_path_layered(
         let verts: Vec<VertID> = mesh.vertices(f).collect();
         let n = verts.len() as f64;
         verts.iter().fold(Vector3D::zeros(), |acc, &v| acc + mesh.position(v)) / n
-    };
-    let face_touches_blocked = |f: FaceID, except: EdgeID| -> bool {
-        let except_twin = mesh.twin(except);
-        let verts: Vec<VertID> = mesh.vertices(f).collect();
-        let n = verts.len();
-        for i in 0..n {
-            let a = verts[i];
-            let b = verts[(i + 1) % n];
-            if let Some((e, _)) = mesh.edge_between_verts(a, b) {
-                if e != except && e != except_twin {
-                    let twin = mesh.twin(e);
-                    if blocked.contains(&e) || blocked.contains(&twin)
-                        || used.contains(&e) || used.contains(&twin)
-                    {
-                        return true;
-                    }
-                }
-            }
-        }
-        false
     };
     let in_partner = |e: EdgeID, j: usize| -> bool {
         partners[j].contains(&e) || partners[j].contains(&mesh.twin(e))
@@ -771,16 +705,7 @@ fn surface_path_layered(
                 misalignment = cos.acos().powi(ALIGN_ALPHA);
             }
         }
-        let mut c = length * (LAMBDA_DIST + W_ALIGN * misalignment);
-        if face_touches_blocked(next_face, edge) {
-            c *= SHARED_EDGE_MULTIPLIER;
-        }
-        if let Some(&d) = cp_distance.get(&next_face) {
-            if (d as usize) < CP_MOAT_PENALTY.len() {
-                c *= CP_MOAT_PENALTY[d as usize];
-            }
-        }
-        c
+        length * (LAMBDA_DIST + W_ALIGN * misalignment)
     };
 
     let source_faces = faces_of(source);
@@ -944,19 +869,10 @@ fn block_adjacent_to_control_points(
     }
 }
 
-/// Records a committed loop's edge occupancy into `blocked`.
-///
-/// For every edge `e` the loop uses we always block `twin(e)` (no other loop may cross
-/// it in the opposite direction). For NON-control-point edges we additionally block `e`
-/// itself, so the geometric edge is fully occupied and no later loop can reuse it in
-/// either direction. Control-point edges are exempt on the forward half so the designated
-/// crossings can still occur there.
-///
-/// This is the geometric-edge–occupancy rule. The earlier `map(twin)`-only blocking was
-/// inherited from the flow-graph representation (where a loop carries BOTH halves of every
-/// crossed edge, so blocking all twins already blocked both halves). The skeleton router
-/// carries a single half-edge per crossing, so twin-only blocking left the forward halves
-/// open, letting later loops run over committed loops and form illegal non-CP crossings.
+/// Records a committed loop's edge occupancy into `blocked`. For every edge `e` the loop uses we
+/// block `twin(e)` (no other loop may cross it the opposite way); for non-control-point edges we
+/// also block `e` itself, fully occupying the geometric edge. Control-point (boundary-crossing)
+/// edges keep their forward half open so the designated crossing can still occur there.
 fn block_loop_occupancy(
     loop_edges: &[EdgeID],
     all_control_points: &HashSet<EdgeID>,
@@ -1188,37 +1104,6 @@ fn repair_boundary_crossings(
     }
 }
 
-/// Multi-source BFS giving each face its hop distance to the nearest control point, capped at
-/// `CP_MOAT_RADIUS`. Faces farther than the cap are absent from the map (treated as no penalty).
-fn control_point_distance_field(
-    control_points: &HashSet<EdgeID>,
-    mesh: &Mesh<INPUT>,
-) -> HashMap<FaceID, u32> {
-    let mut dist: HashMap<FaceID, u32> = HashMap::new();
-    let mut queue: VecDeque<FaceID> = VecDeque::new();
-    for &cp in control_points {
-        for f in [mesh.face(cp), mesh.face(mesh.twin(cp))] {
-            if dist.insert(f, 0).is_none() {
-                queue.push_back(f);
-            }
-        }
-    }
-    while let Some(f) = queue.pop_front() {
-        let d = dist[&f];
-        if d >= CP_MOAT_RADIUS {
-            continue;
-        }
-        for e in mesh.edges(f) {
-            let nf = mesh.face(mesh.twin(e));
-            if !dist.contains_key(&nf) {
-                dist.insert(nf, d + 1);
-                queue.push_back(nf);
-            }
-        }
-    }
-    dist
-}
-
 fn pathing_for_loops(
     boundary_map: BiHashMap<EdgeIndex, LoopID>,
     crossings: CrossingMap,
@@ -1241,11 +1126,6 @@ fn pathing_for_loops(
         .values()
         .flat_map(|m| m.values().copied())
         .collect();
-
-    // Face-hop distance from every face to the nearest control point, capped at the moat radius.
-    // Used to steeply penalize routing a loop's body through crossing neighbourhoods so loops
-    // leave room for the perpendicular partner crossing the same point (see `CP_MOAT_PENALTY`).
-    let cp_distance = control_point_distance_field(&all_control_points, mesh);
 
     // Interior-crossing partner resolution. An interior crossing is keyed `(node, slot)` and shared
     // by exactly the two loops of axes ≠ slot.dir. As each loop commits we register its interior
@@ -1424,7 +1304,7 @@ fn pathing_for_loops(
                     };
                     loop_edges.push(src);
                     used_in_loop.insert(src);
-                    match surface_path_layered(src, tgt, forced_first, forced_last, &[], &blocked, &used_in_loop, &all_control_points, &cp_distance, loop_axis, winding_sign, mesh) {
+                    match surface_path_layered(src, tgt, forced_first, forced_last, &[], &blocked, &used_in_loop, &all_control_points, loop_axis, winding_sign, mesh) {
                         Some(inter) => {
                             if i == 0 {
                                 seg0_first = inter.first().copied();
@@ -1483,7 +1363,7 @@ fn pathing_for_loops(
 
                     loop_edges.push(src);
                     used_in_loop.insert(src);
-                    match surface_path_layered(src, tgt, forced_first, forced_last, &partners, &blocked, &used_in_loop, &all_control_points, &cp_distance, loop_axis, winding_sign, mesh) {
+                    match surface_path_layered(src, tgt, forced_first, forced_last, &partners, &blocked, &used_in_loop, &all_control_points, loop_axis, winding_sign, mesh) {
                         Some(inter) => {
                             if bi == 0 {
                                 seg0_first = inter.first().copied();
