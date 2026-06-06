@@ -683,11 +683,13 @@ pub fn create_routing_diagnostics_gizmos(
     scale: f64,
 ) -> GizmoAsset {
     let mut gizmos = GizmoAsset::new();
-    let red = Color::srgb(1.0, 0.0, 0.0);
     const MARKER_RADIUS: f32 = 0.4;
+    const BLOCKER_RADIUS: f32 = 0.25;
 
-    // Dropped loops: how far each got before being abandoned.
-    for (direction, edges) in &diagnostics.dropped_loops {
+    // Dropped loops: how far each got before being abandoned. Drawn DIM GRAY (context only) so the
+    // warm failure/blocker pairs below are the only coloured things and pairings read clearly.
+    let gray = Color::srgb(0.45, 0.45, 0.45);
+    for (_direction, edges) in &diagnostics.dropped_loops {
         if edges.is_empty() {
             continue;
         }
@@ -695,20 +697,55 @@ pub fn create_routing_diagnostics_gizmos(
             .iter()
             .map(|&e| world_to_view(mesh.position(e), translation, scale))
             .collect();
-        let color = colors::to_bevy(colors::from_direction(*direction, None, None));
-        gizmos.linestrip(positions, color);
+        gizmos.linestrip(positions, gray);
     }
 
-    // Failed segments: the gaps the router could not connect.
-    for &(src, tgt) in &diagnostics.failed_segments {
-        let a = world_to_view(mesh.position(src), translation, scale);
-        let b = world_to_view(mesh.position(tgt), translation, scale);
-        gizmos.sphere(Isometry3d::from_translation(a), MARKER_RADIUS, red);
-        gizmos.sphere(Isometry3d::from_translation(b), MARKER_RADIUS, red);
-        gizmos.line(a, b, red);
+    // Each routing failure gets a distinct warm colour, SHARED with the committed loop-segment(s)
+    // that wall it off — so for multiple failures it is easy to see which blocker pairs with which
+    // gap. (Deliberately not pure red.) The gap is drawn as two endpoint spheres + a chord; each
+    // blocking segment as a thick polyline in the same colour, with spheres at its ends.
+    for (i, bf) in diagnostics.blocked_failures.iter().enumerate() {
+        let color = failure_palette(i);
+        let a = world_to_view(mesh.position(bf.src), translation, scale);
+        let b = world_to_view(mesh.position(bf.tgt), translation, scale);
+        gizmos.sphere(Isometry3d::from_translation(a), MARKER_RADIUS, color);
+        gizmos.sphere(Isometry3d::from_translation(b), MARKER_RADIUS, color);
+        gizmos.line(a, b, color);
+        for seg in &bf.blockers {
+            let positions: Vec<Vec3> = seg
+                .iter()
+                .map(|&e| world_to_view(mesh.position(e), translation, scale))
+                .collect();
+            if positions.len() >= 2 {
+                gizmos.linestrip(positions.clone(), color);
+                gizmos.sphere(Isometry3d::from_translation(positions[0]), BLOCKER_RADIUS, color);
+                gizmos.sphere(
+                    Isometry3d::from_translation(positions[positions.len() - 1]),
+                    BLOCKER_RADIUS,
+                    color,
+                );
+            }
+        }
     }
 
     gizmos
+}
+
+/// Distinct colours for paired failure/blocker overlays, deliberately chosen to NOT collide with the
+/// loop direction palette (red / green / blue / yellow / orange / purple). Cyan, magenta and white
+/// read clearly on top of any direction-coloured loop, so a blocker segment is never confused with
+/// the committed loop it lies on. Same index ⇒ same colour ⇒ a failure/blocker pair.
+fn failure_palette(i: usize) -> Color {
+    const PALETTE: [(f32, f32, f32); 6] = [
+        (0.0, 1.0, 1.0), // cyan
+        (1.0, 0.0, 1.0), // magenta
+        (1.0, 1.0, 1.0), // white
+        (1.0, 0.45, 0.8), // pink
+        (0.0, 1.0, 0.55), // spring green
+        (0.6, 0.8, 1.0), // pale blue
+    ];
+    let (r, g, b) = PALETTE[i % PALETTE.len()];
+    Color::srgb(r, g, b)
 }
 
 /// Visualizes loop regions that violate Property 3 (invalid face boundary). Each region is a list

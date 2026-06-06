@@ -54,6 +54,21 @@ pub struct RoutingDiagnostics {
     /// Control-point pairs `(src, tgt)` that a segment's Dijkstra could not connect — the
     /// gaps where routing got stuck.
     pub failed_segments: Vec<(EdgeID, EdgeID)>,
+    /// For each failed segment, the specific already-committed loop SEGMENTS that wall it off
+    /// (a committed loop that alone separates `src`/`tgt`, narrowed to the segment(s) whose
+    /// removal reopens the path). Lets the GUI pair each failure with its blocker(s) by colour.
+    pub blocked_failures: Vec<BlockedFailure>,
+}
+
+/// One routing failure together with the committed loop-segments that block it. Used by the GUI
+/// overlay to draw the failed gap and its blocker(s) in a shared, per-failure colour.
+#[derive(Debug, Clone)]
+pub struct BlockedFailure {
+    pub src: EdgeID,
+    pub tgt: EdgeID,
+    pub axis: PrincipalDirection,
+    /// Each blocker is one committed loop-segment, as an ordered edge list (for polyline drawing).
+    pub blockers: Vec<Vec<EdgeID>>,
 }
 
 /// Generates surface-embedded loops from a polycube and polycube map.
@@ -1211,9 +1226,10 @@ fn pathing_for_loops(
     // order and the dual's 4-arm/quad-walk is satisfied.
     let mut interior_partner: HashMap<(NodeIndex, (PrincipalDirection, AxisSign)), (LoopID, usize)> =
         HashMap::new();
-    // Per committed loop, the edge set of each of its chord-segments (in commit order), so a partner
-    // lookup can hand the router exactly the owning segment's edges.
-    let mut committed_seg_edges: HashMap<LoopID, Vec<HashSet<EdgeID>>> = HashMap::new();
+    // Per committed loop, the ORDERED edges of each of its chord-segments (in commit order), so a
+    // partner lookup can hand the router exactly the owning segment's edges, and the blocker overlay
+    // can draw a specific segment as a polyline.
+    let mut committed_seg_ordered: HashMap<LoopID, Vec<Vec<EdgeID>>> = HashMap::new();
 
     // DIAG: committed loops' chord-segments (each chord = edges between two consecutive boundary
     // anchors). Invariant (ALWAYS): any two segments cross at most once. Checked at the end.
@@ -1474,10 +1490,10 @@ fn pathing_for_loops(
                             if let Some(&(p, pseg)) = interior_partner.get(&(patch, slot)) {
                                 // Cross the SPECIFIC partner segment that owns this crossing, not the
                                 // whole partner loop (prevents the spurious same-segment bigon).
-                                let edges = committed_seg_edges
+                                let edges: HashSet<EdgeID> = committed_seg_ordered
                                     .get(&p)
                                     .and_then(|segs| segs.get(pseg))
-                                    .cloned()
+                                    .map(|v| v.iter().copied().collect())
                                     .unwrap_or_else(|| map[p].edges.iter().copied().collect());
                                 partners.push(edges);
                                 partner_ids.push((p, patch, slot)); // DIAG
@@ -1628,25 +1644,61 @@ fn pathing_for_loops(
                             loop_edges.extend(inter);
                         }
                         None => {
-                            // DIAG: isolate the cause. Would this chord route WITHOUT patch-locality
-                            // (global), and without locality but WITHOUT partners (pure free path)?
-                            let global_ok = surface_path_layered(
-                                src, tgt, forced_first, forced_last, &partners, &blocked,
-                                &used_in_loop, &all_control_points, None, loop_axis, winding_sign, mesh,
-                            )
-                            .is_some();
-                            let global_free_ok = surface_path_layered(
-                                src, tgt, None, None, &[], &blocked, &used_in_loop,
-                                &all_control_points, None, loop_axis, winding_sign, mesh,
-                            )
-                            .is_some();
-                            let region_sz = region.as_ref().map(|r| r.len()).unwrap_or(0);
-                            error!(
-                                "No surface path from {:?} to {:?} for {:?}-loop (chord {}/{}, k={}); \
-                                 region={} faces, global_ok={}, global_free_ok={}",
-                                src, tgt, loop_axis, bi + 1, nb, partners.len(),
-                                region_sz, global_ok, global_free_ok
-                            );
+                            error!("No surface path from {:?} to {:?} for {:?}-loop (chord {}/{}, k={})", src, tgt, loop_axis, bi + 1, nb, partners.len());
+                            // Identify the specific BLOCKING SEGMENT for the overlay. A committed loop
+                            // that ALONE separates src/tgt is a Jordan barrier the chord must cross.
+                            // To find WHICH segment it would cross (not the whole loop), route the path
+                            // the chord WOULD take with nothing committed (free) — it must cross every
+                            // separating loop — and report the loop-segment(s) that free path crosses.
+                            let empty: HashSet<EdgeID> = HashSet::new();
+                            let free = |blk: &HashSet<EdgeID>| {
+                                surface_path_layered(
+                                    src, tgt, None, None, &[], blk, &used_in_loop,
+                                    &all_control_points, None, loop_axis, winding_sign, mesh,
+                                )
+                            };
+                            let mut blockers: Vec<Vec<EdgeID>> = Vec::new();
+                            for (lid, l) in map.iter() {
+                                let mut only_l: HashSet<EdgeID> = HashSet::new();
+                                for &e in &l.edges {
+                                    only_l.insert(e);
+                                    only_l.insert(mesh.twin(e));
+                                }
+                                // Only real barriers (L alone separates src/tgt).
+                                if free(&only_l).is_some() {
+                                    continue;
+                                }
+                                let same_axis = l.direction == loop_axis;
+                                warn!(
+                                    "DIAG wall: committed {:?}-loop {:?} ALONE separates src/tgt of \
+                                     dropped {:?}-loop chord {}/{} => UNDER-COUNT (should cross it){}",
+                                    l.direction, lid, loop_axis, bi + 1, nb,
+                                    if same_axis { " [!!! SAME-AXIS separator — cannot legally cross !!!]" } else { "" }
+                                );
+                                // The crossing segment: with everything still committed, allow crossing
+                                // exactly ONE segment of L (as a one-way partner). The segment(s) that
+                                // then connect src->tgt are precisely where the chord would cross L.
+                                if let Some(segs) = committed_seg_ordered.get(&lid) {
+                                    for seg in segs {
+                                        let seg_set: HashSet<EdgeID> = seg.iter().copied().collect();
+                                        if surface_path_layered(
+                                            src, tgt, None, None, &[seg_set], &blocked,
+                                            &used_in_loop, &all_control_points, None, loop_axis,
+                                            winding_sign, mesh,
+                                        )
+                                        .is_some()
+                                        {
+                                            blockers.push(seg.clone());
+                                        }
+                                    }
+                                }
+                            }
+                            diagnostics.blocked_failures.push(BlockedFailure {
+                                src,
+                                tgt,
+                                axis: loop_axis,
+                                blockers,
+                            });
                             path_ok = false;
                             diagnostics.failed_segments.push((src, tgt));
                         }
@@ -1684,12 +1736,9 @@ fn pathing_for_loops(
                 block_loop_occupancy(&loop_edges, &all_control_points, &mut blocked, mesh);
                 block_adjacent_to_control_points(&loop_edges, &all_control_points, &mut blocked, mesh);
                 let loop_id = map.insert(Loop { edges: loop_edges, direction: loop_axis });
-                // Per-segment edge sets (commit order = chord `bi` order), so a later partner can
-                // cross exactly the owning segment.
-                committed_seg_edges.insert(
-                    loop_id,
-                    loop_chords.iter().map(|s| s.iter().copied().collect()).collect(),
-                );
+                // Per-segment ordered edges (commit order = chord `bi` order), so a later partner can
+                // cross exactly the owning segment and the overlay can draw a blocking segment.
+                committed_seg_ordered.insert(loop_id, loop_chords.clone());
                 committed_segments.push((loop_id, loop_axis, loop_chords)); // DIAG
                 // Register this loop's interior crossings, tagged with the segment (chord) index they
                 // lie on, so a later perpendicular partner resolves to the SPECIFIC owning segment.
