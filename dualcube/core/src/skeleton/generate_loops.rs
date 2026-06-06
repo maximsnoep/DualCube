@@ -1577,7 +1577,43 @@ fn pathing_for_loops(
 
                     loop_edges.push(src);
                     used_in_loop.insert(src);
-                    match surface_path_layered(src, tgt, forced_first, forced_last, &partners, &blocked, &used_in_loop, &all_control_points, region.as_ref(), loop_axis, winding_sign, mesh) {
+                    // Route the chord, self-avoiding WITHIN the chord too. The layered Dijkstra has
+                    // state `(face, layer)`, so it can revisit a face at a higher layer and fold back
+                    // over its own body (a self-crossing — invalid, loops must be simple). `used_in_loop`
+                    // only blocks the loop's PRIOR chords. So if the returned path reuses a geometric
+                    // edge, we block those edges and re-route; only if no simple path exists do we drop.
+                    let mut try_used = used_in_loop.clone();
+                    let mut routed: Option<Vec<EdgeID>> = None;
+                    for _attempt in 0..4 {
+                        let Some(inter) = surface_path_layered(
+                            src, tgt, forced_first, forced_last, &partners, &blocked, &try_used,
+                            &all_control_points, region.as_ref(), loop_axis, winding_sign, mesh,
+                        ) else {
+                            break;
+                        };
+                        // Detect a geometric edge used twice within this chord ([src] + inter).
+                        let mut seen: HashSet<EdgeID> = HashSet::new();
+                        seen.insert(src);
+                        seen.insert(mesh.twin(src));
+                        let mut folded: Vec<EdgeID> = Vec::new();
+                        for &e in &inter {
+                            if seen.contains(&e) || seen.contains(&mesh.twin(e)) {
+                                folded.push(e);
+                            }
+                            seen.insert(e);
+                            seen.insert(mesh.twin(e));
+                        }
+                        if folded.is_empty() {
+                            routed = Some(inter);
+                            break;
+                        }
+                        // Block the folded edges (both halves) and re-route a simple path.
+                        for &e in &folded {
+                            try_used.insert(e);
+                            try_used.insert(mesh.twin(e));
+                        }
+                    }
+                    match routed {
                         Some(inter) => {
                             if bi == 0 {
                                 seg0_first = inter.first().copied();
@@ -1592,7 +1628,25 @@ fn pathing_for_loops(
                             loop_edges.extend(inter);
                         }
                         None => {
-                            error!("No surface path from {:?} to {:?} for {:?}-loop (chord {}/{}, k={})", src, tgt, loop_axis, bi + 1, nb, partners.len());
+                            // DIAG: isolate the cause. Would this chord route WITHOUT patch-locality
+                            // (global), and without locality but WITHOUT partners (pure free path)?
+                            let global_ok = surface_path_layered(
+                                src, tgt, forced_first, forced_last, &partners, &blocked,
+                                &used_in_loop, &all_control_points, None, loop_axis, winding_sign, mesh,
+                            )
+                            .is_some();
+                            let global_free_ok = surface_path_layered(
+                                src, tgt, None, None, &[], &blocked, &used_in_loop,
+                                &all_control_points, None, loop_axis, winding_sign, mesh,
+                            )
+                            .is_some();
+                            let region_sz = region.as_ref().map(|r| r.len()).unwrap_or(0);
+                            error!(
+                                "No surface path from {:?} to {:?} for {:?}-loop (chord {}/{}, k={}); \
+                                 region={} faces, global_ok={}, global_free_ok={}",
+                                src, tgt, loop_axis, bi + 1, nb, partners.len(),
+                                region_sz, global_ok, global_free_ok
+                            );
                             path_ok = false;
                             diagnostics.failed_segments.push((src, tgt));
                         }
@@ -1601,6 +1655,32 @@ fn pathing_for_loops(
             }
 
             if path_ok {
+                // DIAG: self-intersection. A valid dual loop is SIMPLE — it must never reuse a
+                // geometric edge (either half). Report each reuse with its chord indices and position.
+                {
+                    let mut first_seen: HashMap<EdgeID, usize> = HashMap::new();
+                    // Map each edge position to its chord index (loop_chords order).
+                    let mut pos_chord: Vec<usize> = Vec::with_capacity(loop_edges.len());
+                    for (ci, seg) in loop_chords.iter().enumerate() {
+                        for _ in seg {
+                            pos_chord.push(ci);
+                        }
+                    }
+                    for (idx, &e) in loop_edges.iter().enumerate() {
+                        let ci = pos_chord.get(idx).copied().unwrap_or(usize::MAX);
+                        let t = mesh.twin(e);
+                        if let Some(&pidx) = first_seen.get(&e).or_else(|| first_seen.get(&t)) {
+                            let pci = pos_chord.get(pidx).copied().unwrap_or(usize::MAX);
+                            let p = edge_midpoint_pos(e, mesh);
+                            warn!(
+                                "DIAG self-cross: {:?}-loop reuses geo-edge (chord {} & chord {}) @({:.1},{:.1},{:.1})",
+                                loop_axis, pci, ci, p.x, p.y, p.z
+                            );
+                        }
+                        first_seen.entry(e).or_insert(idx);
+                        first_seen.entry(t).or_insert(idx);
+                    }
+                }
                 block_loop_occupancy(&loop_edges, &all_control_points, &mut blocked, mesh);
                 block_adjacent_to_control_points(&loop_edges, &all_control_points, &mut blocked, mesh);
                 let loop_id = map.insert(Loop { edges: loop_edges, direction: loop_axis });
