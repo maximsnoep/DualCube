@@ -630,6 +630,58 @@ const ALIGN_ALPHA: i32 = 10;
 /// [`best_face_point_candidate`].
 const FP_DIRECTION_BIAS: f64 = 1.5;
 
+/// All mesh faces incident to any vertex of `patch` (the "vertex-touch" region). Because
+/// `patch_vertices` is a complete vertex partition, this set includes the patch interior, the full
+/// boundary band (both faces of every boundary-crossing edge of the patch, since each such edge has
+/// an endpoint vertex in the patch), and a one-face margin spilling into neighbouring patches. That
+/// is exactly the region a single segment legitimately needs: enough to reach its boundary anchors
+/// and its partner-crossing quads, while forbidding it from wandering off-patch.
+fn patch_region(
+    skeleton: &LabeledCurveSkeleton,
+    patch: NodeIndex,
+    mesh: &Mesh<INPUT>,
+) -> HashSet<FaceID> {
+    let mut region = HashSet::new();
+    for &v in &skeleton[patch].skeleton_node.patch_vertices {
+        for f in mesh.faces(v) {
+            region.insert(f);
+        }
+    }
+    region
+}
+
+/// The single skeleton patch a segment lives in. A through-segment's two boundary anchors lie on two
+/// distinct skeleton edges that share exactly one endpoint node — that node is the patch. A U-turn /
+/// cap segment has both anchors on the SAME boundary loop (`bs == be`), so the two-edge intersection
+/// is undefined; we fall back to the patch of the segment's interior events (`wrap_patch`). A
+/// through-segment with zero interior events is still resolved by the two-edge intersection.
+fn segment_patch(
+    bs: Option<LoopID>,
+    be: Option<LoopID>,
+    wrap_patch: Option<NodeIndex>,
+    boundary_map: &bimap::BiHashMap<EdgeIndex, LoopID>,
+    skeleton: &LabeledCurveSkeleton,
+) -> Option<NodeIndex> {
+    if let (Some(bs), Some(be)) = (bs, be) {
+        if bs != be {
+            if let (Some(&e1), Some(&e2)) =
+                (boundary_map.get_by_right(&bs), boundary_map.get_by_right(&be))
+            {
+                if let (Some((a1, b1)), Some((a2, b2))) =
+                    (skeleton.edge_endpoints(e1), skeleton.edge_endpoints(e2))
+                {
+                    let shared: Vec<NodeIndex> =
+                        [a1, b1].into_iter().filter(|&n| n == a2 || n == b2).collect();
+                    if shared.len() == 1 {
+                        return Some(shared[0]);
+                    }
+                }
+            }
+        }
+    }
+    wrap_patch
+}
+
 /// Dijkstra over the mesh dual graph (state = face) that routes from `source` to `target` while
 /// crossing an ORDERED list of committed `partners` exactly once each, in order. The cost is the
 /// alignment-primary, distance-regularized measure on [`W_ALIGN`]. The search state is
@@ -646,6 +698,10 @@ const FP_DIRECTION_BIAS: f64 = 1.5;
 /// anchor). `blocked` holds committed loops' occupancy; `used` the current loop's own edges (self-
 /// avoidance); `control_points` the boundary-crossing edges the body must not thread.
 ///
+/// `allowed_faces`, when `Some`, restricts the search to that set of mesh faces (patch-locality):
+/// the segment may only traverse faces in the set, so it cannot wander off its own patch. `None`
+/// leaves the search global (the prior behaviour).
+///
 /// Returns the intermediate mesh edges (source/target exclusive), or `None` if no such path exists.
 fn surface_path_layered(
     source: EdgeID,
@@ -656,6 +712,7 @@ fn surface_path_layered(
     blocked: &HashSet<EdgeID>,
     used: &HashSet<EdgeID>,
     control_points: &HashSet<EdgeID>,
+    allowed_faces: Option<&HashSet<FaceID>>,
     loop_axis: PrincipalDirection,
     winding_sign: f64,
     mesh: &Mesh<INPUT>,
@@ -723,6 +780,9 @@ fn surface_path_layered(
     let mut heap: BinaryHeap<(std::cmp::Reverse<OrderedFloat<f64>>, State)> = BinaryHeap::new();
 
     for &sf in &source_faces {
+        if allowed_faces.is_some_and(|s| !s.contains(&sf)) {
+            continue; // patch-locality: don't seed outside the segment's patch region
+        }
         let s = (sf, 0usize);
         dist.insert(s, 0.0);
         prev.insert(s, (s, Vec::new()));
@@ -750,6 +810,11 @@ fn surface_path_layered(
             let b = face_verts[(i + 1) % nfv];
             let Some((edge, _)) = mesh.edge_between_verts(a, b) else { continue };
             let Some(next_face) = other_face(edge, face) else { continue };
+            // Patch-locality: never step (or cross a partner) into a face outside the region. This
+            // covers both the straight step below and the partner-crossing intermediate face.
+            if allowed_faces.is_some_and(|s| !s.contains(&next_face)) {
+                continue;
+            }
 
             // One-way transition: cross partner[layer] exactly once, straight through.
             if layer < k && in_partner(edge, layer) {
@@ -764,6 +829,9 @@ fn surface_path_layered(
                     continue;
                 }
                 let Some(land) = other_face(exit_arm, next_face) else { continue };
+                if allowed_faces.is_some_and(|s| !s.contains(&land)) {
+                    continue; // patch-locality: partner crossing must land inside the region
+                }
                 let c1 = step_cost(face, entry_in_face, edge, next_face);
                 let c2 = step_cost(next_face, Some(edge), exit_arm, land);
                 let new_cost = cost + c1 + c2;
@@ -1132,8 +1200,20 @@ fn pathing_for_loops(
     // events here, so a later-routed loop can look up its already-committed partner at that crossing
     // (the perpendicular loop whose body it must cross once). When the partner is NOT yet committed,
     // the crossing is instead created later, when that partner routes and crosses THIS loop's body.
-    let mut interior_partner: HashMap<(NodeIndex, (PrincipalDirection, AxisSign)), LoopID> =
+    //
+    // The value is `(partner loop, partner SEGMENT index)` — the chord (0-based, in commit order)
+    // of the partner whose body owns this crossing. The router crosses *that specific segment*, not
+    // the whole partner loop: a single chord may legitimately cross the same partner loop twice when
+    // the two crossings are on DIFFERENT partner segments (the cube model visits a patch in two
+    // separate chords). Using the whole loop as the partner collapses both crossings onto whichever
+    // segment's body the router happens to reach — a spurious bigon. Per-segment partners keep the
+    // two crossings on the two distinct segments, so they are non-adjacent in each loop's cyclic
+    // order and the dual's 4-arm/quad-walk is satisfied.
+    let mut interior_partner: HashMap<(NodeIndex, (PrincipalDirection, AxisSign)), (LoopID, usize)> =
         HashMap::new();
+    // Per committed loop, the edge set of each of its chord-segments (in commit order), so a partner
+    // lookup can hand the router exactly the owning segment's edges.
+    let mut committed_seg_edges: HashMap<LoopID, Vec<HashSet<EdgeID>>> = HashMap::new();
 
     // DIAG: committed loops' chord-segments (each chord = edges between two consecutive boundary
     // anchors). Invariant (ALWAYS): any two segments cross at most once. Checked at the end.
@@ -1312,7 +1392,8 @@ fn pathing_for_loops(
                     };
                     loop_edges.push(src);
                     used_in_loop.insert(src);
-                    match surface_path_layered(src, tgt, forced_first, forced_last, &[], &blocked, &used_in_loop, &all_control_points, loop_axis, winding_sign, mesh) {
+                    // 1-node skeleton: no patches/boundaries to localize to — route globally.
+                    match surface_path_layered(src, tgt, forced_first, forced_last, &[], &blocked, &used_in_loop, &all_control_points, None, loop_axis, winding_sign, mesh) {
                         Some(inter) => {
                             if i == 0 {
                                 seg0_first = inter.first().copied();
@@ -1340,6 +1421,22 @@ fn pathing_for_loops(
                     let src = events[start_pos].boundary_edge().expect("anchor is a boundary");
                     let tgt = events[end_pos].boundary_edge().expect("anchor is a boundary");
 
+                    // The first interior-event patch between the two anchors. For a U-turn/cap this is
+                    // the wrap patch; it also identifies the segment's patch when the two boundary
+                    // edges coincide (so `segment_patch`'s two-edge intersection is undefined).
+                    let wrap_patch: Option<NodeIndex> = {
+                        let mut jj = (start_pos + 1) % ne;
+                        let mut wp = None;
+                        while jj != end_pos {
+                            if let Event::Interior { patch, .. } = events[jj] {
+                                wp = Some(patch);
+                                break;
+                            }
+                            jj = (jj + 1) % ne;
+                        }
+                        wp
+                    };
+
                     // DIAG: a chord whose two anchors lie on the SAME patch boundary (same skeleton
                     // edge / boundary loop). Per the user this should only be valid at a node that is
                     // a cap for THIS loop family — i.e. has exactly one skeleton edge of direction !=
@@ -1348,15 +1445,6 @@ fn pathing_for_loops(
                     // crossable-boundary count for this family, to catch genuine misroutes.
                     if let (Some(bs), Some(be)) = (event_bnd[start_pos], event_bnd[end_pos]) {
                         if bs == be {
-                            let mut jj = (start_pos + 1) % ne;
-                            let mut wrap_patch: Option<NodeIndex> = None;
-                            while jj != end_pos {
-                                if let Event::Interior { patch, .. } = events[jj] {
-                                    wrap_patch = Some(patch);
-                                    break;
-                                }
-                                jj = (jj + 1) % ne;
-                            }
                             let (deg, crossable) = match wrap_patch {
                                 Some(p) => {
                                     let deg = skeleton.edges(p).count();
@@ -1383,8 +1471,15 @@ fn pathing_for_loops(
                     let mut j = (start_pos + 1) % ne;
                     while j != end_pos {
                         if let Event::Interior { patch, slot, .. } = events[j] {
-                            if let Some(&p) = interior_partner.get(&(patch, slot)) {
-                                partners.push(map[p].edges.iter().copied().collect());
+                            if let Some(&(p, pseg)) = interior_partner.get(&(patch, slot)) {
+                                // Cross the SPECIFIC partner segment that owns this crossing, not the
+                                // whole partner loop (prevents the spurious same-segment bigon).
+                                let edges = committed_seg_edges
+                                    .get(&p)
+                                    .and_then(|segs| segs.get(pseg))
+                                    .cloned()
+                                    .unwrap_or_else(|| map[p].edges.iter().copied().collect());
+                                partners.push(edges);
                                 partner_ids.push((p, patch, slot)); // DIAG
                             }
                         }
@@ -1420,6 +1515,49 @@ fn pathing_for_loops(
                         }
                     }
 
+                    // Patch-locality: confine this segment's route to its own patch region so it
+                    // cannot wander off-patch (which manufactures geometric bigons and false
+                    // contention for other loops). The vertex-touch region already includes the
+                    // boundary band + a 1-ring margin, so src/tgt and the partner-crossing quads stay
+                    // reachable. We also explicitly add src/tgt faces, and the crossing quads of any
+                    // partner edge adjacent to the region (so a one-way crossing is never barred),
+                    // without pulling in whole partner loops. Falls back to global (None) only if the
+                    // patch can't be identified — which should not happen on a multi-node skeleton.
+                    let region: Option<HashSet<FaceID>> = match segment_patch(
+                        event_bnd[start_pos],
+                        event_bnd[end_pos],
+                        wrap_patch,
+                        &boundary_map,
+                        skeleton,
+                    ) {
+                        Some(p) => {
+                            let mut r = patch_region(skeleton, p, mesh);
+                            for &e in &[src, tgt] {
+                                r.insert(mesh.face(e));
+                                r.insert(mesh.face(mesh.twin(e)));
+                            }
+                            for pe in &partners {
+                                for &e in pe {
+                                    let fa = mesh.face(e);
+                                    let fb = mesh.face(mesh.twin(e));
+                                    if r.contains(&fa) || r.contains(&fb) {
+                                        r.insert(fa);
+                                        r.insert(fb);
+                                    }
+                                }
+                            }
+                            Some(r)
+                        }
+                        None => {
+                            warn!(
+                                "patch-locality: could not identify patch for {:?}-loop chord {}/{}; \
+                                 routing globally",
+                                loop_axis, bi + 1, nb
+                            );
+                            None
+                        }
+                    };
+
                     // Boundary-crossing 4-arm at each anchor (unchanged): depart `src` on the
                     // diagonal of how the previous chord arrived; the closing chord arrives matching
                     // the first chord's departure.
@@ -1439,7 +1577,7 @@ fn pathing_for_loops(
 
                     loop_edges.push(src);
                     used_in_loop.insert(src);
-                    match surface_path_layered(src, tgt, forced_first, forced_last, &partners, &blocked, &used_in_loop, &all_control_points, loop_axis, winding_sign, mesh) {
+                    match surface_path_layered(src, tgt, forced_first, forced_last, &partners, &blocked, &used_in_loop, &all_control_points, region.as_ref(), loop_axis, winding_sign, mesh) {
                         Some(inter) => {
                             if bi == 0 {
                                 seg0_first = inter.first().copied();
@@ -1466,12 +1604,40 @@ fn pathing_for_loops(
                 block_loop_occupancy(&loop_edges, &all_control_points, &mut blocked, mesh);
                 block_adjacent_to_control_points(&loop_edges, &all_control_points, &mut blocked, mesh);
                 let loop_id = map.insert(Loop { edges: loop_edges, direction: loop_axis });
+                // Per-segment edge sets (commit order = chord `bi` order), so a later partner can
+                // cross exactly the owning segment.
+                committed_seg_edges.insert(
+                    loop_id,
+                    loop_chords.iter().map(|s| s.iter().copied().collect()).collect(),
+                );
                 committed_segments.push((loop_id, loop_axis, loop_chords)); // DIAG
-                // Register this loop's interior crossings so later perpendicular partners that must
-                // cross here resolve to this committed loop.
-                for ev in &events {
-                    if let Event::Interior { patch, slot, .. } = *ev {
-                        interior_partner.insert((patch, slot), loop_id);
+                // Register this loop's interior crossings, tagged with the segment (chord) index they
+                // lie on, so a later perpendicular partner resolves to the SPECIFIC owning segment.
+                // The segment index = number of boundary anchors passed since the first anchor, which
+                // matches the chord order (`bi`) of the second pass and `committed_seg_edges`.
+                if anchor_idx.is_empty() {
+                    // 1-node skeleton: no anchors; all interior events form one cyclic segment.
+                    for ev in &events {
+                        if let Event::Interior { patch, slot, .. } = *ev {
+                            interior_partner.insert((patch, slot), (loop_id, 0));
+                        }
+                    }
+                } else {
+                    let nev = events.len();
+                    let first_anchor = anchor_idx[0];
+                    let mut seg = 0usize;
+                    for off in 0..nev {
+                        let pos = (first_anchor + off) % nev;
+                        match events[pos] {
+                            Event::Boundary { .. } => {
+                                if off != 0 {
+                                    seg += 1;
+                                }
+                            }
+                            Event::Interior { patch, slot } => {
+                                interior_partner.insert((patch, slot), (loop_id, seg));
+                            }
+                        }
                     }
                 }
             } else {
