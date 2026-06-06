@@ -1650,7 +1650,6 @@ fn pathing_for_loops(
                             // To find WHICH segment it would cross (not the whole loop), route the path
                             // the chord WOULD take with nothing committed (free) — it must cross every
                             // separating loop — and report the loop-segment(s) that free path crosses.
-                            let empty: HashSet<EdgeID> = HashSet::new();
                             let free = |blk: &HashSet<EdgeID>| {
                                 surface_path_layered(
                                     src, tgt, None, None, &[], blk, &used_in_loop,
