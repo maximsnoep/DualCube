@@ -1249,8 +1249,7 @@ pub fn update(
                                     ui.checkbox(&mut conf.refine_embedding, "refine embedding");
 
                                     // Skeleton controls
-                                    if let Some(skeleton_data) = &solution.current_solution.skeleton
-                                    {
+                                    if solution.current_solution.skeleton.is_some() {
                                         // Slow exhaustive labelling for when greedy failed.
                                         if sleek_button(ui, "calculate (backtracking)") {
                                             jobs.write(JobRequest::Run(Box::new(
@@ -1275,33 +1274,6 @@ pub fn update(
                                                 },
                                             )));
                                             ui.close();
-                                        }
-
-                                        // Collapse history controls
-                                        if let Some(history_size) = skeleton_data.history_size() {
-                                            if history_size > 0 {
-                                                sep(ui);
-                                                label(ui, "Collapse history", 12., Color32::WHITE);
-                                                space(ui);
-                                                slider(
-                                                    ui,
-                                                    "step",
-                                                    &mut conf.collapse_history_step,
-                                                    0..=history_size,
-                                                );
-                                                space(ui);
-                                                if sleek_button(ui, "reconstruct") {
-                                                    jobs.write(JobRequest::Run(Box::new(
-                                                        Job::Refresh {
-                                                            solution: solution
-                                                                .current_solution
-                                                                .clone(),
-                                                            configuration: conf.clone(),
-                                                        },
-                                                    )));
-                                                    ui.close();
-                                                }
-                                            }
                                         }
                                     }
                                 });

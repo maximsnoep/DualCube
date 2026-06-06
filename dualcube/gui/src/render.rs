@@ -1498,7 +1498,6 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                 }
 
                 let mut patch_convexity_mesh: Option<bevy::mesh::Mesh> = None;
-                let mut collapse_history_mesh: Option<bevy::mesh::Mesh> = None;
                 if let Some(pm) = patch_mesh {
                     render_obj.bevy_mesh(pm, "patches");
                 }
@@ -1547,36 +1546,6 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                         -0.000167,
                         "failed surgery patches",
                     );
-                }
-                // Build collapse history patch overlay if history is available
-                if let Some(skeleton_data) = &solution.skeleton {
-                    if let Some(history_skeleton) = skeleton_data
-                        .reconstruct_skeleton_from_collapse_history(
-                            configuration.collapse_history_step,
-                        )
-                    {
-                        collapse_history_mesh = Some(create_patch_mesh(
-                            &history_skeleton,
-                            input,
-                            translation,
-                            scale,
-                        ));
-                        let history_boundary_gizmos = create_patch_boundary_gizmos(
-                            &history_skeleton,
-                            input,
-                            translation,
-                            scale,
-                        );
-                        render_obj.gizmo(
-                            history_boundary_gizmos,
-                            1.2,
-                            -0.00017,
-                            "collapse history",
-                        );
-                    }
-                }
-                if let Some(chm) = collapse_history_mesh {
-                    render_obj.bevy_mesh(chm, "collapse history");
                 }
                 if let Some(cleaned) = &solution
                     .skeleton

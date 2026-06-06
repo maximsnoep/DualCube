@@ -19,9 +19,6 @@ use crate::{
             backtracking_orthogonalization_with_subdivisions, greedy_orthogonalization,
         },
         simplify::{convexify, simplify_skeleton},
-        volume_collapse::{
-            VolumeCollapseHistory, construct_skeleton_from_history, volume_based_collapse
-        },
         voxelize::generate_polycube,
     },
 };
@@ -35,13 +32,13 @@ mod connectivity_surgery;
 mod contraction;
 mod embeddability;
 mod f2_rref;
+mod geometry;
 mod handle_subspace;
 mod tet_boundary;
 mod tetrahedralize;
 mod manipulation;
 mod patch;
 mod simplify;
-mod volume_collapse;
 mod voxelize;
 
 /// Holds all relevant information for skeleton-based polycube initialization.
@@ -58,9 +55,6 @@ pub struct SkeletonData {
 
     /// Simplified version of the raw curve skeleton.
     cleaned_skeleton: Option<CurveSkeleton>,
-
-    /// The history of doing volume-based collapses.
-    collapse_history: Option<VolumeCollapseHistory>,
 
     /// The orthogonalized and labeled curve skeleton:
     ///  - Each node has an unique integer location,
@@ -113,28 +107,6 @@ impl SkeletonData {
         self.failed_surgery.as_ref()
     }
 
-    /// Reconstructs what a skeleton looked like at a certain point in the volume collapse history, if the history is available.
-    pub fn reconstruct_skeleton_from_collapse_history(
-        &self,
-        position: usize,
-    ) -> Option<CurveSkeleton> {
-        if let (Some(history), Some(cleaned_skeleton)) =
-            (&self.collapse_history, &self.cleaned_skeleton)
-        {
-            Some(construct_skeleton_from_history(
-                cleaned_skeleton,
-                history,
-                position,
-            ))
-        } else {
-            None
-        }
-    }
-
-    pub fn history_size(&self) -> Option<usize> {
-        self.collapse_history.as_ref().map(|h| h.history.len())
-    }
-
     pub fn update_convexity(
         &mut self,
         mesh: Arc<Mesh<INPUT>>,
@@ -148,7 +120,7 @@ impl SkeletonData {
             surgery_and_simplification(&mesh, &self.contraction_mesh, refine_embedding);
 
         // Reuse pipeline post simplifcation
-        let (labeled, history, polycube_and_skeleton) = post_simplification_stage(
+        let (labeled, polycube_and_skeleton) = post_simplification_stage(
             mesh,
             convexity_threshold,
             convexity_merge_threshold,
@@ -166,7 +138,6 @@ impl SkeletonData {
 
         self.raw_curve_skeleton = Some(curve_skeleton); // Not updated now, but we calculate it anyways so might as well save it
         self.cleaned_skeleton = Some(cleaned_skeleton);
-        self.collapse_history = Some(history);
         self.labeled_skeleton = labeled;
         self.polycube_skeleton = polycube_skeleton;
         self.failed_surgery = failed_surgery;
@@ -273,7 +244,7 @@ impl SkeletonData {
             }
         }
 
-        let (labeled, history, polycube_and_skeleton) = post_simplification_stage(
+        let (labeled, polycube_and_skeleton) = post_simplification_stage(
             mesh,
             convexity_threshold,
             convexity_merge_threshold,
@@ -288,7 +259,6 @@ impl SkeletonData {
         };
 
         self.cleaned_skeleton = Some(skeleton);
-        self.collapse_history = Some(history);
         self.labeled_skeleton = labeled;
         self.polycube_skeleton = polycube_skeleton;
 
@@ -311,7 +281,7 @@ pub fn get_skeleton_based_mapping(
     let (raw_curve_skeleton, mut cleaned_skeleton, failed_surgery) =
         surgery_and_simplification(&mesh, &contracted_mesh, refine_embedding);
 
-    let (labeled, history, polycube_and_skeleton) = post_simplification_stage(
+    let (labeled, polycube_and_skeleton) = post_simplification_stage(
         mesh,
         convexity_threshold,
         convexity_merge_threshold,
@@ -332,7 +302,6 @@ pub fn get_skeleton_based_mapping(
             contraction_mesh: Arc::new(contracted_mesh),
             raw_curve_skeleton: Some(raw_curve_skeleton),
             cleaned_skeleton: Some(cleaned_skeleton),
-            collapse_history: Some(history),
             labeled_skeleton: labeled,
             polycube_skeleton,
             failed_surgery,
@@ -373,7 +342,6 @@ fn post_simplification_stage(
     refine_embedding: bool,
 ) -> (
     Option<LabeledCurveSkeleton>,
-    VolumeCollapseHistory,
     Option<(Polycube, LabeledCurveSkeleton, Quad)>,
 ) {
     // Convexify skeleton to make patch volume close to convex shapes, which map nicely to cubes.
@@ -404,9 +372,6 @@ fn post_simplification_stage(
         }
     }
 
-    // (MAYBE TEMP) Do volume based collapse, and save the history.
-    let history = volume_based_collapse(&*cleaned_skeleton, &mesh);
-
     // Generate polycube based on labeled skeleton. Skip on an empty
     // skeleton (which is what surgery produces on failure) — generate_polycube
     // panics when handed a zero-face polycube mesh.
@@ -417,7 +382,7 @@ fn post_simplification_stage(
 
     // Create the mapping between input mesh and polycube
     // TODO: mapping
-    (labeled, history, polycube)
+    (labeled, polycube)
 }
 
 

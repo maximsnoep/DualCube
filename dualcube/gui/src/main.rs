@@ -73,8 +73,6 @@ pub struct Configuration {
     pub clear_color: [u8; 3],
 
     // Skeleton configuration stuff
-    /// At what step in the volume-based collapse history we are.
-    pub collapse_history_step: usize,
     pub convexity_threshold: f64,
     pub convexity_merge_slack: f64,
     pub refine_embedding: bool,
@@ -117,7 +115,6 @@ impl Default for Configuration {
             camera_zoom_sensitivity: 0.2,
             automatic_rotation_camera: true,
 
-            collapse_history_step: 0,
             convexity_threshold: 0.9,
             convexity_merge_slack: 0.95,
             refine_embedding: true,

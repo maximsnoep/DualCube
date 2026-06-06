@@ -6,7 +6,10 @@ use petgraph::graph::NodeIndex;
 
 use crate::{
     prelude::{CurveSkeleton, INPUT},
-    skeleton::curve_skeleton::{CurveSkeletonManipulation, CurveSkeletonSpatial, MergeBehavior},
+    skeleton::{
+        curve_skeleton::{CurveSkeletonManipulation, CurveSkeletonSpatial, MergeBehavior},
+        geometry::moller_trumbore,
+    },
 };
 
 // TODO: Maybe instead of simplifying everything possible, it might be better to simplify only to make regions closer to cubes
@@ -244,8 +247,9 @@ fn segment_intersects_mesh(
 
     false
 }
-/// Moller–Trumbore algorithm to check if a segment intersects a triangle.
-/// Returns true if the segment from `p` to `q` intersects the triangle (t0, t1, t2).
+/// Checks if the segment from `p` to `q` intersects the triangle (t0, t1, t2).
+/// We use a small epsilon buffer on both ends to avoid self-intersections at
+/// the endpoints.
 fn segment_intersects_triangle(
     p: Vector3D,
     q: Vector3D,
@@ -253,39 +257,5 @@ fn segment_intersects_triangle(
     t1: Vector3D,
     t2: Vector3D,
 ) -> bool {
-    let direction = q - p;
-    let edge1 = t1 - t0;
-    let edge2 = t2 - t0;
-
-    let h = direction.cross(&edge2);
-    let a = edge1.dot(&h);
-
-    // Ray is parallel to the triangle
-    if a.abs() < EPS {
-        return false;
-    }
-
-    let f = 1.0 / a;
-    let s = p - t0;
-    let u = f * s.dot(&h);
-
-    // Intersection point is outside the triangle (u coordinate)
-    if !(0.0..=1.0).contains(&u) {
-        return false;
-    }
-
-    let q = s.cross(&edge1);
-    let v = f * direction.dot(&q);
-
-    // Intersection point is outside the triangle (v coordinate)
-    if v < 0.0 || u + v > 1.0 {
-        return false;
-    }
-
-    // Calculate t to find intersection point along the ray
-    let t = f * edge2.dot(&q);
-
-    // Check if intersection is within the segment [0, 1]
-    // We use a small epsilon buffer to avoid self-intersections at endpoints
-    t > EPS && t < 1.0 - EPS
+    moller_trumbore(p, q - p, t0, t1, t2, EPS).is_some_and(|t| t > EPS && t < 1.0 - EPS)
 }

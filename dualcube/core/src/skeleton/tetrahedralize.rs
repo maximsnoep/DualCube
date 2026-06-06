@@ -10,7 +10,7 @@ use log::{info, warn};
 use mehsh::prelude::{HasPosition, HasVertices, Mesh, Vector3D, VertKey};
 use tritet::Tetgen;
 
-use crate::prelude::INPUT;
+use crate::{prelude::INPUT, skeleton::geometry::moller_trumbore};
 
 /// A simplicial 3-complex: vertices and tetrahedra produced by TetGen.
 ///
@@ -307,10 +307,10 @@ fn interior_region_marker(
     Ok(centroid + inward * (nearest_t * 0.5))
 }
 
-/// Möller–Trumbore ray-triangle intersection over `f64`. Returns the
-/// positive parameter `t` such that `origin + t · direction` lies on
-/// the triangle `(a, b, c)`, or `None` if the ray misses, hits the
-/// triangle behind the origin, or is parallel.
+/// Forward ray-triangle intersection over `f64`. Returns the positive
+/// parameter `t` such that `origin + t · direction` lies on the triangle
+/// `(a, b, c)`, or `None` if the ray misses, hits the triangle behind the
+/// origin, or is parallel.
 fn ray_triangle_intersect(
     origin: Vector3D,
     direction: Vector3D,
@@ -318,26 +318,7 @@ fn ray_triangle_intersect(
     b: Vector3D,
     c: Vector3D,
 ) -> Option<f64> {
-    let e1 = b - a;
-    let e2 = c - a;
-    let p = direction.cross(&e2);
-    let det = e1.dot(&p);
-    if det.abs() < 1e-12 {
-        return None;
-    }
-    let inv_det = 1.0 / det;
-    let s = origin - a;
-    let u = s.dot(&p) * inv_det;
-    if !(0.0..=1.0).contains(&u) {
-        return None;
-    }
-    let q = s.cross(&e1);
-    let v = direction.dot(&q) * inv_det;
-    if v < 0.0 || u + v > 1.0 {
-        return None;
-    }
-    let t = e2.dot(&q) * inv_det;
-    if t > 0.0 { Some(t) } else { None }
+    moller_trumbore(origin, direction, a, b, c, 1e-12).filter(|&t| t > 0.0)
 }
 
 #[cfg(test)]
