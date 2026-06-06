@@ -1135,6 +1135,10 @@ fn pathing_for_loops(
     let mut interior_partner: HashMap<(NodeIndex, (PrincipalDirection, AxisSign)), LoopID> =
         HashMap::new();
 
+    // DIAG: committed loops' chord-segments (each chord = edges between two consecutive boundary
+    // anchors). Invariant (ALWAYS): any two segments cross at most once. Checked at the end.
+    let mut committed_segments: Vec<(LoopID, PrincipalDirection, Vec<Vec<EdgeID>>)> = Vec::new();
+
     for &loop_axis in &ALL_DIRS {
         // Crossings visited by this loop axis: a crossing on a boundary with direction D and
         // dir_sign (A, s) is visited by loops with axis third(D, A), so filter by that.
@@ -1199,14 +1203,17 @@ fn pathing_for_loops(
             // First pass: collect the loop's crossing events in cyclic order.
             let mut current = start;
             let mut events: Vec<Event> = Vec::new();
+            let mut event_bnd: Vec<Option<LoopID>> = Vec::new(); // DIAG: boundary id per anchor
             loop {
                 let event = match current {
                     NextPoint::Crossing { loop_id, dir_sign } => {
                         unvisited_crossings.remove(&(loop_id, dir_sign));
+                        event_bnd.push(Some(loop_id));
                         Event::Boundary { edge: crossings[&loop_id][&dir_sign] }
                     }
                     NextPoint::FacePoint { patch, dir_sign } => {
                         unvisited_face_points.remove(&(patch, dir_sign));
+                        event_bnd.push(None);
                         Event::Interior { patch, slot: dir_sign }
                     }
                 };
@@ -1256,6 +1263,7 @@ fn pathing_for_loops(
             };
 
             let mut loop_edges = Vec::new();
+            let mut loop_chords: Vec<Vec<EdgeID>> = Vec::new(); // DIAG: per-chord segment edges
             let mut used_in_loop: HashSet<EdgeID> = HashSet::new();
             let mut path_ok = true;
 
@@ -1332,16 +1340,84 @@ fn pathing_for_loops(
                     let src = events[start_pos].boundary_edge().expect("anchor is a boundary");
                     let tgt = events[end_pos].boundary_edge().expect("anchor is a boundary");
 
+                    // DIAG: a chord whose two anchors lie on the SAME patch boundary (same skeleton
+                    // edge / boundary loop). Per the user this should only be valid at a node that is
+                    // a cap for THIS loop family — i.e. has exactly one skeleton edge of direction !=
+                    // loop_axis (only one crossable boundary), forcing a U-turn. Report the wrap patch
+                    // (from the interior events between the anchors), its skeleton degree, and its
+                    // crossable-boundary count for this family, to catch genuine misroutes.
+                    if let (Some(bs), Some(be)) = (event_bnd[start_pos], event_bnd[end_pos]) {
+                        if bs == be {
+                            let mut jj = (start_pos + 1) % ne;
+                            let mut wrap_patch: Option<NodeIndex> = None;
+                            while jj != end_pos {
+                                if let Event::Interior { patch, .. } = events[jj] {
+                                    wrap_patch = Some(patch);
+                                    break;
+                                }
+                                jj = (jj + 1) % ne;
+                            }
+                            let (deg, crossable) = match wrap_patch {
+                                Some(p) => {
+                                    let deg = skeleton.edges(p).count();
+                                    let crossable = skeleton
+                                        .edges(p)
+                                        .filter(|e| e.weight().direction != loop_axis)
+                                        .count();
+                                    (deg as i64, crossable as i64)
+                                }
+                                None => (-1, -1),
+                            };
+                            warn!(
+                                "DIAG same-boundary chord: {:?}-loop chord {}/{} on boundary {:?}; \
+                                 wrap-patch {:?} skel-degree {} crossable-for-family {}",
+                                loop_axis, bi + 1, nb, bs, wrap_patch, deg, crossable
+                            );
+                        }
+                    }
+
                     // Ordered, already-committed partners strictly between the two anchors (cyclic).
                     let mut partners: Vec<HashSet<EdgeID>> = Vec::new();
+                    let mut partner_ids: Vec<(LoopID, NodeIndex, (PrincipalDirection, AxisSign))> =
+                        Vec::new(); // DIAG
                     let mut j = (start_pos + 1) % ne;
                     while j != end_pos {
                         if let Event::Interior { patch, slot, .. } = events[j] {
                             if let Some(&p) = interior_partner.get(&(patch, slot)) {
                                 partners.push(map[p].edges.iter().copied().collect());
+                                partner_ids.push((p, patch, slot)); // DIAG
                             }
                         }
                         j = (j + 1) % ne;
+                    }
+                    // DIAG: a partner appearing twice in one chord => the layered router crosses the
+                    // same pair of loops twice (the observed in-patch double-crossing).
+                    {
+                        let mut seen_p: HashMap<LoopID, Vec<(NodeIndex, (PrincipalDirection, AxisSign))>> =
+                            HashMap::new();
+                        for &(p, patch, slot) in &partner_ids {
+                            seen_p.entry(p).or_default().push((patch, slot));
+                        }
+                        for (p, slots) in &seen_p {
+                            if slots.len() > 1 {
+                                let patch = slots[0].0;
+                                let dirs: Vec<_> = skeleton
+                                    .edges(patch)
+                                    .map(|e| {
+                                        let s = skeleton
+                                            .edge_sign_from(e.id(), patch)
+                                            .expect("endpoint");
+                                        (e.weight().direction, s)
+                                    })
+                                    .collect();
+                                warn!(
+                                    "DIAG double-partner: {:?}-loop chord {}/{} crosses partner {:?} \
+                                     {} times at {:?}; patch {:?} degree {} boundaries {:?}",
+                                    loop_axis, bi + 1, nb, p, slots.len(), slots,
+                                    patch, dirs.len(), dirs
+                                );
+                            }
+                        }
                     }
 
                     // Boundary-crossing 4-arm at each anchor (unchanged): depart `src` on the
@@ -1368,10 +1444,13 @@ fn pathing_for_loops(
                             if bi == 0 {
                                 seg0_first = inter.first().copied();
                             }
+                            let mut seg = vec![src]; // DIAG: this chord's edges (src + interior)
                             for &e in &inter {
                                 used_in_loop.insert(e);
                                 used_in_loop.insert(mesh.twin(e));
+                                seg.push(e);
                             }
+                            loop_chords.push(seg); // DIAG
                             loop_edges.extend(inter);
                         }
                         None => {
@@ -1387,6 +1466,7 @@ fn pathing_for_loops(
                 block_loop_occupancy(&loop_edges, &all_control_points, &mut blocked, mesh);
                 block_adjacent_to_control_points(&loop_edges, &all_control_points, &mut blocked, mesh);
                 let loop_id = map.insert(Loop { edges: loop_edges, direction: loop_axis });
+                committed_segments.push((loop_id, loop_axis, loop_chords)); // DIAG
                 // Register this loop's interior crossings so later perpendicular partners that must
                 // cross here resolve to this committed loop.
                 for ev in &events {
@@ -1426,17 +1506,101 @@ fn pathing_for_loops(
                 three_plus += 1;
                 warn!("AUDIT >=3: geo-edge {:?} used by loops {:?}", e, lids);
             } else if lids.len() == 2 {
-                let dirs: Vec<PrincipalDirection> =
-                    lids.iter().map(|&l| map[l].direction).collect();
-                if dirs[0] == dirs[1] {
+                let v: Vec<LoopID> = lids.iter().copied().collect();
+                if map[v[0]].direction == map[v[1]].direction {
                     same_axis += 1;
                 }
             }
         }
-        if three_plus > 0 || same_axis > 0 {
+
+        // Count vertex-disjoint clusters among a set of geo-edges (= number of distinct crossing
+        // locations). Two edges are in the same cluster if they share a mesh vertex.
+        fn uf_find(parent: &mut [usize], x: usize) -> usize {
+            let mut r = x;
+            while parent[r] != r {
+                r = parent[r];
+            }
+            let mut c = x;
+            while parent[c] != r {
+                let nx = parent[c];
+                parent[c] = r;
+                c = nx;
+            }
+            r
+        }
+        let cluster_count = |edges: &[EdgeID]| -> usize {
+            let n = edges.len();
+            let mut parent: Vec<usize> = (0..n).collect();
+            for i in 0..n {
+                let vi = [mesh.root(edges[i]), mesh.toor(edges[i])];
+                for j in (i + 1)..n {
+                    let vj = [mesh.root(edges[j]), mesh.toor(edges[j])];
+                    if vi.iter().any(|x| vj.contains(x)) {
+                        let (ri, rj) = (uf_find(&mut parent, i), uf_find(&mut parent, j));
+                        parent[ri] = rj;
+                    }
+                }
+            }
+            (0..n).map(|i| uf_find(&mut parent, i)).collect::<HashSet<_>>().len()
+        };
+
+        // THE invariant: two chord-SEGMENTS (each between consecutive boundary anchors) cross at most
+        // once. Two whole loops crossing twice across the model is fine (different segment pairs); two
+        // *segments* crossing twice is the illegal bigon. Build each segment's geo-edge set (both
+        // halves) and, for every cross-loop segment pair, cluster the shared geo-edges: >=2 clusters
+        // means that pair crosses at >=2 separate locations.
+        let seg_flat: Vec<(LoopID, PrincipalDirection, usize, HashSet<EdgeID>)> = committed_segments
+            .iter()
+            .flat_map(|(lid, dir, chords)| {
+                chords.iter().enumerate().map(move |(ci, edges)| {
+                    let mut set: HashSet<EdgeID> = HashSet::new();
+                    for &e in edges {
+                        set.insert(e);
+                        set.insert(mesh.twin(e));
+                    }
+                    (*lid, *dir, ci, set)
+                })
+            })
+            .collect();
+        let mut bigons = 0usize;
+        for i in 0..seg_flat.len() {
+            for j in (i + 1)..seg_flat.len() {
+                if seg_flat[i].0 == seg_flat[j].0 {
+                    continue; // same loop: consecutive segments legitimately share the anchor
+                }
+                // Shared geo-edges, deduped by canonical half.
+                let mut shared: Vec<EdgeID> = Vec::new();
+                let mut seen: HashSet<EdgeID> = HashSet::new();
+                for &e in &seg_flat[i].3 {
+                    if seg_flat[j].3.contains(&e) && seen.insert(e) {
+                        seen.insert(mesh.twin(e));
+                        shared.push(e);
+                    }
+                }
+                if shared.len() >= 2 && cluster_count(&shared) >= 2 {
+                    bigons += 1;
+                    let detail: Vec<String> = shared
+                        .iter()
+                        .map(|&e| {
+                            let is_cp = all_control_points.contains(&e)
+                                || all_control_points.contains(&mesh.twin(e));
+                            let p = edge_midpoint_pos(e, mesh);
+                            format!("{:?}{} @({:.1},{:.1},{:.1})", e, if is_cp { "[CP]" } else { "" }, p.x, p.y, p.z)
+                        })
+                        .collect();
+                    warn!(
+                        "DIAG segment-bigon: {:?}({:?}) seg{} & {:?}({:?}) seg{} cross at {} locations; shared {:?}",
+                        seg_flat[i].0, seg_flat[i].1, seg_flat[i].2,
+                        seg_flat[j].0, seg_flat[j].1, seg_flat[j].2,
+                        cluster_count(&shared), detail
+                    );
+                }
+            }
+        }
+        if three_plus > 0 || same_axis > 0 || bigons > 0 {
             warn!(
-                "AUDIT: {} geo-edges with >=3 loops, {} geo-edges shared by two SAME-axis loops",
-                three_plus, same_axis
+                "AUDIT: {} geo-edges with >=3 loops, {} same-axis shares, {} segment-bigons",
+                three_plus, same_axis, bigons
             );
         }
     }
