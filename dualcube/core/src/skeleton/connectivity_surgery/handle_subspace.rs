@@ -495,9 +495,9 @@ fn sort_triple(a: u32, b: u32, c: u32) -> [u32; 3] {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::skeleton::tet_boundary::build_tet_boundary;
-    use crate::skeleton::tetrahedralize::tetrahedralize;
+    use crate::skeleton::connectivity_surgery::{tet_boundary::build_tet_boundary, tetrahedralize::tetrahedralize};
+
+use super::*;
     use mehsh::prelude::Vector3D;
 
     fn make_mesh(positions: Vec<Vector3D>, faces: Vec<Vec<usize>>) -> Mesh<INPUT> {

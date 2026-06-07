@@ -159,8 +159,7 @@ fn intern_edge(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prelude::INPUT;
-    use crate::skeleton::tetrahedralize::tetrahedralize;
+    use crate::{prelude::INPUT, skeleton::connectivity_surgery::tetrahedralize::tetrahedralize};
     use mehsh::prelude::{Mesh, Vector3D};
 
     /// A single tetrahedron as a closed surface mesh.

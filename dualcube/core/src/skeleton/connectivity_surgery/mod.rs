@@ -19,12 +19,17 @@ use log::{error, info, warn};
 use mehsh::prelude::{HasNeighbors, HasPosition, HasVertices, Mesh, Vector3D, VertKey};
 use nalgebra::{Matrix4, Vector4};
 
+mod f2_rref;
+mod handle_subspace;
+mod tet_boundary;
+mod tetrahedralize;
+
 use super::contraction::CONTRACTION;
 use super::curve_skeleton::{CurveSkeleton, CurveSkeletonSpatial};
-use super::f2_rref::F2Matrix;
-use super::handle_subspace::compute_handle_subspace;
-use super::tet_boundary::build_tet_boundary;
-use super::tetrahedralize::tetrahedralize;
+use f2_rref::F2Matrix;
+use handle_subspace::compute_handle_subspace;
+use tet_boundary::build_tet_boundary;
+use tetrahedralize::tetrahedralize;
 use crate::prelude::INPUT;
 use crate::skeleton::boundary_loop::BoundaryLoop;
 use crate::skeleton::curve_skeleton::SkeletonNode;
