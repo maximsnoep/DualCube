@@ -74,7 +74,6 @@ pub fn generate_loops(
             boundary_map: &boundary_map,
             crossings: &crossings,
             skeleton,
-            mesh,
         },
         &mut map,
         &mut diagnostics,
