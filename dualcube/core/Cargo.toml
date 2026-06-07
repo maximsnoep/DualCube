@@ -25,6 +25,7 @@ nalgebra = "0.33.2"
 chull = "0.2.4"
 bvh = "0.11.0"
 tritet = { path = "../../utils/tritet", features = ["with_tetgen"] }
+smallvec = "1.15.1"
 
 [lints]
 workspace = true

@@ -2717,6 +2717,7 @@ dependencies = [
  "rand 0.9.1",
  "serde",
  "slotmap",
+ "smallvec",
  "thiserror 2.0.17",
  "tritet",
 ]

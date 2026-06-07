@@ -48,6 +48,7 @@ pub fn route_segments(
 ) {
     // Process each loop, one at a time.
     for (loop_id, events) in &segment_plan.plan {
+        println!("Routing loop {loop_id:?} with events {events:?}");
         // TODO: keep a previous/next
         // TODO: route segments one at a time (boundary to boundary), exactly as prescribed by the plan:
         //   - Get the patch that the loop should go in (only using topology! no geometry), hopefully the plan makes this easy, else edit the plan to have this info as well

@@ -9,6 +9,7 @@ use petgraph::{
     graph::{EdgeIndex, NodeIndex},
     visit::EdgeRef,
 };
+use smallvec::SmallVec;
 
 use crate::{
     prelude::PrincipalDirection,
@@ -124,6 +125,7 @@ pub enum Event {
     /// perpendicular loop that also visits it.
     InteriorCrossing {
         patch: NodeIndex,
+        other_loop: LoopID,
         slot: (PrincipalDirection, AxisSign),
     },
 }
@@ -134,37 +136,47 @@ pub enum Event {
 // fn finalize_crossings(loops: &[Vec<NextPoint>]) -> Vec<Vec<Event>> {
 fn finalize_crossings(loops: &HashMap<LoopID, Vec<NextPoint>>) -> HashMap<LoopID, Vec<Event>> {
     // Tracking which loops visit which points.
-    let mut usage: HashMap<NextPoint, usize> = HashMap::new();
-    for (_, points) in loops {
+    let mut usage: HashMap<NextPoint, SmallVec<[LoopID; 2]>> = HashMap::new();
+    for (loop_id, points) in loops {
         for &p in points {
-            *usage.entry(p).or_default() += 1;
+            usage.entry(p).or_default().push(*loop_id);
         }
     }
 
     // Map each point to its crossing, dropping interior face points no second loop shares.
-    let to_event = |p: &NextPoint| -> Option<Event> {
+    let to_event = |p: &NextPoint, base_loop_id: LoopID| -> Option<Event> {
         match *p {
             NextPoint::Crossing { loop_id, dir_sign } => Some(Event::Boundary {
                 boundary: loop_id,
                 slot: dir_sign,
             }),
             NextPoint::FacePoint { patch, dir_sign } => {
-                (usage[p] >= 2).then_some(Event::InteriorCrossing {
-                    patch,
-                    slot: dir_sign,
-                })
+                if usage[p].len() > 2 {
+                    panic!("face point {p:?} used by more than 2 loops: {usage:?}");
+                };
+                if usage[p].len() == 2 {
+                    let other_loop = usage.get(p).unwrap().iter().find(|&&l| l != base_loop_id)
+                        .expect("there must be another loop if length is 2");
+                    Some(Event::InteriorCrossing {
+                        patch,
+                        other_loop: *other_loop,
+                        slot: dir_sign,
+                    })
+                } else {
+                    None
+                }
             }
         }
     };
     let segment_plan: HashMap<LoopID, Vec<Event>> = loops
         .iter()
-        .map(|(loop_id, points)| (*loop_id, points.iter().filter_map(to_event).collect()))
+        .map(|(loop_id, points)| (*loop_id, points.iter().filter_map(|p| to_event(p, *loop_id)).collect()))
         .collect();
 
     // Invariant: every boundary crossing is owned by exactly one traced loop.
-    for (p, &count) in &usage {
-        if matches!(p, NextPoint::Crossing { .. }) && count != 1 {
-            panic!("boundary {p:?} used by {count} loops (expected 1)");
+    for (p, vec) in &usage {
+        if matches!(p, NextPoint::Crossing { .. }) && vec.len() != 1 {
+            panic!("boundary {p:?} used by {} loops (expected 1)", vec.len());
         }
     }
 
