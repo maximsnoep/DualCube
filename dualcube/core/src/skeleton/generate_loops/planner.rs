@@ -4,21 +4,20 @@
 use std::collections::{HashMap, HashSet};
 
 use bimap::BiHashMap;
-use log::{info, warn};
+
 use petgraph::{
     graph::{EdgeIndex, NodeIndex},
     visit::EdgeRef,
 };
-use slotmap::SlotMap;
 
 use crate::{
     prelude::PrincipalDirection,
     skeleton::orthogonalize::{AxisSign, LabeledCurveSkeleton, LabeledSkeletonSignExt},
-    solutions::{Loop, LoopID},
+    solutions::LoopID,
 };
 
 use super::axes::{third, ALL_DIRS};
-use super::diagnostics::RoutingDiagnostics;
+
 use super::CrossingMap;
 
 /// Read-only inputs to the planner
@@ -28,12 +27,11 @@ pub(super) struct LoopPlan<'a> {
     pub skeleton: &'a LabeledCurveSkeleton,
 }
 
-pub(super) fn pathing_for_loops(
-    plan: LoopPlan,
-    // TODO
-    _map: &mut SlotMap<LoopID, Loop>,
-    _diagnostics: &mut RoutingDiagnostics,
-) {
+pub(super) struct SegmentPlan {
+    pub plan: HashMap<LoopID, Vec<Event>>,
+}
+
+pub(super) fn pathing_for_loops(plan: LoopPlan) -> SegmentPlan {
     let LoopPlan {
         boundary_map,
         crossings,
@@ -42,7 +40,8 @@ pub(super) fn pathing_for_loops(
 
     // Every traced loop, as its cyclic sequence of raw traversal points (boundary crossings +
     // interior face points). `finalize_crossings` turns these into the real crossing roadmap.
-    let mut loops: Vec<Vec<NextPoint>> = Vec::new();
+    // let mut loops: Vec<Vec<NextPoint>> = Vec::new();
+    let mut loops: HashMap<LoopID, Vec<NextPoint>> = HashMap::new();
 
     for &loop_axis in &ALL_DIRS {
         // Crossings visited by this loop axis: a crossing on a boundary with direction D and
@@ -83,12 +82,14 @@ pub(super) fn pathing_for_loops(
                     break;
                 }
             }
-            loops.push(points);
+            loops.insert(loop_id, points);
         }
     }
 
     // Finalize the raw traversal events into a topological crossing plan (dropping interior face points not shared).
-    let segment_plan = finalize_crossings(&loops);
+    SegmentPlan {
+        plan: finalize_crossings(&loops),
+    }
 }
 
 /// A point on the surface that lies on a loop, produced by the `next_point` traversal.
@@ -130,10 +131,11 @@ enum Event {
 /// Turns the raw per-loop `NextPoint` sequences into the real crossing roadmap: every boundary
 /// crossing becomes an `Event::Boundary`, and an interior face point becomes an
 /// `Event::InteriorCrossing` when a second (perpendicular) loop also passes through it.
-fn finalize_crossings(loops: &[Vec<NextPoint>]) -> Vec<Vec<Event>> {
+// fn finalize_crossings(loops: &[Vec<NextPoint>]) -> Vec<Vec<Event>> {
+fn finalize_crossings(loops: &HashMap<LoopID, Vec<NextPoint>>) -> HashMap<LoopID, Vec<Event>> {
     // Tracking which loops visit which points.
     let mut usage: HashMap<NextPoint, usize> = HashMap::new();
-    for points in loops {
+    for (_, points) in loops {
         for &p in points {
             *usage.entry(p).or_default() += 1;
         }
@@ -154,9 +156,9 @@ fn finalize_crossings(loops: &[Vec<NextPoint>]) -> Vec<Vec<Event>> {
             }
         }
     };
-    let segment_plan: Vec<Vec<Event>> = loops
+    let segment_plan: HashMap<LoopID, Vec<Event>> = loops
         .iter()
-        .map(|points| points.iter().filter_map(to_event).collect())
+        .map(|(loop_id, points)| (*loop_id, points.iter().filter_map(to_event).collect()))
         .collect();
 
     // Invariant: every boundary crossing is owned by exactly one traced loop.

@@ -69,14 +69,12 @@ pub fn generate_loops(
 
     // Trace paths between boundary crossings to create the loops. The planner only reads these maps,
     // so they are borrowed (no clone) — `crossings` is still returned to the caller below.
-    pathing_for_loops(
+    let segment_plan = pathing_for_loops(
         LoopPlan {
             boundary_map: &boundary_map,
             crossings: &crossings,
             skeleton,
         },
-        &mut map,
-        &mut diagnostics,
     );
 
     // Routing produces one half-edge per crossed geometric edge; `Dual` requires both halves (it
