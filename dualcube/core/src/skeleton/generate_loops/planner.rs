@@ -8,7 +8,7 @@ use log::{error, warn};
 use mehsh::prelude::{Mesh, Vector3D};
 use petgraph::{
     graph::{EdgeIndex, NodeIndex},
-    visit::{EdgeRef, IntoEdgeReferences},
+    visit::EdgeRef,
 };
 use slotmap::SlotMap;
 
@@ -28,15 +28,14 @@ use super::router::{
     block_adjacent_to_control_points, block_loop_occupancy, patch_region, quad_diagonal_partner,
     segment_patch, surface_path_layered, RouteRequest,
 };
-use super::{CrossingMap, FacePointMap};
+use super::CrossingMap;
 
-/// Read-only inputs to the planner: the boundary↔loop mapping, the placed boundary crossings, the
-/// (single-node-only) pinned face points, and the skeleton + mesh. Bundled so the planner takes one
-/// borrowed plan rather than five separate arguments — and so the caller need not clone the maps.
+/// Read-only inputs to the planner: the boundary↔loop mapping, the placed boundary crossings, and
+/// the skeleton + mesh. Bundled so the planner takes one borrowed plan rather than four separate
+/// arguments — and so the caller need not clone the maps.
 pub(super) struct LoopPlan<'a> {
     pub boundary_map: &'a BiHashMap<EdgeIndex, LoopID>,
     pub crossings: &'a CrossingMap,
-    pub face_points: &'a FacePointMap,
     pub skeleton: &'a LabeledCurveSkeleton,
     pub mesh: &'a Mesh<INPUT>,
 }
@@ -49,15 +48,9 @@ pub(super) fn pathing_for_loops(
     let LoopPlan {
         boundary_map,
         crossings,
-        face_points,
         skeleton,
         mesh,
     } = plan;
-    // A skeleton with no edges is a single patch (1 node): it has NO boundaries, so every loop is
-    // all-interior and there is nothing to anchor on. That is the ONLY case that keeps pinned face
-    // points. With >=1 boundary, every loop necessarily starts/ends at a boundary crossing.
-    let single_node = skeleton.edge_references().count() == 0;
-
     // Pinned anchor edges = the patch-boundary crossings only. (Interior crossings are no longer
     // pinned; they happen naturally via layered routing, so the body must be free to route where one
     // would have been.) Edges adjacent to anchors in a committed loop are fully blocked to guarantee
@@ -113,20 +106,6 @@ pub(super) fn pathing_for_loops(
             })
             .collect();
 
-        // Face points visited by this loop axis: any face point whose dir_sign direction ≠ loop_axis.
-        // (Each face point is visited once per orthogonal loop type, so we rebuild per axis.)
-        let mut unvisited_face_points: HashSet<(NodeIndex, (PrincipalDirection, AxisSign))> =
-            face_points
-                .iter()
-                .flat_map(|(&node, dir_sign_map)| {
-                    dir_sign_map
-                        .keys()
-                        .filter(|(dir, _)| *dir != loop_axis)
-                        .map(|&ds| (node, ds))
-                        .collect::<Vec<_>>()
-                })
-                .collect();
-
         // Blocked edges: geometric-edge occupancy of all loops committed before this axis. Both
         // halves of every non-anchor edge are blocked (true edge-disjointness), and only the reverse
         // half of boundary-crossing anchors, so the boundary crossings stay shareable. Edges adjacent
@@ -141,17 +120,10 @@ pub(super) fn pathing_for_loops(
             block_adjacent_to_control_points(&l.edges, &all_control_points, &mut blocked, mesh);
         }
 
-        // Repeatedly pick any unvisited point and trace the full loop it belongs to. Loops are
-        // seeded from boundary crossings; only a 1-node skeleton (no crossings) seeds from face
-        // points (its loops are all-interior). With boundaries present, every loop is reached from a
-        // crossing, so any leftover unvisited face points would indicate a missing loop.
-        while !unvisited_crossings.is_empty() || (single_node && !unvisited_face_points.is_empty()) {
-            let start = if let Some(&(loop_id, dir_sign)) = unvisited_crossings.iter().next() {
-                NextPoint::Crossing { loop_id, dir_sign }
-            } else {
-                let &(patch, dir_sign) = unvisited_face_points.iter().next().unwrap();
-                NextPoint::FacePoint { patch, dir_sign }
-            };
+        // Repeatedly pick any unvisited boundary crossing and trace the full loop it seeds. Every
+        // loop on a boundary-bearing skeleton is reached from a crossing.
+        while let Some(&(loop_id, dir_sign)) = unvisited_crossings.iter().next() {
+            let start = NextPoint::Crossing { loop_id, dir_sign };
 
             // First pass: collect the loop's crossing events in cyclic order.
             let mut current = start;
@@ -165,7 +137,6 @@ pub(super) fn pathing_for_loops(
                         Event::Boundary { edge: crossings[&loop_id][&dir_sign] }
                     }
                     NextPoint::FacePoint { patch, dir_sign } => {
-                        unvisited_face_points.remove(&(patch, dir_sign));
                         event_bnd.push(None);
                         Event::Interior { patch, slot: dir_sign }
                     }
@@ -228,78 +199,13 @@ pub(super) fn pathing_for_loops(
                 .map(|(i, _)| i)
                 .collect();
 
-            if anchor_idx.is_empty() {
-                // A loop with no boundary anchor can ONLY occur on a 1-node skeleton (no boundaries
-                // at all). With boundaries present every loop has an anchor, so reaching here
-                // otherwise is a bug — fail loudly rather than silently mis-routing.
-                assert!(
-                    single_node,
-                    "all-interior {:?}-loop on a multi-node skeleton (should be impossible)",
-                    loop_axis
-                );
-                // 1-node skeleton: route between pinned face points (the only anchorless case).
-                let control_points: Vec<EdgeID> = events
-                    .iter()
-                    .map(|e| match *e {
-                        Event::Interior { patch, slot } => face_points[&patch][&slot],
-                        Event::Boundary { edge } => edge,
-                    })
-                    .collect();
-                let n = control_points.len();
-                let mut seg0_first: Option<EdgeID> = None;
-                for i in 0..n {
-                    let src = control_points[i];
-                    let tgt = control_points[(i + 1) % n];
-                    let forced_first = if i == 0 {
-                        None
-                    } else {
-                        let prev_last = *loop_edges.last().expect("previous segment pushed edges");
-                        quad_diagonal_partner(mesh.twin(prev_last), src, mesh)
-                    };
-                    let forced_last = if i == n - 1 {
-                        seg0_first
-                            .and_then(|f| quad_diagonal_partner(f, tgt, mesh))
-                            .map(|partner| mesh.twin(partner))
-                    } else {
-                        None
-                    };
-                    loop_edges.push(src);
-                    used_in_loop.insert(src);
-                    // 1-node skeleton: no patches/boundaries to localize to — route globally.
-                    match surface_path_layered(
-                        RouteRequest {
-                            source: src,
-                            target: tgt,
-                            forced_first,
-                            forced_last,
-                            partners: &[],
-                            blocked: &blocked,
-                            used: &used_in_loop,
-                            control_points: &all_control_points,
-                            allowed_faces: None,
-                            loop_axis,
-                            winding_sign,
-                        },
-                        mesh,
-                    ) {
-                        Some(inter) => {
-                            if i == 0 {
-                                seg0_first = inter.first().copied();
-                            }
-                            for &e in &inter {
-                                used_in_loop.insert(e);
-                                used_in_loop.insert(mesh.twin(e));
-                            }
-                            loop_edges.extend(inter);
-                        }
-                        None => {
-                            error!("No surface path from {:?} to {:?} for {:?}-loop (all-interior {}/{})", src, tgt, loop_axis, i + 1, n);
-                            path_ok = false;
-                            diagnostics.failed_segments.push((src, tgt));
-                        }
-                    }
-                }
-            } else {
+            // Every loop on a boundary-bearing skeleton has at least one boundary anchor; the
+            // anchorless single-node case is handled by the normal-initialization pipeline, not here.
+            debug_assert!(
+                !anchor_idx.is_empty(),
+                "anchorless {loop_axis:?}-loop reached the skeleton router"
+            );
+            {
                 let nb = anchor_idx.len();
                 let ne = events.len();
                 let mut seg0_first: Option<EdgeID> = None;
@@ -509,28 +415,19 @@ pub(super) fn pathing_for_loops(
                 // lie on, so a later perpendicular partner resolves to the SPECIFIC owning segment.
                 // The segment index = number of boundary anchors passed since the first anchor, which
                 // matches the chord order (`bi`) of the second pass and `committed_seg_edges`.
-                if anchor_idx.is_empty() {
-                    // 1-node skeleton: no anchors; all interior events form one cyclic segment.
-                    for ev in &events {
-                        if let Event::Interior { patch, slot, .. } = *ev {
-                            interior_partner.insert((patch, slot), (loop_id, 0));
+                let nev = events.len();
+                let first_anchor = anchor_idx[0];
+                let mut seg: usize = 0;
+                for off in 0..nev {
+                    let pos = (first_anchor + off) % nev;
+                    match events[pos] {
+                        Event::Boundary { .. } => {
+                            if off != 0 {
+                                seg += 1;
+                            }
                         }
-                    }
-                } else {
-                    let nev = events.len();
-                    let first_anchor = anchor_idx[0];
-                    let mut seg: usize = 0;
-                    for off in 0..nev {
-                        let pos = (first_anchor + off) % nev;
-                        match events[pos] {
-                            Event::Boundary { .. } => {
-                                if off != 0 {
-                                    seg += 1;
-                                }
-                            }
-                            Event::Interior { patch, slot } => {
-                                interior_partner.insert((patch, slot), (loop_id, seg));
-                            }
+                        Event::Interior { patch, slot } => {
+                            interior_partner.insert((patch, slot), (loop_id, seg));
                         }
                     }
                 }
@@ -552,9 +449,8 @@ pub(super) fn pathing_for_loops(
 ///   key, where `A = third(loop_axis, boundary_dir)` and `s` is the sign of the slot the loop was at
 ///   *before* crossing this boundary. An L-loop only visits crossings whose `dir_sign` direction ≠ L.
 /// - `FacePoint`: an interior crossing on a node patch, identified by `(patch, dir_sign)`. It maps to
-///   an `Event::Interior` (no pinned edge); the perpendicular partner and location are resolved at
-///   routing time. (Only on a 1-node skeleton, where there are no boundaries, does it resolve to a
-///   pinned `FacePointMap[patch][dir_sign]` edge.) An L-loop only visits these whose direction ≠ L.
+///   an `Event::Interior` (no pinned edge); the perpendicular partner and mesh location are resolved
+///   at routing time (layered routing). An L-loop only visits these whose direction ≠ L.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum NextPoint {
     Crossing { loop_id: LoopID, dir_sign: (PrincipalDirection, AxisSign) },
@@ -567,9 +463,7 @@ enum NextPoint {
 ///   `get_boundaries_and_crossing_points` / `repair_boundary_crossings`.
 /// - `Interior`: a crossing inside a patch with the perpendicular partner loop of the slot,
 ///   identified topologically by `(patch, slot)`. It carries NO pinned edge — the partner loop and
-///   the mesh location are resolved at routing time (layered routing). Interior crossings exist for
-///   boundary-anchored loops; a 1-node skeleton (no boundaries) is the only case where a whole loop
-///   is interior, and that case alone falls back to pinned face points.
+///   the mesh location are resolved at routing time (layered routing).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum Event {
     Boundary { edge: EdgeID },

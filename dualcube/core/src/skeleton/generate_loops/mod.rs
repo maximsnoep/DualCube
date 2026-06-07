@@ -3,7 +3,6 @@
 //! The pipeline runs in stages, one per submodule:
 //! - [`crossings`] places the boundary crossings (where each pair of orthogonal loops crosses every
 //!   patch-patch boundary) and repairs them onto straight, threadable edges.
-//! - [`face_points`] computes pinned interior crossings for the single-node skeleton case.
 //! - [`planner`] walks the cube/dual structure to decide each loop's ordered crossing events.
 //! - [`router`] connects consecutive crossings with a layered, alignment-primary Dijkstra.
 //! - [`geom`] / [`diagnostics`] hold shared helpers and the GUI failure overlay data.
@@ -14,14 +13,12 @@ mod audit;
 mod axes;
 mod crossings;
 mod diagnostics;
-mod face_points;
 mod planner;
 mod router;
 
 use std::collections::{HashMap, HashSet};
 
 use mehsh::prelude::{Mesh, Vector3D};
-use petgraph::{graph::NodeIndex, visit::IntoEdgeReferences};
 use slotmap::SlotMap;
 
 use crate::{
@@ -38,14 +35,9 @@ use crossings::{get_boundaries_and_crossing_points, repair_boundary_crossings};
 use planner::{pathing_for_loops, LoopPlan};
 
 pub use diagnostics::{BlockedFailure, RoutingDiagnostics};
-pub use face_points::compute_face_points;
 
 /// Per boundary loop, the crossing points for each orthogonal (direction, sign).
 pub type CrossingMap = HashMap<LoopID, HashMap<(PrincipalDirection, AxisSign), EdgeID>>;
-
-/// Per node, a face point for each (direction, sign) slot that has no neighboring patch.
-/// Each face point is an interior mesh edge midpoint on the patch surface.
-pub type FacePointMap = HashMap<NodeIndex, HashMap<(PrincipalDirection, AxisSign), EdgeID>>;
 
 pub enum LoopGenerationError {
     MissingLabeledSkeleton,
@@ -53,10 +45,14 @@ pub enum LoopGenerationError {
 }
 
 /// Generates surface-embedded loops from a labeled skeleton and surface mesh.
+///
+/// Assumes the skeleton has at least one edge (so every loop anchors on a patch boundary). The
+/// degenerate single-node case — an all-interior loop set with nothing to anchor on — is handled by
+/// the normal-initialization pipeline, not here, so it produces no loops.
 pub fn generate_loops(
     skeleton_data: &SkeletonData,
     mesh: &Mesh<INPUT>,
-) -> Result<(SlotMap<LoopID, Loop>, CrossingMap, FacePointMap, RoutingDiagnostics), LoopGenerationError> {
+) -> Result<(SlotMap<LoopID, Loop>, CrossingMap, RoutingDiagnostics), LoopGenerationError> {
     let mut map: SlotMap<LoopID, Loop> = SlotMap::with_key();
     let mut diagnostics = RoutingDiagnostics::default();
 
@@ -66,30 +62,17 @@ pub fn generate_loops(
         .ok_or_else(|| LoopGenerationError::MissingLabeledSkeleton)?;
     let (boundary_map, mut crossings) = get_boundaries_and_crossing_points(skeleton, mesh, &mut map);
 
-    // Face points (pinned interior crossings) are ONLY needed for a 1-node skeleton, whose loops are
-    // all-interior with nothing to anchor on. With >=1 boundary, interior crossings happen naturally
-    // via layered routing, so no face points are computed (and none are rendered).
-    let single_node = skeleton.edge_references().count() == 0;
-    // A 1-node skeleton has no boundary loops, so face points need no boundary-clearance repair.
-    let face_points = if single_node {
-        compute_face_points(skeleton, mesh)
-    } else {
-        FacePointMap::new()
-    };
-
     // Slide each boundary crossing onto a straight, threadable boundary edge so the boundary
     // loop crosses diagonally (leaving the complementary diagonal free for the orthogonal loop)
     // and the orthogonal loop can actually pass through without being boxed in. Topological.
     repair_boundary_crossings(&map, &mut crossings, mesh);
 
-    // Trace paths between boundary points and face points to create the loops. The planner only
-    // reads these maps, so they are borrowed (no clone) — `crossings`/`face_points` are still
-    // returned to the caller below.
+    // Trace paths between boundary crossings to create the loops. The planner only reads these maps,
+    // so they are borrowed (no clone) — `crossings` is still returned to the caller below.
     pathing_for_loops(
         LoopPlan {
             boundary_map: &boundary_map,
             crossings: &crossings,
-            face_points: &face_points,
             skeleton,
             mesh,
         },
@@ -115,7 +98,7 @@ pub fn generate_loops(
         }
     }
 
-    Ok((map, crossings, face_points, diagnostics))
+    Ok((map, crossings, diagnostics))
 }
 
 /// Signed area of a loop projected onto the plane perpendicular to `axis` (shoelace over edge

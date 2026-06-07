@@ -1,5 +1,5 @@
 use crate::render_skeleton::{
-    create_crossing_point_gizmos, create_face_point_gizmos, create_failed_surgery_face_mesh,
+    create_crossing_point_gizmos, create_failed_surgery_face_mesh,
     create_labeled_skeleton_gizmos, create_patch_boundary_gizmos, create_patch_convexity_mesh,
     create_patch_mesh, create_polycube_patch_boundary_gizmos, create_polycube_patch_mesh,
     create_invalid_region_gizmos, create_routing_diagnostics_gizmos, create_skeleton_gizmos,
@@ -1463,22 +1463,6 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                     let crossing_gizmos =
                         create_crossing_point_gizmos(crossings, input, translation, scale);
                     render_obj.gizmo(crossing_gizmos, 25., -0.00016, "loop crossings");
-                }
-
-                // TODO: remove later
-                if let Some(face_points) = &solution.face_points {
-                    if let Some(skeleton_data) = &solution.skeleton {
-                        if let Some(labeled_skeleton) = skeleton_data.labeled_skeleton() {
-                            let face_point_gizmos = create_face_point_gizmos(
-                                face_points,
-                                labeled_skeleton,
-                                input,
-                                translation,
-                                scale,
-                            );
-                            render_obj.gizmo(face_point_gizmos, 25., -0.00017, "face points");
-                        }
-                    }
                 }
 
                 // Routing diagnostics: dropped loops + failed-segment markers, so the user

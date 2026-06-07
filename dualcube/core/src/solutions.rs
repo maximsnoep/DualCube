@@ -1,7 +1,7 @@
 use crate::layout::LayoutError;
 use crate::polycube::POLYCUBE;
 use crate::prelude::*;
-use crate::skeleton::generate_loops::{CrossingMap, FacePointMap, RoutingDiagnostics, generate_loops};
+use crate::skeleton::generate_loops::{CrossingMap, RoutingDiagnostics, generate_loops};
 use crate::skeleton::{get_skeleton_based_mapping, SkeletonData};
 use crate::{
     dual::{Dual, PropertyViolationError},
@@ -123,12 +123,6 @@ pub struct Solution {
     #[serde(skip, default)]
     pub loop_crossings: Option<CrossingMap>,
 
-    /// Face points per node, keyed by (direction, sign). Boundary directions store the loop
-    /// centroid; directions without a neighbor store an interior mesh-edge midpoint.
-    /// Not serialized — recomputed from the skeleton on load.
-    #[serde(skip, default)]
-    pub face_points: Option<FacePointMap>,
-
     /// Diagnostics about loops that failed to route (dropped loops + failed segments), for the
     /// GUI "routing diagnostics" overlay. Not serialized — recomputed when loops are generated.
     #[serde(skip, default)]
@@ -171,7 +165,6 @@ impl Solution {
             occupied: ids::SecMap::new(),
             skeleton: None,
             loop_crossings: None,
-            face_points: None,
             routing_diagnostics: None,
             invalid_regions: Vec::new(),
             dual: Err(PropertyViolationError::default()),
@@ -216,10 +209,9 @@ impl Solution {
             self.quad = quad;
         }
         let loops = generate_loops(self.skeleton.as_ref().unwrap(), &self.mesh_ref);
-        if let Ok((loops, crossings, face_points, diagnostics)) = loops {
+        if let Ok((loops, crossings, diagnostics)) = loops {
             self.loops = loops;
             self.loop_crossings = Some(crossings);
-            self.face_points = Some(face_points);
             self.routing_diagnostics = Some(diagnostics);
             self.recompute_occupied();
             if let Err(e) = self.reconstruct_solution(false, 1) {
@@ -256,10 +248,9 @@ impl Solution {
         self.quad = quad;
 
         let loops = generate_loops(self.skeleton.as_ref().unwrap(), &self.mesh_ref);
-        if let Ok((loops, crossings, face_points, diagnostics)) = loops {
+        if let Ok((loops, crossings, diagnostics)) = loops {
             self.loops = loops;
             self.loop_crossings = Some(crossings);
-            self.face_points = Some(face_points);
             self.routing_diagnostics = Some(diagnostics);
             self.recompute_occupied();
             if let Err(e) = self.reconstruct_solution(false, 1) {
@@ -303,10 +294,9 @@ impl Solution {
         self.quad = quad;
 
         let loops = generate_loops(self.skeleton.as_ref().unwrap(), &self.mesh_ref);
-        if let Ok((loops, crossings, face_points, diagnostics)) = loops {
+        if let Ok((loops, crossings, diagnostics)) = loops {
             self.loops = loops;
             self.loop_crossings = Some(crossings);
-            self.face_points = Some(face_points);
             self.routing_diagnostics = Some(diagnostics);
             self.recompute_occupied();
             if let Err(e) = self.reconstruct_solution(false, 1) {
@@ -342,10 +332,9 @@ impl Solution {
         }
         if let Some(skeleton_data) = self.skeleton.as_ref() {
             let loops = generate_loops(skeleton_data, &self.mesh_ref);
-            if let Ok((loops, crossings, face_points, diagnostics)) = loops {
+            if let Ok((loops, crossings, diagnostics)) = loops {
                 self.loops = loops;
                 self.loop_crossings = Some(crossings);
-                self.face_points = Some(face_points);
                 self.routing_diagnostics = Some(diagnostics);
                 self.recompute_occupied();
                 if let Err(e) = self.reconstruct_solution(false, 1) {
