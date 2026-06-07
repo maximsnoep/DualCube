@@ -1,5 +1,5 @@
 use log::{error, info, warn};
-use mehsh::prelude::{EPS, HasPosition, Mesh};
+use mehsh::prelude::{EPS, Mesh};
 use petgraph::graph::{EdgeIndex, NodeIndex, UnGraph};
 use petgraph::prelude::StableUnGraph;
 use petgraph::visit::EdgeRef;
@@ -9,10 +9,11 @@ use bimap::BiHashMap;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 
 use crate::{
-    prelude::{CurveSkeleton, INPUT, PrincipalDirection, VertID},
+    prelude::{CurveSkeleton, INPUT, PrincipalDirection},
     skeleton::{
         boundary_loop::BoundaryLoop,
         curve_skeleton::{CurveSkeletonManipulation, SkeletonNode},
+        geometry::{boundary_loop_axis_scores, principal_axes},
     },
 };
 
@@ -90,20 +91,48 @@ impl LabeledSkeletonSignExt for LabeledCurveSkeleton {
     }
 }
 
-/// Gives an ordering to axes based on the displacement between the edge endpoints, from most aligned to least.
-fn preferred_axes_from_displacement(disp: nalgebra::Vector3<f64>) -> [PrincipalDirection; 3] {
+/// Orders the three axes by a per-axis loop score, LOWEST (best-aligned) first. Ties break by axis
+/// index for determinism. Pairs with [`boundary_loop_axis_scores`] (lower score = better aligned).
+fn axis_order_from_scores(scores: [f64; 3]) -> [PrincipalDirection; 3] {
     let mut entries = [
-        (PrincipalDirection::X, disp.x.abs()),
-        (PrincipalDirection::Y, disp.y.abs()),
-        (PrincipalDirection::Z, disp.z.abs()),
+        (PrincipalDirection::X, scores[0]),
+        (PrincipalDirection::Y, scores[1]),
+        (PrincipalDirection::Z, scores[2]),
     ];
     entries.sort_by(|(axis_a, value_a), (axis_b, value_b)| {
-        value_b
-            .partial_cmp(value_a)
+        value_a
+            .partial_cmp(value_b)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then((*axis_a as usize).cmp(&(*axis_b as usize)))
     });
     [entries[0].0, entries[1].0, entries[2].0]
+}
+
+/// How decisively the best axis beats the runner-up, in `[0, 1)` — bigger means more confident.
+/// Since a LOW score is best, confidence is the relative gap between the two lowest scores. Replaces
+/// the old `directional_confidence` (best-minus-second of normal `|components|`).
+fn confidence_from_scores(scores: [f64; 3]) -> f64 {
+    let mut s = scores;
+    s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    (s[1] - s[0]) / (s[1] + s[0] + EPS)
+}
+
+/// Fallback per-axis scores when a boundary loop is too degenerate to score: derive them from the
+/// skeleton-edge displacement, which points along the limb (the label axis). Same "lower = better-
+/// aligned" convention as [`boundary_loop_axis_scores`] so the two are interchangeable downstream.
+fn scores_from_displacement(disp: nalgebra::Vector3<f64>) -> [f64; 3] {
+    let len = disp.norm();
+    if len <= EPS {
+        return [0.0; 3];
+    }
+    let d = disp / len;
+    let axes = principal_axes();
+    let mut s = [0.0; 3];
+    for a in 0..3 {
+        let cos = d.dot(&axes[a]).abs().clamp(0.0, 1.0);
+        s[a] = cos.acos().powi(10);
+    }
+    s
 }
 
 /// Returns the component of a 3‑D vector along the given principal axis.
@@ -121,62 +150,6 @@ fn axis_sign_from_value(v: f64) -> AxisSign {
     } else {
         AxisSign::Negative
     }
-}
-
-/// Estimates a boundary-loop normal by fitting a least-squares plane
-/// to boundary vertices and taking the smallest-variance eigenvector.
-fn best_fit_boundary_plane_normal(
-    boundary_loop: &BoundaryLoop,
-    mesh: &Mesh<INPUT>,
-) -> Option<nalgebra::Vector3<f64>> {
-    let mut unique_vertices: HashSet<VertID> = HashSet::new();
-    for &edge in &boundary_loop.edge_midpoints {
-        unique_vertices.insert(mesh.root(edge));
-        unique_vertices.insert(mesh.toor(edge));
-    }
-
-    if unique_vertices.len() < 3 {
-        return None;
-    }
-
-    let count = unique_vertices.len() as f64;
-    let centroid = unique_vertices
-        .iter()
-        .fold(nalgebra::Vector3::zeros(), |acc, &v| acc + mesh.position(v))
-        / count;
-
-    let mut covariance = nalgebra::Matrix3::<f64>::zeros();
-    for &v in &unique_vertices {
-        let d = mesh.position(v) - centroid;
-        covariance += d * d.transpose();
-    }
-
-    let eig = nalgebra::SymmetricEigen::new(covariance);
-    let min_idx = if eig.eigenvalues[0] <= eig.eigenvalues[1] {
-        if eig.eigenvalues[0] <= eig.eigenvalues[2] {
-            0
-        } else {
-            2
-        }
-    } else if eig.eigenvalues[1] <= eig.eigenvalues[2] {
-        1
-    } else {
-        2
-    };
-
-    let normal = eig.eigenvectors.column(min_idx).into_owned();
-    let nrm = normal.norm();
-    if nrm <= EPS {
-        None
-    } else {
-        Some(normal / nrm)
-    }
-}
-
-fn directional_confidence(v: nalgebra::Vector3<f64>) -> f64 {
-    let mut mags = [v.x.abs(), v.y.abs(), v.z.abs()];
-    mags.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-    mags[0] - mags[1]
 }
 
 fn sign_from_node_along_edge(node: NodeIndex, edge_source: NodeIndex, sign: AxisSign) -> AxisSign {
@@ -576,13 +549,13 @@ pub fn backtracking_orthogonalization_capped(
         }
     }
 
-    let boundary_normals: HashMap<EdgeIndex, Option<nalgebra::Vector3<f64>>> = partial
+    let boundary_scores: HashMap<EdgeIndex, Option<[f64; 3]>> = partial
         .edge_indices()
         .map(|edge| {
-            let normal = boundary_loops
+            let scores = boundary_loops
                 .get(&edge)
-                .and_then(|bl| best_fit_boundary_plane_normal(bl, mesh));
-            (edge, normal)
+                .and_then(|bl| boundary_loop_axis_scores(&bl.edge_midpoints, mesh));
+            (edge, scores)
         })
         .collect();
 
@@ -591,8 +564,12 @@ pub fn backtracking_orthogonalization_capped(
         let orig_u = *node_map.get_by_right(&u).expect("Partial node not found in map");
         let orig_v = *node_map.get_by_right(&v).expect("Partial node not found in map");
         let disp = curve_skeleton[orig_v].position - curve_skeleton[orig_u].position;
-        let pref_vector = boundary_normals.get(&edge).copied().flatten().unwrap_or(disp);
-        let pref = preferred_axes_from_displacement(pref_vector);
+        let scores = boundary_scores
+            .get(&edge)
+            .copied()
+            .flatten()
+            .unwrap_or_else(|| scores_from_displacement(disp));
+        let pref = axis_order_from_scores(scores);
         let preference_weight = std::cmp::max(
             curve_skeleton[orig_u].patch_vertices.len(),
             curve_skeleton[orig_v].patch_vertices.len(),
@@ -601,7 +578,7 @@ pub fn backtracking_orthogonalization_capped(
             edge,
             primary: pref[0],
             preference_weight,
-            pref_vector,
+            pref_order: pref,
             sign_vector: disp,
         }
     };
@@ -847,21 +824,21 @@ fn tree_path_edges(
     path
 }
 
-/// One edge's search plan: the edge id, a primary axis preference, the vector used to pick
-/// the preferred AXIS (boundary normal when available), the vector used to pick the preferred
-/// SIGN (always the edge displacement a->b), and a weight used for ordering / score bound.
+/// One edge's search plan: the edge id, a primary axis preference, the AXIS preference order (from
+/// the boundary-loop alignment scores), the vector used to pick the preferred SIGN (always the edge
+/// displacement a->b), and a weight used for ordering / score bound.
 ///
-/// Axis and sign use different vectors on purpose. The boundary-plane normal is a better axis
-/// estimator (`.abs()` makes axis selection orientation-independent), but its orientation is an
-/// arbitrary eigenvector output, so using it for the sign produces non-deterministic, sometimes
-/// physically-wrong signs (the regional-flip bug). The displacement `pos(b) - pos(a)` is
-/// deterministic and points the way the edge actually goes, so the sign comes from it.
+/// Axis and sign are decided separately on purpose. The axis comes from per-axis loop-alignment
+/// scores (`boundary_loop_axis_scores`), which are orientation-independent. The sign comes from the
+/// displacement `pos(b) - pos(a)`, which is deterministic and points the way the edge actually goes
+/// — using the (sign-arbitrary) alignment direction for the sign caused non-deterministic,
+/// sometimes physically-wrong signs (the regional-flip bug).
 #[derive(Clone)]
 struct EdgePlan {
     edge: EdgeIndex,
     primary: PrincipalDirection,
     preference_weight: i64,
-    pref_vector: nalgebra::Vector3<f64>,
+    pref_order: [PrincipalDirection; 3],
     sign_vector: nalgebra::Vector3<f64>,
 }
 
@@ -910,7 +887,7 @@ fn dfs_cycle_edges(
 
     let plan = &plans[depth];
     let (a, b) = partial.edge_endpoints(plan.edge).unwrap();
-    let candidate_axes = preferred_axes_from_displacement(plan.pref_vector);
+    let candidate_axes = plan.pref_order;
     let empty_cycles: Vec<usize> = Vec::new();
     let cycles_for_edge = edge_to_cycles.get(&plan.edge).unwrap_or(&empty_cycles);
 
@@ -1114,7 +1091,7 @@ fn greedy_label_bridge(
     plan: &EdgePlan,
 ) -> bool {
     let (a, b) = partial.edge_endpoints(edge).unwrap();
-    for cand in preferred_axes_from_displacement(plan.pref_vector) {
+    for cand in plan.pref_order {
         let preferred_sign = axis_sign_from_value(axis_value(plan.sign_vector, cand));
         for sign in [preferred_sign, preferred_sign.flipped()] {
             if axis_sign_conflict_around_node(partial, a, a, cand, sign)
@@ -1403,13 +1380,13 @@ pub fn greedy_orthogonalization(
 ) -> Option<LabeledCurveSkeleton> {
     let (mut partial, node_map, boundary_loops) = build_unlabeled_partial(curve_skeleton);
 
-    let boundary_normals: HashMap<EdgeIndex, Option<nalgebra::Vector3<f64>>> = partial
+    let boundary_scores: HashMap<EdgeIndex, Option<[f64; 3]>> = partial
         .edge_indices()
         .map(|edge| {
-            let normal = boundary_loops
+            let scores = boundary_loops
                 .get(&edge)
-                .and_then(|bl| best_fit_boundary_plane_normal(bl, mesh));
-            (edge, normal)
+                .and_then(|bl| boundary_loop_axis_scores(&bl.edge_midpoints, mesh));
+            (edge, scores)
         })
         .collect();
 
@@ -1463,14 +1440,14 @@ pub fn greedy_orthogonalization(
                 let patch_v = curve_skeleton[v].patch_vertices.len();
                 let size = std::cmp::max(patch_u, patch_v);
                 let displacement = curve_skeleton[v].position - curve_skeleton[u].position;
-                let pref_vector = partial
+                let scores = partial
                     .find_edge(
                         *node_map.get_by_left(&u).expect("Original node missing in map"),
                         *node_map.get_by_left(&v).expect("Original node missing in map"),
                     )
-                    .and_then(|e| boundary_normals.get(&e).copied().flatten())
-                    .unwrap_or(displacement);
-                let confidence = directional_confidence(pref_vector); // How good the best is relative to second best
+                    .and_then(|e| boundary_scores.get(&e).copied().flatten())
+                    .unwrap_or_else(|| scores_from_displacement(displacement));
+                let confidence = confidence_from_scores(scores); // How good the best is relative to second best
 
                 (
                     std::cmp::Reverse((size as f64 * confidence) as usize),
@@ -1502,14 +1479,14 @@ pub fn greedy_orthogonalization(
                     continue;
                 }
 
-                // Try the geometrically closest axis first, then fall back to the other two.
+                // Try the best-aligned axis first, then fall back to the other two.
                 let disp = curve_skeleton[v].position - curve_skeleton[u].position;
-                let pref_vector = boundary_normals
+                let scores = boundary_scores
                     .get(&eidx)
                     .copied()
                     .flatten()
-                    .unwrap_or(disp);
-                let candidates = preferred_axes_from_displacement(pref_vector);
+                    .unwrap_or_else(|| scores_from_displacement(disp));
+                let candidates = axis_order_from_scores(scores);
 
                 // Accept the first candidate that keeps the partial labeling realizable.
                 let mut assigned = false;

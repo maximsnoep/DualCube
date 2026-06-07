@@ -52,7 +52,7 @@ pub enum LoopGenerationError {
     // TODO other error variants
 }
 
-/// Generates surface-embedded loops from a polycube and polycube map.
+/// Generates surface-embedded loops from a labeled skeleton and surface mesh.
 pub fn generate_loops(
     skeleton_data: &SkeletonData,
     mesh: &Mesh<INPUT>,

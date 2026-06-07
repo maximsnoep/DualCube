@@ -43,7 +43,7 @@ fn get_loop(boundary: BoundaryLoop, direction: PrincipalDirection) -> Loop {
 /// 3. For each orthogonal (direction, sign), projecting the axis direction onto the plane to
 ///    get a target angle, then picking the boundary point closest to that target angle.
 ///
-/// This ensures crossings are naturally spread around the loop (~90° apart for axis-aligned geometry)
+/// This ensures crossings are naturally spread around the loop (~90 deg apart for axis-aligned geometry)
 /// without needing direction propagation between nodes.
 pub(super) fn get_boundaries_and_crossing_points(
     skeleton: &LabeledCurveSkeleton,
