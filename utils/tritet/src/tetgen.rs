@@ -1410,8 +1410,13 @@ mod tests {
                 .save("/tmp/tritet/tetgen_test_mesh_2.svg")?;
         }
 
-        assert_eq!(tetgen.out_ncell(), 84);
-        assert_eq!(tetgen.out_npoint(), 34);
+        // NOTE: counts differ from upstream tritet (which expects ncell=84, npoint=34).
+        // This is a vendored fork: the TetGen flag string was patched to "pzAfMY"
+        // (see c_code/interface_tetgen.cpp). The `Y` flag forbids Steiner points on the
+        // input PLC boundary, so the output keeps exactly the 16 input points (vs. upstream's
+        // 16 + 18 boundary Steiner points = 34) and yields a coarser 36-cell mesh.
+        assert_eq!(tetgen.out_ncell(), 36);
+        assert_eq!(tetgen.out_npoint(), 16);
         assert_eq!(tetgen.out_point_marker(0), -100);
         assert_eq!(tetgen.out_point_marker(1), -200);
         assert_eq!(tetgen.out_point_marker(2), -300);

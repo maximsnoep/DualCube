@@ -1,0 +1,1 @@
+{ "points": [ this is intentionally malformed JSON to exercise the "cannot parse JSON file" error path
