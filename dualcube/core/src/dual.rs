@@ -688,7 +688,7 @@ impl Dual {
             let graph = &self.level_graphs.graphs[direction as usize];
             let mut topo_sort = graph.topological_sort().unwrap();
 
-            println!("{:?}", topo_sort);
+            // println!("{:?}", topo_sort);
             let mut levels = HashMap::new();
             levels.insert(topo_sort.first().unwrap().to_owned(), 100_000usize);
 
