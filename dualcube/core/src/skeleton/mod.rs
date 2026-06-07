@@ -9,16 +9,15 @@ use crate::{
     prelude::{INPUT, Polycube},
     quad::Quad,
     skeleton::{
-        connectivity_surgery::{extract_skeleton, FailedSurgeryDiagnostic},
+        connectivity_surgery::{FailedSurgeryDiagnostic, extract_skeleton},
         contraction::{CONTRACTION, contract_mesh},
         curve_skeleton::{CurveSkeleton, CurveSkeletonSpatial},
-        embeddability::make_embedding_possible,
         manipulation::remove_skeleton_node,
         orthogonalize::{
             LabeledCurveSkeleton, backtracking_orthogonalization,
             backtracking_orthogonalization_with_subdivisions, greedy_orthogonalization,
         },
-        simplify::{convexify, simplify_skeleton},
+        simplify::{convexify, embeddability::make_embedding_possible, simplify_skeleton},
         voxelize::generate_polycube,
     },
 };
@@ -30,7 +29,6 @@ pub mod generate_loops;
 mod boundary_loop;
 mod connectivity_surgery;
 mod contraction;
-mod embeddability;
 mod geometry;
 mod manipulation;
 mod patch;

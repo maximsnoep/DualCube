@@ -12,6 +12,8 @@ use crate::{
     },
 };
 
+pub mod embeddability;
+
 // TODO: Maybe instead of simplifying everything possible, it might be better to simplify only to make regions closer to cubes
 
 // TODO: Instead of just degree 2 nodes, merge nodes when possible and improves some cost
