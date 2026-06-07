@@ -10,10 +10,11 @@
 //!
 //! [`generate_loops`] is the orchestrator that wires these together.
 
+mod audit;
+mod axes;
 mod crossings;
 mod diagnostics;
 mod face_points;
-mod geom;
 mod planner;
 mod router;
 
@@ -32,9 +33,9 @@ use crate::{
     solutions::{Loop, LoopID},
 };
 
+use crate::skeleton::geometry::edge_midpoint_pos;
 use crossings::{get_boundaries_and_crossing_points, repair_boundary_crossings};
-use geom::edge_midpoint_pos;
-use planner::pathing_for_loops;
+use planner::{pathing_for_loops, LoopPlan};
 
 pub use diagnostics::{BlockedFailure, RoutingDiagnostics};
 pub use face_points::compute_face_points;
@@ -81,13 +82,17 @@ pub fn generate_loops(
     // and the orthogonal loop can actually pass through without being boxed in. Topological.
     repair_boundary_crossings(&map, &mut crossings, mesh);
 
-    // Trace paths between boundary points and face points to create the loops
+    // Trace paths between boundary points and face points to create the loops. The planner only
+    // reads these maps, so they are borrowed (no clone) — `crossings`/`face_points` are still
+    // returned to the caller below.
     pathing_for_loops(
-        boundary_map,
-        crossings.clone(), // TODO: later we can simply consume as we no longer need to return it
-        face_points.clone(), // TODO: same here
-        skeleton,
-        mesh,
+        LoopPlan {
+            boundary_map: &boundary_map,
+            crossings: &crossings,
+            face_points: &face_points,
+            skeleton,
+            mesh,
+        },
         &mut map,
         &mut diagnostics,
     );

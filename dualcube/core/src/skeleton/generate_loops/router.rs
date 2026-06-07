@@ -10,11 +10,9 @@ use petgraph::graph::{EdgeIndex, NodeIndex};
 
 use crate::{
     prelude::{EdgeID, FaceID, PrincipalDirection, VertID, INPUT},
-    skeleton::orthogonalize::LabeledCurveSkeleton,
+    skeleton::{geometry::edge_midpoint_pos, orthogonalize::LabeledCurveSkeleton},
     solutions::LoopID,
 };
-
-use super::geom::edge_midpoint_pos;
 
 /// Weight of the alignment penalty in the per-step routing cost:
 /// `step_cost = length * (LAMBDA_DIST + W_ALIGN * θ^ALIGN_ALPHA)`, where `θ = ∠(d × n, ±Δ)` is the
@@ -87,6 +85,33 @@ pub(super) fn segment_patch(
     wrap_patch
 }
 
+/// Everything `surface_path_layered` needs to connect one pair of crossings, minus the mesh. Bundled
+/// so the router has a single, readable parameter instead of a dozen positional arguments.
+pub(super) struct RouteRequest<'a> {
+    /// Anchor the path starts from (the source crossing edge).
+    pub source: EdgeID,
+    /// Anchor the path must reach (the target crossing edge).
+    pub target: EdgeID,
+    /// If set, pins the first step out of `source` (the boundary-crossing diagonal).
+    pub forced_first: Option<EdgeID>,
+    /// If set, pins the last step into `target` (the boundary-crossing diagonal).
+    pub forced_last: Option<EdgeID>,
+    /// Ordered committed partner segments to cross exactly once each, in order.
+    pub partners: &'a [HashSet<EdgeID>],
+    /// Committed loops' edge occupancy (edges no new loop may use).
+    pub blocked: &'a HashSet<EdgeID>,
+    /// The current loop's own already-routed edges (within-loop self-avoidance).
+    pub used: &'a HashSet<EdgeID>,
+    /// Boundary-crossing edges the body must not thread (except the forced first/last steps).
+    pub control_points: &'a HashSet<EdgeID>,
+    /// Patch-locality region: `Some` confines the search to these faces; `None` searches globally.
+    pub allowed_faces: Option<&'a HashSet<FaceID>>,
+    /// Axis of the loop being routed (the alignment target direction).
+    pub loop_axis: PrincipalDirection,
+    /// Winding sign about `loop_axis`; signs the alignment target so reversal is penalized.
+    pub winding_sign: f64,
+}
+
 /// Dijkstra over the mesh dual graph (state = face) that routes from `source` to `target` while
 /// crossing an ORDERED list of committed `partners` exactly once each, in order. The cost is the
 /// alignment-primary, distance-regularized measure on [`W_ALIGN`]. The search state is
@@ -108,20 +133,20 @@ pub(super) fn segment_patch(
 /// leaves the search global (the prior behaviour).
 ///
 /// Returns the intermediate mesh edges (source/target exclusive), or `None` if no such path exists.
-pub(super) fn surface_path_layered(
-    source: EdgeID,
-    target: EdgeID,
-    forced_first: Option<EdgeID>,
-    forced_last: Option<EdgeID>,
-    partners: &[HashSet<EdgeID>],
-    blocked: &HashSet<EdgeID>,
-    used: &HashSet<EdgeID>,
-    control_points: &HashSet<EdgeID>,
-    allowed_faces: Option<&HashSet<FaceID>>,
-    loop_axis: PrincipalDirection,
-    winding_sign: f64,
-    mesh: &Mesh<INPUT>,
-) -> Option<Vec<EdgeID>> {
+pub(super) fn surface_path_layered(req: RouteRequest, mesh: &Mesh<INPUT>) -> Option<Vec<EdgeID>> {
+    let RouteRequest {
+        source,
+        target,
+        forced_first,
+        forced_last,
+        partners,
+        blocked,
+        used,
+        control_points,
+        allowed_faces,
+        loop_axis,
+        winding_sign,
+    } = req;
     let signed_target: Vector3D = Vector3D::from(loop_axis) * winding_sign;
     let k = partners.len();
 

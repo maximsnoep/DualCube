@@ -12,10 +12,13 @@ use petgraph::{
 
 use crate::{
     prelude::{EdgeID, PrincipalDirection, VertID, INPUT},
-    skeleton::orthogonalize::{AxisSign, LabeledCurveSkeleton},
+    skeleton::{
+        geometry::edge_midpoint_pos,
+        orthogonalize::{AxisSign, LabeledCurveSkeleton},
+    },
 };
 
-use super::geom::{edge_midpoint_pos, ALL_DIRS, ALL_SIGNS};
+use super::axes::{ALL_DIRS, ALL_SIGNS};
 use super::FacePointMap;
 
 /// Weight of the directional (alignment) force relative to the centrality (anti-rim) force when

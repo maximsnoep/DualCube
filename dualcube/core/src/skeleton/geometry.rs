@@ -1,4 +1,26 @@
-use mehsh::prelude::Vector3D;
+use std::f64::consts::PI;
+
+use mehsh::prelude::{HasPosition, Mesh, Vector3D};
+
+use crate::prelude::{EdgeID, INPUT};
+
+/// Position of an edge's midpoint.
+pub(super) fn edge_midpoint_pos(e: EdgeID, mesh: &Mesh<INPUT>) -> Vector3D {
+    let a = mesh.position(mesh.root(e));
+    let b = mesh.position(mesh.toor(e));
+    (a + b) * 0.5
+}
+
+/// Shortest angular distance between two angles in radians.
+pub(super) fn angle_distance(a: f64, b: f64) -> f64 {
+    let mut d = (a - b) % (2.0 * PI);
+    if d > PI {
+        d -= 2.0 * PI;
+    } else if d < -PI {
+        d += 2.0 * PI;
+    }
+    d.abs()
+}
 
 /// Möller–Trumbore line/triangle intersection.
 ///
