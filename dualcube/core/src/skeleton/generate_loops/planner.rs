@@ -27,7 +27,7 @@ pub(super) struct LoopPlan<'a> {
     pub skeleton: &'a LabeledCurveSkeleton,
 }
 
-pub(super) struct SegmentPlan {
+pub struct SegmentPlan {
     pub plan: HashMap<LoopID, Vec<Event>>,
 }
 
@@ -113,7 +113,7 @@ enum NextPoint {
 
 /// A real crossing on a loop's finalized roadmap.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-enum Event {
+pub enum Event {
     /// a crossing on patch boundary `boundary` at slot `(dir, sign)`, shared with that
     /// boundary loop (never re-traced, so this crossing is owned by exactly one traced loop).
     Boundary {

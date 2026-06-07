@@ -9,7 +9,6 @@
 //!
 //! [`generate_loops`] is the orchestrator that wires these together.
 
-mod audit;
 mod axes;
 mod crossings;
 mod diagnostics;
@@ -22,10 +21,9 @@ use mehsh::prelude::{Mesh, Vector3D};
 use slotmap::SlotMap;
 
 use crate::{
-    prelude::{EdgeID, PrincipalDirection, INPUT},
+    prelude::{EdgeID, INPUT, PrincipalDirection},
     skeleton::{
-        orthogonalize::{AxisSign, LabeledCurveSkeleton},
-        SkeletonData,
+        SkeletonData, generate_loops::router::route_segments, orthogonalize::{AxisSign, LabeledCurveSkeleton}
     },
     solutions::{Loop, LoopID},
 };
@@ -77,6 +75,9 @@ pub fn generate_loops(
         },
     );
 
+    // Take the produced plan and actually route the loops on the mesh.
+    route_segments(&mut map, &segment_plan, mesh, &mut diagnostics);
+
     // Routing produces one half-edge per crossed geometric edge; `Dual` requires both halves (it
     // canonicalizes crossings to the higher half-edge and its quad-walk expects each edge's twin
     // adjacent in the sequence). Expand AFTER pathing so blocking still sees the single-half form.
@@ -85,10 +86,7 @@ pub fn generate_loops(
         l.edges = expand_to_double_halfedges(raw, mesh);
     }
 
-    // Normalize winding so all same-axis loops wind the same way. `Dual` derives each segment's side
-    // label from the stored edge ORDER, so two parallel same-axis loops with opposite winding would
-    // double a region's (axis, side) label → Property 3 ("Invalid face boundary"). Reversing the edge
-    // list flips winding while preserving the twin/same-face alternation; only consistency matters.
+    // Normalize winding so all same-axis loops wind the same way.
     for (_, l) in map.iter_mut() {
         if signed_area_about_axis(&l.edges, l.direction, mesh) < 0.0 {
             l.edges.reverse();

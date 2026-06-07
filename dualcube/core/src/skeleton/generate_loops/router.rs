@@ -4,14 +4,19 @@
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use bimap::BiHashMap;
-use ordered_float::OrderedFloat;
 use mehsh::prelude::{HasEdges, HasFaces, HasNormal, HasPosition, HasVertices, Mesh, Vector3D};
+use ordered_float::OrderedFloat;
 use petgraph::graph::{EdgeIndex, NodeIndex};
+use slotmap::SlotMap;
 
 use crate::{
     prelude::{EdgeID, FaceID, PrincipalDirection, VertID, INPUT},
-    skeleton::{geometry::edge_midpoint_pos, orthogonalize::LabeledCurveSkeleton},
-    solutions::LoopID,
+    skeleton::{
+        generate_loops::{planner::SegmentPlan, RoutingDiagnostics},
+        geometry::edge_midpoint_pos,
+        orthogonalize::LabeledCurveSkeleton,
+    },
+    solutions::{Loop, LoopID},
 };
 
 /// Weight of the alignment penalty in the per-step routing cost:
@@ -32,6 +37,16 @@ const LAMBDA_DIST: f64 = 1.0;
 /// 180° → `π^10 ≈ 9.4e4`), so loops strongly prefer the straight/aligned route even when longer,
 /// while small turns stay cheap. See [`W_ALIGN`].
 const ALIGN_ALPHA: i32 = 10;
+
+/// The router connects the crossings to create a complete polycube loop structure,
+/// using the plan from the planner.
+pub fn route_segments(
+    mut map: &mut SlotMap<LoopID, Loop>,
+    segment_plan: &SegmentPlan,
+    mesh: &Mesh<INPUT>,
+    mut diagnostics: &mut RoutingDiagnostics,
+) {
+}
 
 /// All mesh faces incident to any vertex of `patch` (the "vertex-touch" region). Because
 /// `patch_vertices` is a complete vertex partition, this set includes the patch interior, the full
@@ -67,14 +82,17 @@ pub(super) fn segment_patch(
 ) -> Option<NodeIndex> {
     if let (Some(bs), Some(be)) = (bs, be) {
         if bs != be {
-            if let (Some(&e1), Some(&e2)) =
-                (boundary_map.get_by_right(&bs), boundary_map.get_by_right(&be))
-            {
+            if let (Some(&e1), Some(&e2)) = (
+                boundary_map.get_by_right(&bs),
+                boundary_map.get_by_right(&be),
+            ) {
                 if let (Some((a1, b1)), Some((a2, b2))) =
                     (skeleton.edge_endpoints(e1), skeleton.edge_endpoints(e2))
                 {
-                    let shared: Vec<NodeIndex> =
-                        [a1, b1].into_iter().filter(|&n| n == a2 || n == b2).collect();
+                    let shared: Vec<NodeIndex> = [a1, b1]
+                        .into_iter()
+                        .filter(|&n| n == a2 || n == b2)
+                        .collect();
                     if shared.len() == 1 {
                         return Some(shared[0]);
                     }
@@ -159,7 +177,10 @@ pub(super) fn surface_path_layered(req: RouteRequest, mesh: &Mesh<INPUT>) -> Opt
     let face_centroid = |f: FaceID| -> Vector3D {
         let verts: Vec<VertID> = mesh.vertices(f).collect();
         let n = verts.len() as f64;
-        verts.iter().fold(Vector3D::zeros(), |acc, &v| acc + mesh.position(v)) / n
+        verts
+            .iter()
+            .fold(Vector3D::zeros(), |acc, &v| acc + mesh.position(v))
+            / n
     };
     let in_partner = |e: EdgeID, j: usize| -> bool {
         partners[j].contains(&e) || partners[j].contains(&mesh.twin(e))
@@ -238,8 +259,12 @@ pub(super) fn surface_path_layered(req: RouteRequest, mesh: &Mesh<INPUT>) -> Opt
         for i in 0..nfv {
             let a = face_verts[i];
             let b = face_verts[(i + 1) % nfv];
-            let Some((edge, _)) = mesh.edge_between_verts(a, b) else { continue };
-            let Some(next_face) = other_face(edge, face) else { continue };
+            let Some((edge, _)) = mesh.edge_between_verts(a, b) else {
+                continue;
+            };
+            let Some(next_face) = other_face(edge, face) else {
+                continue;
+            };
             // Patch-locality: never step (or cross a partner) into a face outside the region. This
             // covers both the straight step below and the partner-crossing intermediate face.
             if allowed_faces.is_some_and(|s| !s.contains(&next_face)) {
@@ -249,16 +274,22 @@ pub(super) fn surface_path_layered(req: RouteRequest, mesh: &Mesh<INPUT>) -> Opt
             // One-way transition: cross partner[layer] exactly once, straight through.
             if layer < k && in_partner(edge, layer) {
                 let Some(entry) = entry_in_face else { continue }; // need an arm to cut across
-                let Some(exit_arm) = quad_diagonal_partner(entry, edge, mesh) else { continue };
+                let Some(exit_arm) = quad_diagonal_partner(entry, edge, mesh) else {
+                    continue;
+                };
                 // The exit arm is the loop's own new edge — must be free (the partner's own arm is
                 // in `blocked`, so this rejects the degenerate same-diagonal-as-partner crossing).
                 if blocked.contains(&exit_arm) || used.contains(&exit_arm) {
                     continue;
                 }
-                if control_points.contains(&exit_arm) || control_points.contains(&mesh.twin(exit_arm)) {
+                if control_points.contains(&exit_arm)
+                    || control_points.contains(&mesh.twin(exit_arm))
+                {
                     continue;
                 }
-                let Some(land) = other_face(exit_arm, next_face) else { continue };
+                let Some(land) = other_face(exit_arm, next_face) else {
+                    continue;
+                };
                 if allowed_faces.is_some_and(|s| !s.contains(&land)) {
                     continue; // patch-locality: partner crossing must land inside the region
                 }
@@ -394,7 +425,11 @@ pub(super) fn block_loop_occupancy(
 /// The crossing rule: a loop crossing at `cp` must enter one triangle and leave the other via
 /// diagonal-partner sides (so it cuts diagonally across the quad). The two loops meeting at `cp`
 /// then occupy the two distinct diagonals, giving the 4 distinct arms `Dual` requires.
-pub(super) fn quad_diagonal_partner(side: EdgeID, cp: EdgeID, mesh: &Mesh<INPUT>) -> Option<EdgeID> {
+pub(super) fn quad_diagonal_partner(
+    side: EdgeID,
+    cp: EdgeID,
+    mesh: &Mesh<INPUT>,
+) -> Option<EdgeID> {
     let side_face = mesh.face(side);
     let cp_face = mesh.face(cp);
     let cp_twin_face = mesh.face(mesh.twin(cp));
