@@ -928,7 +928,7 @@ impl SurgeryContext {
                 adj.entry(c).or_default().extend([a, b]);
             }
             let mut visited: HashSet<VIdx> = HashSet::new();
-            let mut count = 0usize;
+            let mut count: usize = 0;
             for &start in &face_verts {
                 if !visited.insert(start) {
                     continue;

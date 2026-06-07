@@ -286,7 +286,7 @@ where
     F: FnMut(&E) -> bool,
 {
     let mut comp = vec![usize::MAX; nodes.len()];
-    let mut cur = 0usize;
+    let mut cur: usize = 0;
 
     for &start in nodes {
         let si = idx_map[&start];
@@ -396,7 +396,7 @@ fn compress_components_from_oriented_edges(
 
     let mut coord_per_comp = vec![0i32; nr_components];
     let mut topo_order: Vec<usize> = Vec::with_capacity(nr_components);
-    let mut processed = 0usize;
+    let mut processed: usize = 0;
     while let Some(std::cmp::Reverse(c)) = q.pop() {
         processed += 1;
         topo_order.push(c);
@@ -1204,7 +1204,7 @@ fn is_partially_realizable(p: &PartialEdgeLabeledCurveSkeleton) -> bool {
             }
         }
 
-        let mut processed = 0usize;
+        let mut processed: usize = 0;
         while let Some(c) = q.pop_front() {
             processed += 1;
             for &n in &adjacency[c] {

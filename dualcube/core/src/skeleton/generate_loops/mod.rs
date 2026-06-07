@@ -1702,7 +1702,7 @@ fn pathing_for_loops(
                 } else {
                     let nev = events.len();
                     let first_anchor = anchor_idx[0];
-                    let mut seg = 0usize;
+                    let mut seg: usize = 0;
                     for off in 0..nev {
                         let pos = (first_anchor + off) % nev;
                         match events[pos] {
@@ -1738,8 +1738,8 @@ fn pathing_for_loops(
             }
         }
         let mut visited: HashSet<EdgeID> = HashSet::new();
-        let mut three_plus = 0usize;
-        let mut same_axis = 0usize;
+        let mut three_plus: usize = 0;
+        let mut same_axis: usize = 0;
         for (&e, lids) in &occ {
             if !visited.insert(e) {
                 continue;
@@ -1805,7 +1805,7 @@ fn pathing_for_loops(
                 })
             })
             .collect();
-        let mut bigons = 0usize;
+        let mut bigons: usize = 0;
         for i in 0..seg_flat.len() {
             for j in (i + 1)..seg_flat.len() {
                 if seg_flat[i].0 == seg_flat[j].0 {

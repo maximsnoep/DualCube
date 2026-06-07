@@ -190,7 +190,7 @@ pub fn tetrahedralize(mesh: &Mesh<INPUT>) -> Result<TetMesh, TetError> {
     // input-vertex pair (`tet_boundary.edge_col(a, b)`) will silently
     // address the wrong edge — and the handle-subspace test becomes
     // garbage.
-    let mut drifted = 0usize;
+    let mut drifted: usize = 0;
     let mut max_drift: f64 = 0.0;
     for (i, &v) in vert_ids.iter().enumerate() {
         let expected = mesh.position(v);

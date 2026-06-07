@@ -211,9 +211,9 @@ use crate::skeleton::contraction::CONTRACTION;
             heap.len()
         );
 
-        let mut collapses = 0usize;
+        let mut collapses: usize = 0;
         let mut last_kind: Option<EdgeKind> = None;
-        let mut strict_violations_accepted = 0usize;
+        let mut strict_violations_accepted: usize = 0;
         const COST_EPSILON: f64 = 1e-8;
 
         let exit = loop {
@@ -222,11 +222,11 @@ use crate::skeleton::contraction::CONTRACTION;
             }
 
             // Per-iteration we may pop many stale/illegal candidates before doing one collapse.
-            let mut rejected_dead = 0usize;
-            let mut rejected_not_adjacent = 0usize;
-            let mut rejected_no_faces = 0usize;
-            let mut rejected_link = 0usize;
-            let mut rejected_stale = 0usize;
+            let mut rejected_dead: usize = 0;
+            let mut rejected_not_adjacent: usize = 0;
+            let mut rejected_no_faces: usize = 0;
+            let mut rejected_link: usize = 0;
+            let mut rejected_stale: usize = 0;
             let mut min_cost_seen = f64::INFINITY;
 
             let chosen = loop {
@@ -379,9 +379,9 @@ use crate::skeleton::contraction::CONTRACTION;
             SurgeryContext::new(&mesh, &input_mesh).expect("preprocessing failed in test");
         let idx_of = |k: VIdx| -> usize { *vmap.id(&k).expect("vmap missing key") };
 
-        let r = 10usize;
-        let s0 = 0usize;
-        let s1 = 1usize;
+        let r: usize = 10;
+        let s0: usize = 0;
+        let s1: usize = 1;
         let i = *vmap.key(r * SLOTS + s0).expect("missing ring 10 slot 0");
         let j = *vmap.key(r * SLOTS + s1).expect("missing ring 10 slot 1");
         eprintln!(

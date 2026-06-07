@@ -187,7 +187,7 @@ pub fn compute_handle_subspace(
     // injectively by TetGen and everything below this point is suspect.
     {
         let mut seen: HashSet<u32> = HashSet::with_capacity(surface_to_t_col.len());
-        let mut collisions = 0usize;
+        let mut collisions: usize = 0;
         for &c in &surface_to_t_col {
             if !seen.insert(c) {
                 collisions += 1;
@@ -261,15 +261,15 @@ pub fn compute_handle_subspace(
 
     let mut chosen: Vec<Vec<u32>> = Vec::new();
     let mut total_extracted: usize = 0;
-    let mut tested = 0usize;
-    let mut bound_in_t = 0usize;
-    let mut bound_individually = 0usize;
-    let mut bound_multi = 0usize;
+    let mut tested: usize = 0;
+    let mut bound_in_t: usize = 0;
+    let mut bound_individually: usize = 0;
+    let mut bound_multi: usize = 0;
     let mut sample_non_bounding: Vec<(usize, usize, usize)> = Vec::new();
-    let mut non_cycle_chains = 0usize;
+    let mut non_cycle_chains: usize = 0;
     // For dim(image H₁(S) → H₁(T)) we just count how many lifted cycles
     // survived to become new tagged_pivots beyond the B₁(T) initial set.
-    let mut dim_image = 0usize;
+    let mut dim_image: usize = 0;
 
     // We process every non-tree edge — no early-exit on `target_g`. The
     // small extra cost (each cycle is just a few XORs once enough K
