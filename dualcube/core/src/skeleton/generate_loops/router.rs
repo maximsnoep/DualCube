@@ -46,6 +46,20 @@ pub fn route_segments(
     mesh: &Mesh<INPUT>,
     mut diagnostics: &mut RoutingDiagnostics,
 ) {
+    // Process each loop, one at a time.
+    for (loop_id, events) in &segment_plan.plan {
+        // TODO: keep a previous/next
+        // TODO: route segments one at a time (boundary to boundary), exactly as prescribed by the plan:
+        //   - Get the patch that the loop should go in (only using topology! no geometry), hopefully the plan makes this easy, else edit the plan to have this info as well
+        //   - Get the loops to cross in order
+        //   - Filter to loops that have already been routed (if we are first, they have to adjust to us, not the other way around, so we skip any not yet routed)
+        //   - Build a graph with layers: first filter to all edges in the patch, then
+        //     start at layer 0. Every valid crossing (4 arms criteria) over the first neighbor allows a directed edge to the other side and layer 1.
+        //     Repeat for other neighbors (or only have layer 1 if no other crossings). This ensures we cross the wanted loops in order, in a valid way.
+        //   - Use Dijkstra's using the existing routing heuristics to find a path.
+        //   - Save found path as segment
+        //   - Once back at start, either save the loop if all succesful (becomes a loop), else add to diagnostics appropriately.
+    }
 }
 
 /// All mesh faces incident to any vertex of `patch` (the "vertex-touch" region). Because
