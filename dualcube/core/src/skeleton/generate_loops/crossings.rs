@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use bimap::BiHashMap;
-use log::warn;
+use log::{error, info};
 use mehsh::prelude::{HasEdges, HasPosition, Mesh, Vector3D};
 use petgraph::{
     graph::EdgeIndex,
@@ -277,13 +277,20 @@ pub(super) fn repair_boundary_crossings(
         // Snapshot crossings of this boundary in current cyclic order; neighbours' ORIGINAL
         // positions bound each crossing's allowed interval, freezing the cyclic order.
         let mut entries: Vec<((PrincipalDirection, AxisSign), usize)> = {
-            let Some(ds_map) = crossings.get(&loop_id) else { continue };
+            let Some(ds_map) = crossings.get(&loop_id) else {
+                continue;
+            };
             if ds_map.is_empty() {
                 continue;
             }
             ds_map
                 .iter()
-                .map(|(&k, &e)| (k, *pos_of.get(&e).expect("crossing must lie on its boundary")))
+                .map(|(&k, &e)| {
+                    (
+                        k,
+                        *pos_of.get(&e).expect("crossing must lie on its boundary"),
+                    )
+                })
                 .collect()
         };
         entries.sort_by_key(|(_, p)| *p);
@@ -321,9 +328,16 @@ pub(super) fn repair_boundary_crossings(
     }
 
     if invalid > 0 || repaired > 0 {
-        warn!(
-            "boundary crossings: {} invalid (bend or boxed-in), {} repaired, {} unrepairable",
-            invalid, repaired, unrepairable
-        );
+        if unrepairable > 0 {
+            error!(
+                "boundary crossings: {} invalid (bend or boxed-in), {} repaired, {} unrepairable",
+                invalid, repaired, unrepairable
+            );
+        } else {
+            info!(
+                "boundary crossings: {} invalid (bend or boxed-in), {} repaired, {} unrepairable",
+                invalid, repaired, unrepairable
+            );
+        }
     }
 }
