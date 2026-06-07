@@ -4,8 +4,7 @@
 use std::collections::{HashMap, HashSet};
 
 use bimap::BiHashMap;
-use log::{error, warn};
-use mehsh::prelude::{Mesh, Vector3D};
+use log::{info, warn};
 use petgraph::{
     graph::{EdgeIndex, NodeIndex},
     visit::EdgeRef,
@@ -13,21 +12,13 @@ use petgraph::{
 use slotmap::SlotMap;
 
 use crate::{
-    prelude::{EdgeID, FaceID, PrincipalDirection, INPUT},
-    skeleton::{
-        geometry::edge_midpoint_pos,
-        orthogonalize::{AxisSign, LabeledCurveSkeleton, LabeledSkeletonSignExt},
-    },
+    prelude::PrincipalDirection,
+    skeleton::orthogonalize::{AxisSign, LabeledCurveSkeleton, LabeledSkeletonSignExt},
     solutions::{Loop, LoopID},
 };
 
-use super::audit;
 use super::axes::{third, ALL_DIRS};
-use super::diagnostics::{BlockedFailure, RoutingDiagnostics};
-use super::router::{
-    block_adjacent_to_control_points, block_loop_occupancy, patch_region, quad_diagonal_partner,
-    segment_patch, surface_path_layered, RouteRequest,
-};
+use super::diagnostics::RoutingDiagnostics;
 use super::CrossingMap;
 
 /// Read-only inputs to the planner
@@ -39,14 +30,19 @@ pub(super) struct LoopPlan<'a> {
 
 pub(super) fn pathing_for_loops(
     plan: LoopPlan,
-    map: &mut SlotMap<LoopID, Loop>,
-    diagnostics: &mut RoutingDiagnostics,
+    // TODO
+    _map: &mut SlotMap<LoopID, Loop>,
+    _diagnostics: &mut RoutingDiagnostics,
 ) {
     let LoopPlan {
         boundary_map,
         crossings,
         skeleton,
     } = plan;
+
+    // Every traced loop, as its cyclic sequence of crossing events (boundary + interior), built
+    // purely from the topological traversal.
+    let mut loops: Vec<Vec<Event>> = Vec::new();
 
     for &loop_axis in &ALL_DIRS {
         // Crossings visited by this loop axis: a crossing on a boundary with direction D and
@@ -69,7 +65,6 @@ pub(super) fn pathing_for_loops(
             })
             .collect();
 
-
         // Repeatedly pick any unvisited boundary crossing and trace the full loop it seeds.
         while let Some(&(loop_id, dir_sign)) = unvisited_crossings.iter().next() {
             let start = NextPoint::Crossing { loop_id, dir_sign };
@@ -82,15 +77,14 @@ pub(super) fn pathing_for_loops(
                     NextPoint::Crossing { loop_id, dir_sign } => {
                         unvisited_crossings.remove(&(loop_id, dir_sign));
                         Event::Boundary {
-                            edge: crossings[&loop_id][&dir_sign],
-                        }
-                    }
-                    NextPoint::FacePoint { patch, dir_sign } => {
-                        Event::Interior {
-                            patch,
+                            boundary: loop_id,
                             slot: dir_sign,
                         }
                     }
+                    NextPoint::FacePoint { patch, dir_sign } => Event::Interior {
+                        patch,
+                        slot: dir_sign,
+                    },
                 };
                 events.push(event);
                 current = next_point(current, loop_axis, skeleton, boundary_map);
@@ -98,66 +92,110 @@ pub(super) fn pathing_for_loops(
                     break;
                 }
             }
+            loops.push(events);
         }
     }
 
-    // Post-hoc structural-invariant check (>=3-loop edges, same-axis crossings, segment-bigons).
-    // Diagnostics only — emits AUDIT/DIAG warnings, never alters the committed loops.
-    // audit::audit_loops(map, &committed_segments, &all_control_points, mesh);
+    // Finalize the per-loop events into the shared crossing structure and check the invariants.
+    finalize_crossings(&loops);
 }
 
 /// A point on the surface that lies on a loop, produced by the `next_point` traversal.
-///
-/// - `Crossing`: a patch-boundary crossing (a pinned anchor). `dir_sign = (A, s)` is the CrossingMap
-///   key, where `A = third(loop_axis, boundary_dir)` and `s` is the sign of the slot the loop was at
-///   *before* crossing this boundary. An L-loop only visits crossings whose `dir_sign` direction ≠ L.
-/// - `FacePoint`: an interior crossing on a node patch, identified by `(patch, dir_sign)`. It maps to
-///   an `Event::Interior` (no pinned edge); the perpendicular partner and mesh location are resolved
-///   at routing time (layered routing). An L-loop only visits these whose direction ≠ L.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum NextPoint {
+    /// A patch-boundary crossing (a pinned anchor). `dir_sign = (A, s)` is the CrossingMap
+    ///   key, where `A = third(loop_axis, boundary_dir)` and `s` is the sign of the slot the loop was at
+    ///   *before* crossing this boundary. An L-loop only visits crossings whose `dir_sign` direction != L.
     Crossing {
         loop_id: LoopID,
         dir_sign: (PrincipalDirection, AxisSign),
     },
+    /// an interior crossing on a node patch, identified by `(patch, dir_sign)`. It maps to
+    ///   an `Event::Interior` (no pinned edge); the perpendicular partner and mesh location are resolved
+    ///   at routing time (layered routing). An L-loop only visits these whose direction != L.
     FacePoint {
         patch: NodeIndex,
         dir_sign: (PrincipalDirection, AxisSign),
     },
 }
 
-/// A crossing event in a loop's cyclic order, produced by the `next_point` traversal.
-///
-/// - `Boundary`: a pinned patch-boundary crossing (anchor). Its `edge` is fixed up-front by
-///   `get_boundaries_and_crossing_points` / `repair_boundary_crossings`.
-/// - `Interior`: a crossing inside a patch with the perpendicular partner loop of the slot,
-///   identified topologically by `(patch, slot)`. It carries NO pinned edge — the partner loop and
-///   the mesh location are resolved at routing time (layered routing).
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+/// A crossing event in a loop's cyclic order, produced by the `next_point` traversal. This is the
+/// crossing's topological IDENTITY (no mesh location): a `Boundary`'s crossing edge is recoverable
+/// from the `CrossingMap` via `(boundary, slot)` when geometry is later needed.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 enum Event {
+    /// A crossing on patch boundary `boundary` (a skeleton edge / boundary loop) at slot
+    ///   `(dir, sign)`. Its perpendicular partner is that boundary loop itself, so it is owned by exactly
+    ///   one traced loop.
     Boundary {
-        edge: EdgeID,
+        boundary: LoopID,
+        slot: (PrincipalDirection, AxisSign),
     },
+    /// A crossing inside `patch` at slot `(dir, sign)`, shared by the two perpendicular
+    ///   loops that pass through it.
     Interior {
         patch: NodeIndex,
         slot: (PrincipalDirection, AxisSign),
     },
 }
 
-impl Event {
-    /// The pinned anchor edge, for `Boundary` events only.
-    fn boundary_edge(&self) -> Option<EdgeID> {
-        match *self {
-            Event::Boundary { edge } => Some(edge),
-            Event::Interior { .. } => None,
+/// Finalizes the traced loops' event sequences into the shared crossing structure and checks the
+/// structural invariants:
+/// - every INTERIOR crossing `(patch, slot)` is shared by exactly the two perpendicular loops that
+///   pass through it (used exactly twice) — that pairing is *which loops intersect*;
+/// - every BOUNDARY crossing `(boundary, slot)` is owned by exactly one traced loop (its partner is
+///   the boundary loop itself, which is never re-traced), so it is used exactly once.
+fn finalize_crossings(loops: &[Vec<Event>]) {
+    // Each crossing -> the traced loops (indices into `loops`) that pass through it.
+    let mut usage: HashMap<Event, Vec<usize>> = HashMap::new();
+    for (li, events) in loops.iter().enumerate() {
+        for &ev in events {
+            usage.entry(ev).or_default().push(li);
         }
     }
+
+    let mut interior_intersections: usize = 0;
+    let mut interior_violations: usize = 0;
+    let mut boundary_violations: usize = 0;
+    for (ev, users) in &usage {
+        match ev {
+            Event::Interior { .. } => {
+                if users.len() == 2 {
+                    // The two perpendicular loops `users[0]` and `users[1]` intersect here.
+                    interior_intersections += 1;
+                } else {
+                    interior_violations += 1;
+                    warn!(
+                        "CROSSINGS: interior {ev:?} used by {} loops (expected 2): {users:?}",
+                        users.len()
+                    );
+                }
+            }
+            Event::Boundary { .. } => {
+                if users.len() != 1 {
+                    boundary_violations += 1;
+                    warn!(
+                        "CROSSINGS: boundary {ev:?} used by {} loops (expected 1): {users:?}",
+                        users.len()
+                    );
+                }
+            }
+        }
+    }
+
+    info!(
+        "CROSSINGS: {} loops, {} crossings ({} interior intersections); \
+         violations: {interior_violations} interior≠2, {boundary_violations} boundary≠1",
+        loops.len(),
+        usage.len(),
+        interior_intersections,
+    );
 }
 
 /// Returns the next `(direction, sign)` slot in CCW order for an `L`-loop currently at `(dir, sign)`.
 ///
 /// CCW is defined as: when viewed from the `+L` direction, rotation goes from one orthogonal
-/// axis to the next via the right-hand cross product: `L × (dir * sign)`.
+/// axis to the next via the right-hand cross product: `L x (dir * sign)`.
 /// This always maps between the two non-L directions, cycling through 4 slots.
 fn ccw_next(
     loop_axis: PrincipalDirection,
