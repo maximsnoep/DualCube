@@ -178,6 +178,16 @@ impl Solution {
     }
 
     // Calculate skeleton
+    /// True if the labeled skeleton has collapsed to a single node (no edges → no patch boundaries).
+    /// Such a skeleton can't anchor any dual loops, so the caller falls back to the normal
+    /// flow-graph loop initialization instead of the skeleton pipeline.
+    pub fn skeleton_is_single_node(&self) -> bool {
+        self.skeleton
+            .as_ref()
+            .and_then(|s| s.labeled_skeleton())
+            .is_some_and(|sk| sk.edge_count() == 0)
+    }
+
     pub fn calculate_skeleton(
         &mut self,
         convexity_threshold: f64,
@@ -208,14 +218,18 @@ impl Solution {
             self.polycube = polycube;
             self.quad = quad;
         }
-        let loops = generate_loops(self.skeleton.as_ref().unwrap(), &self.mesh_ref);
-        if let Ok((loops, crossings, diagnostics)) = loops {
-            self.loops = loops;
-            self.loop_crossings = Some(crossings);
-            self.routing_diagnostics = Some(diagnostics);
-            self.recompute_occupied();
-            if let Err(e) = self.reconstruct_solution(false, 1) {
-                log::warn!("Failed to reconstruct solution after skeleton update: {e}");
+        // A single-node skeleton has no boundaries to anchor loops on; the GUI detects this and
+        // falls back to the normal flow-graph initialization, so skip skeleton loop generation here.
+        if !self.skeleton_is_single_node() {
+            let loops = generate_loops(self.skeleton.as_ref().unwrap(), &self.mesh_ref);
+            if let Ok((loops, crossings, diagnostics)) = loops {
+                self.loops = loops;
+                self.loop_crossings = Some(crossings);
+                self.routing_diagnostics = Some(diagnostics);
+                self.recompute_occupied();
+                if let Err(e) = self.reconstruct_solution(false, 1) {
+                    log::warn!("Failed to reconstruct solution after skeleton update: {e}");
+                }
             }
         }
     }

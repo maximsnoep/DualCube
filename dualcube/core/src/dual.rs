@@ -693,7 +693,7 @@ impl Dual {
             levels.insert(topo_sort.first().unwrap().to_owned(), 100_000usize);
 
             for node in topo_sort.clone() {
-                println!("Visiting node: {:?}", node);
+                // println!("Visiting node: {:?}", node);
                 if let Some(node_level) = levels.get(&node).cloned() {
                     for neighbor in graph.neighbors_undirected(node) {
                         match (graph.directed_edge_exists(node, neighbor), graph.directed_edge_exists(neighbor, node)) {
@@ -724,7 +724,7 @@ impl Dual {
             topo_sort.reverse();
 
             for node in topo_sort {
-                println!("Visiting node: {:?}", node);
+                // println!("Visiting node: {:?}", node);
                 if let Some(node_level) = levels.get(&node).cloned() {
                     for neighbor in graph.neighbors_undirected(node) {
                         match (graph.directed_edge_exists(node, neighbor), graph.directed_edge_exists(neighbor, node)) {

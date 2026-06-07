@@ -548,10 +548,25 @@ fn poll_jobs(
             match result {
                 Some(JobResult::SkeletonCalculated((solution, _configuration))) => {
                     solution_resource.current_solution = solution;
-                    jobs.write(JobRequest::Run(Box::new(Job::Refresh {
-                        solution: solution_resource.current_solution.clone(),
-                        configuration: configuration.clone(),
-                    })));
+                    // A single-node skeleton has no patch boundaries, so the skeleton loop pipeline
+                    // can't anchor any loops. For these simple, blob-like shapes the normal
+                    // flow-graph initialization works well, so hand off to it instead of leaving the
+                    // solution empty.
+                    if solution_resource.current_solution.skeleton_is_single_node() {
+                        info!(
+                            "Single-node skeleton: falling back to normal flow-graph loop initialization."
+                        );
+                        jobs.write(JobRequest::Run(Box::new(Job::InitializeLoops {
+                            solution: solution_resource.current_solution.clone(),
+                            flowgraphs: input_resource.flow_graphs.clone(),
+                            configuration: configuration.clone(),
+                        })));
+                    } else {
+                        jobs.write(JobRequest::Run(Box::new(Job::Refresh {
+                            solution: solution_resource.current_solution.clone(),
+                            configuration: configuration.clone(),
+                        })));
+                    }
                 }
 
                 Some(JobResult::LoopsChanged((solution, configuration))) => {
