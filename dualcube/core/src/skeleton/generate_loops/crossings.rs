@@ -26,7 +26,7 @@ use super::axes::{third, ALL_DIRS, ALL_SIGNS};
 use super::router::quad_diagonal_partner;
 use super::CrossingMap;
 
-/// Builds an (as-yet unrouted) `Loop` from a boundary loop: its edge list is the boundary's
+/// Builds a `Loop` from a boundary loop: its edge list is the boundary's
 /// own edge midpoints, tagged with the boundary's direction.
 fn get_loop(boundary: BoundaryLoop, direction: PrincipalDirection) -> Loop {
     Loop {

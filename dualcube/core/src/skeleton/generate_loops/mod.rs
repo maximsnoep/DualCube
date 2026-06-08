@@ -76,7 +76,15 @@ pub fn generate_loops(
     );
 
     // Take the produced plan and actually route the loops on the mesh.
-    route_segments(&mut map, &segment_plan, mesh, &mut diagnostics);
+    route_segments(
+        &mut map,
+        &segment_plan,
+        &crossings,
+        &boundary_map,
+        skeleton,
+        mesh,
+        &mut diagnostics,
+    );
 
     // Routing produces one half-edge per crossed geometric edge; `Dual` requires both halves (it
     // canonicalizes crossings to the higher half-edge and its quad-walk expects each edge's twin
