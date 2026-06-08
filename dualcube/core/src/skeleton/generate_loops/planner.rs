@@ -9,6 +9,7 @@ use petgraph::{
     graph::{EdgeIndex, NodeIndex},
     visit::EdgeRef,
 };
+use slotmap::SlotMap;
 use smallvec::SmallVec;
 
 use crate::{
@@ -40,9 +41,12 @@ pub(super) fn pathing_for_loops(plan: LoopPlan) -> SegmentPlan {
     } = plan;
 
     // Every traced loop, as its cyclic sequence of raw traversal points (boundary crossings +
-    // interior face points). `finalize_crossings` turns these into the real crossing roadmap.
-    // let mut loops: Vec<Vec<NextPoint>> = Vec::new();
-    let mut loops: HashMap<LoopID, Vec<NextPoint>> = HashMap::new();
+    // interior face points). Keyed by a FRESH SlotMap id per trace: a trace must NOT reuse the
+    // boundary id it seeded from, because several traces can seed from the same boundary loop and a
+    // shared key would silently drop all but one of them. These ids live in their own namespace
+    // (the `other_loop` partner references and the returned plan keys); boundary ids stay separate.
+    // `finalize_crossings` turns these into the real crossing roadmap.
+    let mut loops: SlotMap<LoopID, Vec<NextPoint>> = SlotMap::with_key();
 
     for &loop_axis in &ALL_DIRS {
         // Crossings visited by this loop axis: a crossing on a boundary with direction D and
@@ -83,7 +87,7 @@ pub(super) fn pathing_for_loops(plan: LoopPlan) -> SegmentPlan {
                     break;
                 }
             }
-            loops.insert(loop_id, points);
+            loops.insert(points);
         }
     }
 
@@ -133,13 +137,12 @@ pub enum Event {
 /// Turns the raw per-loop `NextPoint` sequences into the real crossing roadmap: every boundary
 /// crossing becomes an `Event::Boundary`, and an interior face point becomes an
 /// `Event::InteriorCrossing` when a second (perpendicular) loop also passes through it.
-// fn finalize_crossings(loops: &[Vec<NextPoint>]) -> Vec<Vec<Event>> {
-fn finalize_crossings(loops: &HashMap<LoopID, Vec<NextPoint>>) -> HashMap<LoopID, Vec<Event>> {
+fn finalize_crossings(loops: &SlotMap<LoopID, Vec<NextPoint>>) -> HashMap<LoopID, Vec<Event>> {
     // Tracking which loops visit which points.
     let mut usage: HashMap<NextPoint, SmallVec<[LoopID; 2]>> = HashMap::new();
     for (loop_id, points) in loops {
         for &p in points {
-            usage.entry(p).or_default().push(*loop_id);
+            usage.entry(p).or_default().push(loop_id);
         }
     }
 
@@ -170,7 +173,7 @@ fn finalize_crossings(loops: &HashMap<LoopID, Vec<NextPoint>>) -> HashMap<LoopID
     };
     let segment_plan: HashMap<LoopID, Vec<Event>> = loops
         .iter()
-        .map(|(loop_id, points)| (*loop_id, points.iter().filter_map(|p| to_event(p, *loop_id)).collect()))
+        .map(|(loop_id, points)| (loop_id, points.iter().filter_map(|p| to_event(p, loop_id)).collect()))
         .collect();
 
     // Invariant: every boundary crossing is owned by exactly one traced loop.
