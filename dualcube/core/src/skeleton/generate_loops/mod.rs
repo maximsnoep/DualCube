@@ -17,7 +17,8 @@ mod router;
 
 use std::collections::{HashMap, HashSet};
 
-use mehsh::prelude::{Mesh, Vector3D};
+use bimap::BiHashMap;
+use mehsh::{mesh, prelude::{Mesh, Vector3D}};
 use slotmap::SlotMap;
 
 use crate::{
@@ -94,12 +95,8 @@ pub fn generate_loops(
         l.edges = expand_to_double_halfedges(raw, mesh);
     }
 
-    // Normalize winding so all same-axis loops wind the same way.
-    for (_, l) in map.iter_mut() {
-        if signed_area_about_axis(&l.edges, l.direction, mesh) < 0.0 {
-            l.edges.reverse();
-        }
-    }
+    // Make level graphs a DAG.
+    orient_loops(&mut map, &mut crossings, &skeleton, &mesh);
 
     Ok((map, crossings, diagnostics))
 }
@@ -187,4 +184,26 @@ fn bridge_edges(from: EdgeID, to: EdgeID, mesh: &Mesh<INPUT>) -> Vec<EdgeID> {
         from, mesh.face(from), mesh.face(twin_from),
         to, mesh.face(to), mesh.face(twin_to)
     );
+}
+
+/// Gives a set of loops orients them to get a DAG in the level graphs,
+/// where each loop region is a node and the loops are edges. Should be consistent with geometry.
+/// Boundary loops get an orientation from the labeled skeleton: the rest is oriented consistently with them, 
+/// falling back to geometry if unclear.
+fn orient_loops(map: &mut SlotMap<LoopID, Loop>, 
+    crossings: &mut CrossingMap, 
+    labeled_skeleton: &LabeledCurveSkeleton,
+    // mapping between skeleton edges and loops, probably derivable from skeleton? skeleton gives BoundaryLoop struct but not LoopID...
+    // TODO
+    mesh: &Mesh<INPUT>) {
+    // TODO impl correctly
+
+
+    // temp old impl
+    // Normalize winding so all same-axis loops wind the same way.
+    for (_, l) in map.iter_mut() {
+        if signed_area_about_axis(&l.edges, l.direction, mesh) < 0.0 {
+            l.edges.reverse();
+        }
+    }
 }

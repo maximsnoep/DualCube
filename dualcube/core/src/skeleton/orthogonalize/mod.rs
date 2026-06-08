@@ -28,7 +28,6 @@ pub struct OrthogonalSkeletonNode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrthogonalSkeletonEdge {
     pub direction: PrincipalDirection,
-    #[serde(default)]
     pub sign: AxisSign,
     pub length: u32,
     pub boundary_loop: BoundaryLoop,
