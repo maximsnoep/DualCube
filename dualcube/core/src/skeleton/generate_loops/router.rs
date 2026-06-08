@@ -12,7 +12,7 @@
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 
 use bimap::BiHashMap;
-use log::{error, info};
+use log::{error, info, warn};
 use mehsh::prelude::{HasEdges, HasFaces, HasNormal, HasPosition, HasVertices, Mesh, Vector3D};
 use ordered_float::OrderedFloat;
 use petgraph::graph::{EdgeIndex, NodeIndex};
@@ -114,6 +114,9 @@ pub fn route_segments(
                         .blocked_failures
                         .push(BlockedFailure { src, tgt, axis });
                 }
+
+                // TEMP: break after dropping first to investigate better
+                break;
             }
         }
     }
@@ -392,7 +395,7 @@ fn route_one_loop(
                     matches!(rot[i], Event::InteriorCrossing { other_loop, .. } if !routed.contains_key(&other_loop))
                 })
                 .count();
-            error!(
+            warn!(
                 "PLAN {loop_axis:?}: cut={:?} committed=[{}] skipped_interiors={}",
                 boundary0,
                 kinds.join(","),
