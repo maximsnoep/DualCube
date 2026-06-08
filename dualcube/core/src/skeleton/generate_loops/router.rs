@@ -132,6 +132,9 @@ struct Layer {
     partner: HashSet<EdgeID>,
     /// Faces the loop may traverse while travelling toward this crossing (patch locality).
     region: HashSet<FaceID>,
+    /// Human-readable tag for the crossing (boundary/interior + the crossed loop's direction), for
+    /// the failure diagnostic.
+    label: String,
 }
 
 /// The loop's axis from its first boundary event: a boundary of direction `D` crossed at slot
@@ -342,9 +345,24 @@ fn route_one_loop(
                 }
                 idx = nxt;
             }
+            // Tag: boundary crossings carry the boundary loop's direction; interior crossings carry
+            // the perpendicular partner loop's axis (third of this loop's axis and the slot dir).
+            let label = match rot[b] {
+                Event::Boundary { boundary, .. } => {
+                    let d = boundary_map
+                        .get_by_right(&boundary)
+                        .and_then(|&e| skeleton.edge_weight(e))
+                        .map(|w| w.direction);
+                    format!("B:{d:?}")
+                }
+                Event::InteriorCrossing { other_loop, slot, .. } => {
+                    format!("I:{:?}@{:?}", third(loop_axis, slot.0), other_loop)
+                }
+            };
             layers.push(Layer {
                 partner: partner_edges(&rot[b])?,
                 region,
+                label,
             });
         }
 
@@ -357,6 +375,30 @@ fn route_one_loop(
         let anchor0 = *crossings.get(&boundary0)?.get(&slot0)?;
         let band0_patch = band_patch(&rot[0], &rot[1], boundary_map, skeleton)?;
         let seed = anchor_face_on_patch_side(anchor0, band0_patch, skeleton, mesh);
+
+        // DEBUG: dump the committed crossing order (B=boundary, I+/I-=interior committed/skipped).
+        {
+            let kinds: Vec<String> = committed_idx
+                .iter()
+                .map(|&ci| match rot[ci] {
+                    Event::Boundary { .. } => "B".to_string(),
+                    Event::InteriorCrossing { other_loop, .. } => {
+                        format!("I{:?}", other_loop)
+                    }
+                })
+                .collect();
+            let skipped = (0..k)
+                .filter(|&i| {
+                    matches!(rot[i], Event::InteriorCrossing { other_loop, .. } if !routed.contains_key(&other_loop))
+                })
+                .count();
+            error!(
+                "PLAN {loop_axis:?}: cut={:?} committed=[{}] skipped_interiors={}",
+                boundary0,
+                kinds.join(","),
+                skipped
+            );
+        }
 
         Some((seed, layers, loop_axis, winding_sign))
     };
@@ -641,6 +683,61 @@ fn route_loop_layered(
     match found {
         Some(end) => Ok(reconstruct(end)),
         None => {
+            // DEBUG: at the stall band, can the furthest face even reach the next crossing under the
+            // actual walls? Distinguishes a fenced pocket from a crossing-mechanics rejection.
+            {
+                let sl = best.1;
+                let reg = &layers[sl].region;
+                let pf: HashSet<FaceID> = layers[sl]
+                    .partner
+                    .iter()
+                    .flat_map(|&e| [mesh.face(e), mesh.face(mesh.twin(e))])
+                    .collect();
+                let mut vis: HashSet<FaceID> = HashSet::new();
+                let mut q: VecDeque<FaceID> = VecDeque::new();
+                vis.insert(best.0);
+                q.push_back(best.0);
+                let mut reached_p = false;
+                while let Some(f) = q.pop_front() {
+                    if pf.contains(&f) {
+                        reached_p = true;
+                    }
+                    for e in mesh.edges(f) {
+                        let nf = mesh.face(mesh.twin(e));
+                        let walled = in_any_partner(e)
+                            || blocked.contains(&e)
+                            || control_points.contains(&e)
+                            || control_points.contains(&mesh.twin(e));
+                        if !walled && reg.contains(&nf) && vis.insert(nf) {
+                            q.push_back(nf);
+                        }
+                    }
+                }
+                // The full crossing itinerary, marking what's DONE, what it's STUCK on, and TODO.
+                let itinerary: String = layers
+                    .iter()
+                    .enumerate()
+                    .map(|(j, l)| {
+                        let mark = match j.cmp(&sl) {
+                            std::cmp::Ordering::Less => "^",
+                            std::cmp::Ordering::Equal => "-STUCK-",
+                            std::cmp::Ordering::Greater => ">",
+                        };
+                        format!("{}{}", l.label, mark)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                error!(
+                    "STALL {loop_axis:?}: {sl}/{k} done | stuck on {} (reg_n={} pocket={} reached_partner={} pf_in_reg={}/{})",
+                    layers[sl].label,
+                    reg.len(),
+                    vis.len(),
+                    reached_p,
+                    pf.iter().filter(|f| reg.contains(f)).count(),
+                    pf.len(),
+                );
+                error!("  itinerary {loop_axis:?}: {itinerary}");
+            }
             // Stalled: report the furthest path and the next crossing it could not reach. Even with
             // zero progress (still at the seed, no partial edges), anchor the gap on a seed-face edge
             // so the overlay still marks WHERE and toward WHICH crossing the loop got stuck.
