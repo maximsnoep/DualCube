@@ -478,11 +478,19 @@ pub fn face_centroid(f: FaceID, mesh: &Mesh<INPUT>) -> Vector3D {
     sum / n
 }
 
-/// Cyclic layered Dijkstra over the mesh dual graph (state = `(face, layer)`). Starting on `seed`
-/// (layer 0), the loop crosses `layers[0].partner`, …, `layers[k-1].partner` in order — each an
-/// atomic straight-through crossing via [`quad_diagonal_partner`] — and the final crossing (the
+/// Cyclic layered Dijkstra over the mesh dual graph (state = `(face, layer, invert)`). Starting on
+/// `seed` (layer 0), the loop crosses `layers[0].partner`, …, `layers[k-1].partner` in order — each
+/// an atomic straight-through crossing via [`quad_diagonal_partner`] — and the final crossing (the
 /// cut) must land back on `seed`, closing the cycle. Each layer confines travel to its `region`
 /// (patch locality). The cost is the alignment-primary, distance-regularized measure on [`W_ALIGN`].
+///
+/// `invert` is the per-band orientation of the alignment heuristic: the alignment cost is measured
+/// against `signed_target` when `false` and against `-signed_target` when `true`. The search seeds
+/// BOTH orientations and only lets the flag flip AT a crossing (a layer transition), so the
+/// heuristic stays consistent within each band but each band independently picks whichever
+/// orientation the local surface prefers (e.g. the inside vs. the outside of a torus, where the
+/// face normals — and thus `d × n` — point opposite ways). No global pre-computation of the
+/// orientation is needed: Dijkstra keeps the cheaper of the two branches at every crossing.
 ///
 /// Because every partner's own arms are in `blocked`, the loop necessarily takes the complementary
 /// diagonal at each crossing, so the 4 arms stay distinct by construction — no separate 4-arm check
@@ -520,42 +528,55 @@ fn route_loop_layered(
     };
     let in_any_partner = |e: EdgeID| -> bool { (0..k).any(|j| in_partner(e, j)) };
 
-    // Cost of stepping from `face` (entered via `entry`) across `edge` into `next_face`.
-    let step_cost = |face: FaceID, entry: Option<EdgeID>, edge: EdgeID, next_face: FaceID| -> f64 {
+    // Cost of stepping from `face` (entered via `entry`) across `edge` into `next_face`. `invert`
+    // selects the band's heuristic orientation: align against `signed_target` (false) or its
+    // negation (true).
+    let step_cost = |face: FaceID,
+                     entry: Option<EdgeID>,
+                     edge: EdgeID,
+                     next_face: FaceID,
+                     invert: bool|
+     -> f64 {
         let centroid_a = face_centroid(face, mesh);
         let edge_mid = edge_midpoint_pos(edge, mesh);
         let centroid_b = face_centroid(next_face, mesh);
         let length = (centroid_a - edge_mid).norm() + (edge_mid - centroid_b).norm();
+        let target = if invert { -signed_target } else { signed_target };
         let mut misalignment = 0.0;
         if let Some(en) = entry {
             let d = edge_mid - edge_midpoint_pos(en, mesh);
             let cross = d.cross(&mesh.normal(face));
             let cn = cross.norm();
             if cn > 1e-12 {
-                let cos = (cross / cn).dot(&signed_target).clamp(-1.0, 1.0);
+                let cos = (cross / cn).dot(&target).clamp(-1.0, 1.0);
                 misalignment = cos.acos().powi(ALIGN_ALPHA);
             }
         }
         length * (LAMBDA_DIST + W_ALIGN * misalignment)
     };
 
-    type State = (FaceID, usize);
+    type State = (FaceID, usize, bool);
     let mut dist: HashMap<State, f64> = HashMap::new();
     // prev: state -> (parent_state, edges_used_to_reach_it). Empty edges for the seed state.
     let mut prev: HashMap<State, (State, Vec<EdgeID>)> = HashMap::new();
     let mut heap: BinaryHeap<(std::cmp::Reverse<OrderedFloat<f64>>, State)> = BinaryHeap::new();
 
-    let start: State = (seed, 0);
-    dist.insert(start, 0.0);
-    prev.insert(start, (start, Vec::new()));
-    heap.push((std::cmp::Reverse(OrderedFloat(0.0)), start));
+    // Seed BOTH heuristic orientations at layer 0; the cheaper one survives. A band's orientation is
+    // only allowed to change at a crossing (see the layer transition below).
+    let start: State = (seed, 0, false);
+    for &invert in &[false, true] {
+        let s: State = (seed, 0, invert);
+        dist.insert(s, 0.0);
+        prev.insert(s, (s, Vec::new()));
+        heap.push((std::cmp::Reverse(OrderedFloat(0.0)), s));
+    }
 
     let mut found: Option<State> = None;
     // Furthest progress (max layer, first-popped => min cost) for the failure diagnostic.
     let mut best: State = start;
 
     'dijkstra: while let Some((std::cmp::Reverse(OrderedFloat(cost)), state)) = heap.pop() {
-        let (face, layer) = state;
+        let (face, layer, invert) = state;
         if dist.get(&state).copied().unwrap_or(f64::INFINITY) < cost {
             continue; // stale
         }
@@ -588,13 +609,15 @@ fn route_loop_layered(
                     // Closing the cut: cross the anchor edge straight back onto the seed face. The
                     // loop's exit arm out of the cut was already its first step at layer 0; the
                     // boundary loop's own arms at the anchor are blocked, so this last face was
-                    // necessarily entered on the free diagonal — the 4 arms stay distinct by
+                    // necessarily entered on the free diagonal, the 4 arms stay distinct by
                     // construction. Only the anchor edge itself is recorded for this step.
                     if next_face != seed {
                         continue;
                     }
-                    let new_cost = cost + step_cost(face, entry_in_face, edge, next_face);
-                    let ns: State = (next_face, target_layer);
+                    // Terminal crossing: no band follows, so the orientation is irrelevant here,
+                    // keep the current flag and just close.
+                    let new_cost = cost + step_cost(face, entry_in_face, edge, next_face, invert);
+                    let ns: State = (next_face, target_layer, invert);
                     if new_cost < dist.get(&ns).copied().unwrap_or(f64::INFINITY) {
                         dist.insert(ns, new_cost);
                         prev.insert(ns, (state, vec![edge]));
@@ -627,14 +650,21 @@ fn route_loop_layered(
                 {
                     continue;
                 }
-                let c1 = step_cost(face, entry_in_face, edge, next_face);
-                let c2 = step_cost(next_face, Some(edge), exit_arm, land);
-                let new_cost = cost + c1 + c2;
-                let ns: State = (land, target_layer);
-                if new_cost < dist.get(&ns).copied().unwrap_or(f64::INFINITY) {
-                    dist.insert(ns, new_cost);
-                    prev.insert(ns, (state, vec![edge, exit_arm]));
-                    heap.push((std::cmp::Reverse(OrderedFloat(new_cost)), ns));
+                // `c1` (leaving the current band, into the crossing quad) keeps this band's flag.
+                let c1 = step_cost(face, entry_in_face, edge, next_face, invert);
+                // A crossing is the ONLY place the heuristic may flip: branch into both orientations
+                // for the band we land in, computing `c2` (the landing step) with the new flag, and
+                // let Dijkstra keep whichever is cheaper. This is how each segment auto-picks the
+                // orientation the local surface prefers without any pre-computation.
+                for new_invert in [false, true] {
+                    let c2 = step_cost(next_face, Some(edge), exit_arm, land, new_invert);
+                    let new_cost = cost + c1 + c2;
+                    let ns: State = (land, target_layer, new_invert);
+                    if new_cost < dist.get(&ns).copied().unwrap_or(f64::INFINITY) {
+                        dist.insert(ns, new_cost);
+                        prev.insert(ns, (state, vec![edge, exit_arm]));
+                        heap.push((std::cmp::Reverse(OrderedFloat(new_cost)), ns));
+                    }
                 }
                 continue;
             }
@@ -656,8 +686,9 @@ fn route_loop_layered(
                 continue;
             }
 
-            let new_cost = cost + step_cost(face, entry_in_face, edge, next_face);
-            let ns: State = (next_face, layer);
+            // Body travel stays within the band, so the orientation flag is carried unchanged.
+            let new_cost = cost + step_cost(face, entry_in_face, edge, next_face, invert);
+            let ns: State = (next_face, layer, invert);
             if new_cost < dist.get(&ns).copied().unwrap_or(f64::INFINITY) {
                 dist.insert(ns, new_cost);
                 prev.insert(ns, (state, vec![edge]));

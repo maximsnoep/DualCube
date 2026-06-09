@@ -17,7 +17,7 @@ mod router;
 
 use std::collections::{HashMap, HashSet};
 
-use mehsh::prelude::{HasEdges, HasNormal, HasPosition, HasVertices, Mesh, Vector3D};
+use mehsh::prelude::{HasEdges, HasNormal, Mesh, Vector3D};
 use petgraph::unionfind::UnionFind;
 use slotmap::SlotMap;
 
