@@ -205,6 +205,28 @@ fn ccw_next(
     (res_dir, res_sign)
 }
 
+/// The skeleton node a loop ENTERS when it crosses boundary `boundary` departing from slot `(a, s)`
+/// under `loop_axis` — i.e. the patch it travels in immediately AFTER that crossing. Mirrors the
+/// `Crossing` arm of [`next_point`]. The router uses it to identify the patch each segment is
+/// actually inside, which `band_patch` cannot tell for a cap/leaf segment whose two anchors lie on
+/// the same boundary edge (the shared-endpoint rule is then ambiguous).
+pub(super) fn entered_patch_after_crossing(
+    boundary: LoopID,
+    slot: (PrincipalDirection, AxisSign),
+    loop_axis: PrincipalDirection,
+    skeleton: &LabeledCurveSkeleton,
+    boundary_map: &BiHashMap<EdgeIndex, LoopID>,
+) -> Option<NodeIndex> {
+    let (a, s) = slot;
+    // ccw_next gives the direction+sign we move through the boundary; its sign vs. the edge's stored
+    // src->tgt sign tells us which endpoint node we land in.
+    let (_move_dir, move_sign) = ccw_next(loop_axis, a, s);
+    let &edge_idx = boundary_map.get_by_right(&boundary)?;
+    let (src, tgt) = skeleton.edge_endpoints(edge_idx)?;
+    let edge_sign_from_src = skeleton.edge_sign_from(edge_idx, src)?;
+    Some(if move_sign == edge_sign_from_src { tgt } else { src })
+}
+
 /// Core traversal step: given a node and the slot `(A, s)` the loop is currently at,
 /// returns the next `NextPoint` for `loop_axis`.
 ///
