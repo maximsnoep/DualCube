@@ -44,7 +44,7 @@ use super::axes::third;
 /// aligned, π = reversed). The penalty is integrated over arc length and signed (not folded), so
 /// winding reversal is maximal — this is what stops zigzagging. Alignment is primary
 /// (`W_ALIGN ≫ LAMBDA_DIST`).
-const W_ALIGN: f64 = 8.0;
+const W_ALIGN: f64 = 2.0;
 
 /// Distance-floor weight in the routing cost (see [`W_ALIGN`]): a geodesic regularizer/tie-breaker
 /// beneath the alignment term, so among equally-aligned paths the shorter one wins.
