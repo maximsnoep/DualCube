@@ -468,6 +468,16 @@ fn folded_edges(edges: &[EdgeID], mesh: &Mesh<INPUT>) -> Vec<EdgeID> {
     folded
 }
 
+pub fn face_centroid(f: FaceID, mesh: &Mesh<INPUT>) -> Vector3D {
+    let mut sum = Vector3D::zeros();
+    let mut n = 0.0;
+    for v in mesh.vertices(f) {
+        sum += mesh.position(v);
+        n += 1.0;
+    }
+    sum / n
+}
+
 /// Cyclic layered Dijkstra over the mesh dual graph (state = `(face, layer)`). Starting on `seed`
 /// (layer 0), the loop crosses `layers[0].partner`, …, `layers[k-1].partner` in order — each an
 /// atomic straight-through crossing via [`quad_diagonal_partner`] — and the final crossing (the
@@ -499,15 +509,6 @@ fn route_loop_layered(
 ) -> Result<Vec<EdgeID>, RouteFail> {
     let k = layers.len();
     let signed_target: Vector3D = Vector3D::from(loop_axis) * winding_sign;
-
-    let face_centroid = |f: FaceID| -> Vector3D {
-        let verts: Vec<VertID> = mesh.vertices(f).collect();
-        let n = verts.len() as f64;
-        verts
-            .iter()
-            .fold(Vector3D::zeros(), |acc, &v| acc + mesh.position(v))
-            / n
-    };
     let other_face = |edge: EdgeID, face: FaceID| -> Option<FaceID> {
         let a = mesh.root(edge);
         let b = mesh.toor(edge);
@@ -521,9 +522,9 @@ fn route_loop_layered(
 
     // Cost of stepping from `face` (entered via `entry`) across `edge` into `next_face`.
     let step_cost = |face: FaceID, entry: Option<EdgeID>, edge: EdgeID, next_face: FaceID| -> f64 {
-        let centroid_a = face_centroid(face);
+        let centroid_a = face_centroid(face, mesh);
         let edge_mid = edge_midpoint_pos(edge, mesh);
-        let centroid_b = face_centroid(next_face);
+        let centroid_b = face_centroid(next_face, mesh);
         let length = (centroid_a - edge_mid).norm() + (edge_mid - centroid_b).norm();
         let mut misalignment = 0.0;
         if let Some(en) = entry {
