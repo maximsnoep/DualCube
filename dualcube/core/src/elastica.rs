@@ -855,7 +855,7 @@ fn transition_weight(
             + (kappa_min_2.abs() - kappa_max_2.abs()).powf(2.)
                 * principal_direction_deviation(d12, dmin2, dmax2));
 
-    Some(geodesic_deviation)
+    Some(axis_deviation)
 }
 
 fn estimate_principal_frame<T: Tag>(

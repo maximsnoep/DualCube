@@ -222,7 +222,7 @@ impl Solution {
                 .into_par()
                 .map(|_| {
                     // Grab a random solution from pool1
-                    let index = rand::Rng::random_range(&mut rand::rng(), 0..pool1.len());
+                    let index = rand::random_range(0..pool1.len());
                     pool1[index].clone()
                 })
                 .filter_map(|(sol, _)| {

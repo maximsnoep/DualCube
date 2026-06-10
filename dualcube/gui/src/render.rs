@@ -1231,12 +1231,20 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                     gizmos_curvature_max.line(
                         v_transformed,
                         world_to_view(u_max, translation, scale),
-                        colors::to_bevy(colors::from_direction(PrincipalDirection::X, None, None)),
+                        colors::to_bevy(colors::from_direction(
+                            PrincipalDirection::X,
+                            Some(Perspective::Dual),
+                            None,
+                        )),
                     );
                     gizmos_curvature_max.line(
                         v_transformed,
                         world_to_view(u_max_neg, translation, scale),
-                        colors::to_bevy(colors::from_direction(PrincipalDirection::X, None, None)),
+                        colors::to_bevy(colors::from_direction(
+                            PrincipalDirection::X,
+                            Some(Perspective::Dual),
+                            None,
+                        )),
                     );
 
                     let u_min = v + dir_min * lmin;
@@ -1244,12 +1252,20 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                     gizmos_curvature_min.line(
                         v_transformed,
                         world_to_view(u_min, translation, scale),
-                        colors::to_bevy(colors::from_direction(PrincipalDirection::Z, None, None)),
+                        colors::to_bevy(colors::from_direction(
+                            PrincipalDirection::X,
+                            Some(Perspective::Dual),
+                            None,
+                        )),
                     );
                     gizmos_curvature_min.line(
                         v_transformed,
                         world_to_view(u_min_neg, translation, scale),
-                        colors::to_bevy(colors::from_direction(PrincipalDirection::Z, None, None)),
+                        colors::to_bevy(colors::from_direction(
+                            PrincipalDirection::X,
+                            Some(Perspective::Dual),
+                            None,
+                        )),
                     );
                 }
 
@@ -1280,7 +1296,7 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
 
                 let mut elastica_gizmos_x = GizmoAsset::new();
                 for (v0, v1, v2, weight) in &elastica_polylines_x {
-                    if *weight < 0.7 {
+                    if *weight > 0.2 {
                         continue;
                     }
                     let p0 = input.position(*v0);
@@ -1297,7 +1313,7 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                 }
                 let mut elastica_gizmos_y = GizmoAsset::new();
                 for (v0, v1, v2, weight) in &elastica_polylines_y {
-                    if *weight > 0.5 {
+                    if *weight > 0.2 {
                         continue;
                     }
                     let p0 = input.position(*v0);
@@ -1314,7 +1330,7 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                 }
                 let mut elastica_gizmos_z = GizmoAsset::new();
                 for (v0, v1, v2, weight) in &elastica_polylines_z {
-                    if *weight > 0.1 {
+                    if *weight > 0.2 {
                         continue;
                     }
                     let p0 = input.position(*v0);

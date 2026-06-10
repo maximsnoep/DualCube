@@ -559,8 +559,8 @@ pub fn update(
                                     if sleek_button(ui, "Load") {
                                         if let Some(path) = rfd::FileDialog::new()
                                             .add_filter(
-                                                "triangulated geometry",
-                                                &["obj", "stl", "loops", "dsol"],
+                                                "obj, SAVE FILE for loops, or SAVE FILE for dualcube",
+                                                &["obj", "loops", "dsol"],
                                             )
                                             .pick_file()
                                         {

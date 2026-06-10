@@ -1,0 +1,237 @@
+use crate::parser::{Args, Command};
+use dualcube::prelude::*;
+use io::Export;
+use mehsh::prelude::{HasNormal, HasPosition};
+use std::path::{Path, PathBuf};
+
+pub fn run(args: anyhow::Result<Args>) -> anyhow::Result<()> {
+    let args = args?;
+
+    match args.command {
+        Command::Help => {
+            print_help();
+        }
+        Command::Import { input } => {
+            let solution = io::import_solution(input.clone());
+            println!(
+                "Imported `{}`: verts={}, faces={}, loops={}",
+                input.display(),
+                solution.mesh_ref.nr_verts(),
+                solution.mesh_ref.nr_faces(),
+                solution.loops.len()
+            );
+        }
+        Command::Initialize {
+            input,
+            output,
+            samples,
+            reconstruct,
+            unit,
+            omega,
+        } => {
+            let mut solution = io::import_solution(input.clone());
+            let flow_graphs = build_flow_graphs(&solution.mesh_ref);
+
+            if samples != 3 {
+                println!(
+                    "warning: initialize currently uses the library default sampling count internally; requested samples={samples}"
+                );
+            }
+
+            solution.initialize(&flow_graphs);
+
+            if reconstruct {
+                solution.reconstruct_solution(unit, omega)?;
+            }
+
+            let output = output.unwrap_or_else(|| default_output(&input, "dsol"));
+            export_solution(&solution, &output)?;
+            println!("Wrote `{}`", output.display());
+            print_solution_summary("initialize", &input, &output, &solution);
+        }
+        Command::Evolve {
+            input,
+            output,
+            iterations,
+            pool1,
+            pool2,
+            reconstruct,
+            unit,
+            omega,
+        } => {
+            let solution = io::import_solution(input.clone());
+            let flow_graphs = build_flow_graphs(&solution.mesh_ref);
+
+            let Some(mut evolved) = solution.evolve(iterations, pool1, pool2, &flow_graphs) else {
+                anyhow::bail!("evolution produced no valid solution");
+            };
+
+            if reconstruct {
+                evolved.reconstruct_solution(unit, omega)?;
+            }
+
+            let output = output.unwrap_or_else(|| default_output(&input, "dsol"));
+            export_solution(&evolved, &output)?;
+            println!("Wrote `{}`", output.display());
+            print_solution_summary("evolve", &input, &output, &evolved);
+        }
+        Command::Reconstruct {
+            input,
+            output,
+            unit,
+            omega,
+        } => {
+            let mut solution = io::import_solution(input.clone());
+            solution.reconstruct_solution(unit, omega)?;
+
+            let output = output.unwrap_or_else(|| default_output(&input, "dsol"));
+            export_solution(&solution, &output)?;
+            println!("Wrote `{}`", output.display());
+            print_solution_summary("reconstruct", &input, &output, &solution);
+        }
+        Command::Export {
+            input,
+            output,
+            format,
+        } => {
+            let solution = io::import_solution(input.clone());
+            let output = output.unwrap_or_else(|| PathBuf::from("output"));
+            export_solution_as(&solution, &output, &format)?;
+            println!("Wrote `{}`", output.display());
+            print_solution_summary("export", &input, &output, &solution);
+        }
+    }
+
+    Ok(())
+}
+
+fn default_output(input: &Path, extension: &str) -> PathBuf {
+    input.with_extension(extension)
+}
+
+fn export_solution(solution: &Solution, output: &Path) -> anyhow::Result<()> {
+    let ext = output
+        .extension()
+        .and_then(|x| x.to_str())
+        .ok_or_else(|| anyhow::anyhow!("output path must have an extension"))?;
+    export_solution_as(solution, output, ext)
+}
+
+fn export_solution_as(solution: &Solution, output: &Path, format: &str) -> anyhow::Result<()> {
+    match format {
+        "dsol" => io::Dsol::export(solution, output),
+        "obj" => io::OBJ::export(solution, output),
+        "flag" => io::Flag::export(solution, output),
+        "apg" => io::APG::export(solution, output),
+        "loops" => io::Loops::export(solution, output),
+        "nlr" => io::NLR::export(solution, output),
+        "hex" | "hex.mesh" => io::HEX::export(solution, output),
+        other => anyhow::bail!("unsupported export format: {other}"),
+    }
+}
+
+fn build_flow_graphs(
+    mesh: &std::sync::Arc<mehsh::prelude::Mesh<INPUT>>,
+) -> [grapff::fixed::FixedGraph<EdgeID, f64>; 3] {
+    use itertools::Itertools;
+    use rayon::iter::{IntoParallelIterator, ParallelIterator};
+
+    let nodes = mesh.edge_ids();
+    let mut flow_graphs = [
+        grapff::fixed::FixedGraph::default(),
+        grapff::fixed::FixedGraph::default(),
+        grapff::fixed::FixedGraph::default(),
+    ];
+
+    for axis in [
+        PrincipalDirection::X,
+        PrincipalDirection::Y,
+        PrincipalDirection::Z,
+    ] {
+        let edges = nodes
+            .clone()
+            .into_par_iter()
+            .flat_map(|node| {
+                mesh.neighbor_function_edgegraph()(node)
+                    .into_iter()
+                    .map(|neighbor| {
+                        let face1 = mesh.face(node);
+                        let face2 = mesh.face(neighbor);
+
+                        if face1 == face2 {
+                            let normal = mesh.normal(face1);
+                            let m1 = mesh.position(node);
+                            let m2 = mesh.position(neighbor);
+                            let direction = m2 - m1;
+                            let cross = direction.cross(&normal);
+                            let angle = cross.angle(&Into::into(axis));
+
+                            (node, neighbor, angle)
+                        } else {
+                            assert!(mesh.twin(node) == neighbor);
+                            (node, neighbor, 0.0)
+                        }
+                    })
+                    .collect_vec()
+            })
+            .collect::<Vec<_>>();
+
+        flow_graphs[axis as usize] = grapff::fixed::FixedGraph::from(nodes.clone(), edges);
+    }
+
+    flow_graphs
+}
+
+fn print_solution_summary(command: &str, input: &Path, output: &Path, solution: &Solution) {
+    println!(
+        "summary command={} input={} output={} quality={} loops={} verts={} faces={} dual={} layout={} polycube={} quad={}",
+        command,
+        input.display(),
+        output.display(),
+        solution
+            .get_quality()
+            .map_or_else(|| "none".to_owned(), |q| format!("{q:.6}")),
+        solution.loops.len(),
+        solution.mesh_ref.nr_verts(),
+        solution.mesh_ref.nr_faces(),
+        solution.dual.is_ok(),
+        solution.layout.is_some(),
+        solution.polycube.is_some(),
+        solution.quad.is_some()
+    );
+}
+
+fn print_help() {
+    println!(
+        "\
+DualCube CLI
+
+Commands:
+  help
+      Show this help text.
+
+  import <input>
+      Import a mesh/solution and print a short summary.
+
+  initialize --input <path> [--output <path>] [--samples <n>] [--reconstruct] [--unit|--no-unit] [--omega <n>]
+      Initialize loop structure from an input mesh or solution.
+      Writes the result to --output, or defaults to changing the extension to .dsol.
+
+  evolve --input <path> [--output <path>] [--iterations <n>] [--pool1 <n>] [--pool2 <n>] [--reconstruct] [--unit|--no-unit] [--omega <n>]
+      Evolve an existing solution.
+
+  reconstruct --input <path> [--output <path>] [--unit|--no-unit] [--omega <n>]
+      Reconstruct dual/layout/polyclube/quad state from the current loops.
+
+  export --input <path> --format <dsol|obj|flag|apg|loops|nlr|hex> [--output <path>]
+      Export a solution in the requested format.
+
+Examples:
+  cli import bunny.obj
+  cli initialize --input bunny.obj --output bunny.dsol --reconstruct --omega 5
+  cli evolve --input bunny.dsol --iterations 10 --pool1 10 --pool2 30 --output evolved.dsol
+  cli reconstruct --input loops.loops --output result.dsol --unit --omega 5
+  cli export --input result.dsol --format obj --output result.obj
+"
+    );
+}
