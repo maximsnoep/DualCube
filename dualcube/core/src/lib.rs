@@ -1,9 +1,10 @@
 pub mod dual;
 pub mod elastica;
 pub mod feature;
-pub mod field;
+pub mod gfield;
 pub mod hex;
 pub mod layout;
+pub mod pca;
 pub mod polycube;
 pub mod quad;
 pub mod solutions;

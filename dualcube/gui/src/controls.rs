@@ -1,21 +1,37 @@
+use crate::colors;
 use crate::jobs::{Job, JobRequest};
-use crate::render::{view_to_world, world_to_view};
-use crate::{
-    colors, vec3_to_vector3d, vector3d_to_vec3, CacheResource, Configuration, InputResource,
-    MainMesh, PerpetualGizmos, SolutionResource,
-};
+use crate::render::gizmos::{vector3d_to_vec3, view_to_world, world_to_view, PerpetualGizmos};
+use crate::render::store::MainMesh;
+use crate::resources::{Configuration, InputResource, SolutionResource};
 use bevy::picking::backend::ray::RayMap;
 use bevy::prelude::*;
-use dualcube::{elastica, prelude::*};
+use dualcube::prelude::*;
 use itertools::Itertools;
 use mehsh::prelude::*;
 use ordered_float::OrderedFloat;
+use std::collections::HashMap;
+
+/// Registers the interactive mouse/keyboard controls.
+pub struct ControlsPlugin;
+
+impl Plugin for ControlsPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<CacheResource>()
+            .add_systems(Update, system);
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InteractiveMode {
     None,
     LoopModification,
     SegmentationModification,
+}
+
+/// Cached loop candidates per seed edge, per principal direction.
+#[derive(Default, Resource)]
+pub struct CacheResource {
+    pub cache: [HashMap<[EdgeID; 2], Vec<([EdgeID; 2], OrderedFloat<f64>)>>; 3],
 }
 
 pub fn segmentation_modification_system(
@@ -151,12 +167,12 @@ pub fn segmentation_modification_system(
             // Action2:
             (true, false, false) => {
                 if let Some(corner_poly) = solution.selected_corner {
-                    jobs.write(JobRequest::Run(Box::new(Job::MoveCorner {
-                        configuration: configuration.clone(),
-                        solution: solution.current_solution.clone(),
-                        corner: corner_poly,
-                        new_vertex: nearest_granulated_vert,
-                    })));
+                    jobs.write(JobRequest::Run(Job::move_corner(
+                        solution.current_solution.clone(),
+                        configuration.clone(),
+                        corner_poly,
+                        nearest_granulated_vert,
+                    )));
                     solution.selected_corner = None;
                 }
             }
@@ -213,43 +229,6 @@ pub fn loop_modification_system(
         .mesh
         .edges_in_face_with_vert(nearest_face, nearest_vert)
         .unwrap();
-
-    // Calculate the minimum weight cycle from the currently hovered edge.
-
-    let cycle = solution
-        .current_solution
-        .elastica_graph
-        .compute_mwc_for_edge(edgepair[0], configuration.direction);
-
-    println!("Cycle: {:?}", cycle);
-
-    if let Some(cycle) = cycle {
-        for edge in cycle.1.windows(2) {
-            let u = mesh_resmut.mesh.position(edge[0]);
-            let v = mesh_resmut.mesh.position(edge[1]);
-
-            let color = colors::from_direction(
-                configuration.direction,
-                Some(Perspective::Dual),
-                Some(Orientation::Backwards),
-            );
-
-            let u_transformed = world_to_view(
-                u,
-                mesh_resmut.properties.translation,
-                mesh_resmut.properties.scale,
-            );
-            let v_transformed = world_to_view(
-                v,
-                mesh_resmut.properties.translation,
-                mesh_resmut.properties.scale,
-            );
-
-            gizmos.line(u_transformed, v_transformed, colors::to_bevy(color));
-        }
-    }
-
-    return Ok(());
 
     // Render all current solutions  (for currently selected direction)
     for (&edgepair, sol) in &solution.next[configuration.direction as usize] {
@@ -356,12 +335,11 @@ pub fn loop_modification_system(
             let mut anchors = configuration.loop_anchors.clone();
             configuration.loop_anchors.clear();
             anchors.push(selected_edges);
-            jobs.write(JobRequest::Run(Box::new(Job::AddLoop {
+            jobs.write(JobRequest::Run(Job::add_loop(
+                solution.current_solution.clone(),
                 anchors,
-                direction: configuration.direction,
-                flowgraph: mesh_resmut.flow_graphs[configuration.direction as usize].clone(),
-                solution: solution.current_solution.clone(),
-            })));
+                configuration.direction,
+            )));
         }
         // Action 2
         (true, false, false, _) => {
@@ -401,10 +379,10 @@ pub fn loop_modification_system(
                 cache.cache[0].clear();
                 cache.cache[1].clear();
                 cache.cache[2].clear();
-                jobs.write(JobRequest::Run(Box::new(Job::ComputeDual {
-                    solution: solution.current_solution.clone(),
-                    configuration: configuration.clone(),
-                })));
+                jobs.write(JobRequest::Run(Job::compute_dual(
+                    solution.current_solution.clone(),
+                    configuration.clone(),
+                )));
             }
         }
         // Action 4 and Action 5
@@ -416,12 +394,12 @@ pub fn loop_modification_system(
                 let edges = solution.current_solution.get_pairs_of_loop(loop_id);
                 edges.contains(&option_a) || edges.contains(&option_b)
             }) {
-                jobs.write(JobRequest::Run(Box::new(Job::RemoveLoop {
-                    solution: solution.current_solution.clone(),
+                jobs.write(JobRequest::Run(Job::remove_loop(
+                    solution.current_solution.clone(),
                     loop_id,
                     force,
-                    configuration: configuration.clone(),
-                })));
+                    configuration.clone(),
+                )));
             }
         }
         (_, true, _, true) => {

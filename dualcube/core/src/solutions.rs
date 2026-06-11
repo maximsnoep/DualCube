@@ -109,6 +109,54 @@ impl Loop {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SolutionPersistence {
+    pub mesh_ref: Arc<Mesh<INPUT>>,
+    pub loops: SlotMap<LoopID, Loop>,
+    pub dual: Result<Dual, PropertyViolationError>,
+
+    #[serde(default)]
+    pub polycube: Option<Polycube>,
+
+    #[serde(default)]
+    pub layout: Option<Layout>,
+}
+
+impl Solution {
+    pub fn to_persistence(&self) -> SolutionPersistence {
+        SolutionPersistence {
+            mesh_ref: self.mesh_ref.clone(),
+            loops: self.loops.clone(),
+            dual: self.dual.clone(),
+            polycube: self.polycube.clone(),
+            layout: self.layout.clone(),
+        }
+    }
+
+    pub fn from_persistence(data: SolutionPersistence) -> Self {
+        Self {
+            elastica_graph: ElasticaGraph::new(data.mesh_ref.clone(), 2, 40, 6, 0.0, 100.),
+
+            fields: None,
+
+            occupied: Loop::occupied(&data.loops),
+            loops: data.loops,
+            last_loop: None,
+
+            dual: data.dual,
+
+            polycube: data.polycube,
+            layout: data.layout,
+
+            quad: None,
+
+            flow_graphs: None,
+
+            mesh_ref: data.mesh_ref,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Solution {
     pub mesh_ref: Arc<Mesh<INPUT>>,
     pub loops: SlotMap<LoopID, Loop>,
@@ -120,12 +168,12 @@ pub struct Solution {
     pub layout: Option<Layout>,
     pub quad: Option<Quad>,
 
-    // #[serde(skip)]
-    pub fields: Option<crate::field::Fields<INPUT>>,
+    pub flow_graphs: Option<[grapff::fixed::FixedGraph<EdgeID, f64>; 3]>,
+
+    #[serde(skip)]
+    pub fields: Option<crate::gfield::Fields<INPUT>>,
     #[serde(skip)]
     pub elastica_graph: ElasticaGraph<INPUT>,
-    // #[serde(skip)]
-    pub external_flag: Option<ids::SecMap<FACE, INPUT, usize>>,
 }
 
 impl Solution {
@@ -149,22 +197,102 @@ impl Solution {
             polycube: None,
             layout: None,
             quad: None,
-            external_flag: None,
             last_loop: None,
-            fields: None,
+            fields: Some(crate::gfield::Fields::from_mesh(&mesh_ref.clone())),
+            flow_graphs: None,
             elastica_graph: ElasticaGraph::new(mesh_ref.clone(), 2, 40, 6, 0.0, 100.),
         }
     }
 
+    pub fn set_flow_graphs(&mut self) {
+        let Some(fields) = &self.fields else {
+            log::warn!("Cannot build flow graphs: vector fields are missing.");
+            self.flow_graphs = None;
+            return;
+        };
+
+        let mesh = &self.mesh_ref;
+        let nodes = mesh.edge_ids();
+        let neighbors = mesh.neighbor_function_edgegraph();
+        let fields = [&fields.field_x, &fields.field_y, &fields.field_z];
+
+        let mut flow_graphs = [
+            grapff::fixed::FixedGraph::default(),
+            grapff::fixed::FixedGraph::default(),
+            grapff::fixed::FixedGraph::default(),
+        ];
+
+        for axis in [
+            PrincipalDirection::X,
+            PrincipalDirection::Y,
+            PrincipalDirection::Z,
+        ] {
+            let field = fields[axis as usize];
+
+            let edges = nodes
+                .iter()
+                .copied()
+                .flat_map(|edge| {
+                    neighbors(edge)
+                        .into_iter()
+                        .map(|next| (edge, next, Self::flow_weight(mesh, field, edge, next)))
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+
+            log::info!("axis: {:?}, edges: {}", axis, edges.len());
+
+            flow_graphs[axis as usize] = grapff::fixed::FixedGraph::from(nodes.clone(), edges);
+        }
+
+        self.flow_graphs = Some(flow_graphs);
+
+        log::info!("flow graphs set");
+    }
+
+    fn flow_weight<T: Tag>(
+        mesh: &Mesh<T>,
+        field: &crate::gfield::Field<T>,
+        edge: ids::Key<EDGE, T>,
+        next: ids::Key<EDGE, T>,
+    ) -> f64 {
+        if mesh.face(edge) != mesh.face(next) {
+            assert_eq!(mesh.twin(edge), next);
+            return 0.0;
+        }
+
+        let d = mesh.position(next) - mesh.position(edge);
+        let len = d.norm();
+        let d = d / len;
+
+        let f: Vector3D = Self::edge_field(mesh, field, edge) + Self::edge_field(mesh, field, next);
+        let f = f.normalize();
+
+        let dot = d.dot(&f).clamp(-1.0, 1.0);
+
+        let penalty = 1.0 - dot;
+        len * (1.0 + 25.0 * penalty * penalty)
+    }
+
+    fn edge_field<T: Tag>(
+        mesh: &Mesh<T>,
+        field: &crate::gfield::Field<T>,
+        edge: ids::Key<EDGE, T>,
+    ) -> Vector3D {
+        let f0 = field.vector_at(mesh.root(edge)).unwrap();
+        let f1 = field.vector_at(mesh.toor(edge)).unwrap();
+        (f0 + f1).normalize()
+    }
+
     // Initialize loop structure
-    pub fn initialize(&mut self, flow_graphs: &[grapff::fixed::FixedGraph<EdgeID, f64>; 3]) {
+    pub fn initialize(&mut self) {
         let m = |b: f64| OrderedFloat(b.powi(10));
         let s = |(p, _): (&[EdgeID], f64)| -(p.len() as f64);
 
         let samples = 3;
-        let x_loops = self.sample_loops(samples, PrincipalDirection::X, flow_graphs, m, s);
-        let y_loops = self.sample_loops(samples, PrincipalDirection::Y, flow_graphs, m, s);
-        let z_loops = self.sample_loops(samples, PrincipalDirection::Z, flow_graphs, m, s);
+        let x_loops = self.sample_loops(samples, PrincipalDirection::X, m, s);
+        let y_loops = self.sample_loops(samples, PrincipalDirection::Y, m, s);
+        let z_loops = self.sample_loops(samples, PrincipalDirection::Z, m, s);
 
         // Compute all n^3 combinations
         let combinations = x_loops
@@ -208,14 +336,7 @@ impl Solution {
     }
 
     // Evolve loop structure
-    pub fn evolve(
-        &self,
-        iterations: usize,
-        pool1_size: usize,
-        pool2_size: usize,
-        flowgraphs: &[grapff::fixed::FixedGraph<EdgeID, f64>; 3],
-    ) -> Option<Self> {
-        let flowgraphs_clone = flowgraphs.clone();
+    pub fn evolve(&self, iterations: usize, pool1_size: usize, pool2_size: usize) -> Option<Self> {
         let mut pool1 = vec![(self.clone(), self.get_quality().unwrap()); pool1_size];
         for _ in 0..iterations {
             let pool2 = (0..pool2_size)
@@ -227,7 +348,7 @@ impl Solution {
                 })
                 .filter_map(|(sol, _)| {
                     // Mutate the solution
-                    sol.mutation(&flowgraphs_clone).map_or_else(
+                    sol.mutation().map_or_else(
                         || None,
                         |mutation| {
                             let quality = mutation.get_quality().unwrap_or(0.0);
@@ -822,7 +943,6 @@ impl Solution {
         &self,
         anchors: &[[EdgeID; 2]],
         direction: PrincipalDirection,
-        flow_graph: &grapff::fixed::FixedGraph<EdgeID, f64>,
         measure: impl Fn(f64) -> OrderedFloat<f64>,
     ) -> Option<(Vec<EdgeID>, f64)> {
         // Filter the original flow graph
@@ -834,6 +954,7 @@ impl Solution {
                 .iter()
                 .any(|&loop_id| self.loops[loop_id].direction == direction)
         };
+        let flow_graph = &self.flow_graphs.as_ref().unwrap()[direction as usize];
         let g = flow_graph.filter_edges(filter_edges);
         let g = g.filter_nodes(filter_nodes);
 
@@ -952,39 +1073,42 @@ impl Solution {
         &self,
         n: usize,
         axis: PrincipalDirection,
-        flow_graphs: &[grapff::fixed::FixedGraph<EdgeID, f64>; 3],
         measure: impl Fn(f64) -> OrderedFloat<f64> + std::marker::Sync + std::marker::Send,
         score: impl Fn((&[EdgeID], f64)) -> f64 + std::marker::Sync + std::marker::Send,
     ) -> Vec<Vec<EdgeID>> {
-        (0..n.pow(4))
-            .map(|_| {
-                let e1 = self
-                    .mesh_ref
-                    .edge_ids()
-                    .into_iter()
-                    .choose(&mut rng())
-                    .unwrap();
-                let e2 = self.mesh_ref.next(e1);
-                [e1, e2]
-            })
-            .sorted_by_key(|&[e1, e2]| {
-                let n1 = flow_graphs[axis as usize].node_to_index(&e1).unwrap();
-                let n2 = flow_graphs[axis as usize].node_to_index(&e2).unwrap();
-                OrderedFloat(measure(
-                    flow_graphs[axis as usize].get_weight(n1, n2).to_owned(),
-                ))
-            })
-            .take(n.pow(2))
-            .iter_into_par()
-            .filter_map(|es| {
-                self.construct_unbounded_loop(es, axis, &flow_graphs[axis as usize], &measure)
-            })
-            .collect::<Vec<_>>()
-            .into_iter()
-            .sorted_by_key(|(path, s)| OrderedFloat(score((path, *s))))
-            .take(n)
-            .map(|(x, _)| x)
-            .collect::<Vec<_>>()
+        if let Some(flow_graphs) = &self.flow_graphs {
+            return (0..n.pow(4))
+                .map(|_| {
+                    let e1 = self
+                        .mesh_ref
+                        .edge_ids()
+                        .into_iter()
+                        .choose(&mut rng())
+                        .unwrap();
+                    let e2 = self.mesh_ref.next(e1);
+                    [e1, e2]
+                })
+                .sorted_by_key(|&[e1, e2]| {
+                    let n1 = flow_graphs[axis as usize].node_to_index(&e1).unwrap();
+                    let n2 = flow_graphs[axis as usize].node_to_index(&e2).unwrap();
+                    OrderedFloat(measure(
+                        flow_graphs[axis as usize].get_weight(n1, n2).to_owned(),
+                    ))
+                })
+                .take(n.pow(2))
+                .iter_into_par()
+                .filter_map(|es| {
+                    self.construct_unbounded_loop(es, axis, &flow_graphs[axis as usize], &measure)
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .sorted_by_key(|(path, s)| OrderedFloat(score((path, *s))))
+                .take(n)
+                .map(|(x, _)| x)
+                .collect::<Vec<_>>();
+        } else {
+            return vec![vec![]; n];
+        }
     }
 
     pub fn dual_is_ok(&self) -> bool {
@@ -1078,10 +1202,7 @@ impl Solution {
         }
     }
 
-    pub fn mutation(
-        &self,
-        flow_graphs: &[grapff::fixed::FixedGraph<EdgeID, f64>; 3],
-    ) -> Option<Self> {
+    pub fn mutation(&self) -> Option<Self> {
         // Three types of mutation:
         // 1. Add loop(s)
         // 2. Remove loop(s)
@@ -1113,17 +1234,17 @@ impl Solution {
                 }
 
                 let x_loops = self
-                    .sample_loops(x as usize, PrincipalDirection::X, flow_graphs, m, s)
+                    .sample_loops(x as usize, PrincipalDirection::X, m, s)
                     .into_iter()
                     .map(|x| (x, PrincipalDirection::X))
                     .collect_vec();
                 let y_loops = self
-                    .sample_loops(y as usize, PrincipalDirection::Y, flow_graphs, m, s)
+                    .sample_loops(y as usize, PrincipalDirection::Y, m, s)
                     .into_iter()
                     .map(|y| (y, PrincipalDirection::Y))
                     .collect_vec();
                 let z_loops = self
-                    .sample_loops(z as usize, PrincipalDirection::Z, flow_graphs, m, s)
+                    .sample_loops(z as usize, PrincipalDirection::Z, m, s)
                     .into_iter()
                     .map(|z| (z, PrincipalDirection::Z))
                     .collect_vec();

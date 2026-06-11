@@ -75,6 +75,8 @@ impl<T: Tag> ElasticaGraph<T> {
         threshold_degrees: usize,
         max_out_degree: usize,
     ) -> Self {
+        return Self::default();
+
         let threshold_radians = (threshold_degrees as f64).to_radians();
 
         // --------------------------------------------------------------------

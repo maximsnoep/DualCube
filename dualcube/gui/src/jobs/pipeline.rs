@@ -1,0 +1,190 @@
+//! The solution pipeline: loops → dual → corners → layout → polycube → quad.
+//!
+//! Each stage clones the solution, applies one operation, and reports back as
+//! a [`JobResult::StageCompleted`]; [`Stage::next_job`] then decides whether
+//! the pipeline continues or stops with a refresh of the renders.
+
+use super::{Job, JobResult};
+use crate::render;
+use crate::resources::{Configuration, Phase};
+use bevy::prelude::*;
+use dualcube::polycube::POLYCUBE;
+use dualcube::prelude::*;
+use mehsh::prelude::VertKey;
+
+/// A completed stage of the pipeline.
+#[derive(Clone, Copy)]
+pub(super) enum Stage {
+    Field,
+    Loops,
+    Dual,
+    Corners,
+    Layout,
+    Polycube,
+    Quad,
+    #[allow(dead_code)]
+    Hex,
+}
+
+impl Stage {
+    /// The job that follows this stage. The pipeline stops (with a refresh of
+    /// the renders) when the configured stop phase has been reached.
+    pub(super) fn next_job(self, solution: Solution, configuration: Configuration) -> Job {
+        let stop_phase = match self {
+            Self::Field => Some(Phase::Field),
+            Self::Loops => Some(Phase::Loops),
+            Self::Dual => Some(Phase::Dual),
+            Self::Layout => Some(Phase::Layout),
+            Self::Polycube => Some(Phase::Polycube),
+            Self::Quad => Some(Phase::Quad),
+            // These stages never stop the pipeline themselves.
+            Self::Corners | Self::Hex => None,
+        };
+        if stop_phase == Some(configuration.stop.clone()) {
+            return Job::refresh(solution);
+        }
+
+        match self {
+            Self::Field => Job::refresh(solution),
+            Self::Loops => Job::compute_dual(solution, configuration),
+            Self::Dual => Job::refresh(solution),
+            Self::Corners => Job::place_paths(solution, configuration),
+            Self::Layout => Job::compute_polycube(solution, configuration),
+            Self::Polycube => Job::compute_quad(solution, configuration),
+            Self::Quad => Job::refresh(solution),
+            Self::Hex => Job::refresh(solution),
+        }
+    }
+}
+
+/// Clones the solution and applies `operation` to it.
+/// Logs a warning and returns `None` if the operation fails.
+fn try_step<E: std::fmt::Debug>(
+    solution: &Solution,
+    operation: &str,
+    f: impl FnOnce(&mut Solution) -> Result<(), E>,
+) -> Option<Solution> {
+    let mut modified = solution.clone();
+    match f(&mut modified) {
+        Ok(()) => Some(modified),
+        Err(err) => {
+            warn!("Failed to {operation}: {err:?}");
+            None
+        }
+    }
+}
+
+fn completed(stage: Stage, solution: Solution, configuration: &Configuration) -> Option<JobResult> {
+    Some(JobResult::StageCompleted {
+        stage,
+        solution,
+        configuration: configuration.clone(),
+    })
+}
+
+impl Job {
+    pub fn initialize_loops(solution: Solution, configuration: Configuration) -> Self {
+        Self::new("initializing loops", move || {
+            let mut initialized = Solution::new(solution.mesh_ref.clone());
+            initialized.initialize();
+            completed(Stage::Loops, initialized, &configuration)
+        })
+    }
+
+    pub fn evolve(solution: Solution, configuration: Configuration) -> Self {
+        Self::new("evolving", move || {
+            let Some(evolved) = solution.evolve(
+                configuration.iterations,
+                configuration.pool1,
+                configuration.pool2,
+            ) else {
+                warn!("Failed to evolve solution.");
+                return None;
+            };
+            completed(Stage::Loops, evolved, &configuration)
+        })
+    }
+
+    pub fn fields(solution: Solution, configuration: Configuration) -> Self {
+        Self::new("computing fields", move || {
+            let mut solution = solution.clone();
+            solution.fields = Some(dualcube::gfield::Fields::from_mesh_with_params(
+                &solution.mesh_ref,
+                configuration.fields_params.clone(),
+            ));
+            solution.set_flow_graphs();
+            completed(Stage::Field, solution, &configuration)
+        })
+    }
+
+    pub fn compute_dual(solution: Solution, configuration: Configuration) -> Self {
+        Self::new("computing dual", move || {
+            match try_step(&solution, "construct dual and polycube", |s| {
+                s.construct_dual_and_polycube()
+            }) {
+                Some(modified) => completed(Stage::Dual, modified, &configuration),
+                // On failure still refresh, so the user sees the (unchanged) solution.
+                None => Some(JobResult::Refreshed(render::refresh(&solution))),
+            }
+        })
+    }
+
+    pub fn place_corners(solution: Solution, configuration: Configuration) -> Self {
+        Self::new("placing corners", move || {
+            let modified = try_step(&solution, "place corners and paths", |s| s.place_corners())?;
+            completed(Stage::Corners, modified, &configuration)
+        })
+    }
+
+    pub fn move_corner(
+        solution: Solution,
+        configuration: Configuration,
+        corner: VertKey<POLYCUBE>,
+        new_vertex: VertID,
+    ) -> Self {
+        Self::new("moving corner", move || {
+            let modified = try_step(&solution, "move corner", |s| {
+                s.move_corner_to(corner, new_vertex)
+            })?;
+            completed(Stage::Layout, modified, &configuration)
+        })
+    }
+
+    pub fn place_paths(solution: Solution, configuration: Configuration) -> Self {
+        Self::new("placing paths", move || {
+            let modified = try_step(&solution, "place paths", |s| s.place_paths())?;
+            completed(Stage::Layout, modified, &configuration)
+        })
+    }
+
+    pub fn smoothen_layout(solution: Solution, configuration: Configuration) -> Self {
+        Self::new("smoothening layout", move || {
+            let modified = try_step(&solution, "optimize corners", |s| s.optimize_corners())?;
+            completed(Stage::Layout, modified, &configuration)
+        })
+    }
+
+    pub fn compute_polycube(solution: Solution, configuration: Configuration) -> Self {
+        Self::new("computing polycube", move || {
+            let modified = try_step(&solution, "resize polycube", |s| {
+                s.resize_polycube(configuration.unit)
+            })?;
+            completed(Stage::Polycube, modified, &configuration)
+        })
+    }
+
+    pub fn compute_quad(solution: Solution, configuration: Configuration) -> Self {
+        Self::new("computing quad", move || {
+            let modified = try_step(&solution, "construct quad", |s| {
+                s.construct_quad(configuration.omega)
+            })?;
+            completed(Stage::Quad, modified, &configuration)
+        })
+    }
+
+    pub fn refresh(solution: Solution) -> Self {
+        Self::new("refreshing", move || {
+            Some(JobResult::Refreshed(render::refresh(&solution)))
+        })
+    }
+}
