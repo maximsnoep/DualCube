@@ -31,27 +31,45 @@ impl<M: Tag> Mesh<M> {
     pub fn assert_references(&self) {
         for edge_id in self.edge_ids() {
             let root_id = self.root(edge_id);
-            assert!(self.verts.contains(root_id), "{edge_id:?} has non-existing root ({root_id:?})");
+            assert!(
+                self.verts.contains(root_id),
+                "{edge_id:?} has non-existing root ({root_id:?})"
+            );
 
             let face_id = self.face(edge_id);
-            assert!(self.faces.contains(face_id), "{edge_id:?} has non-existing face ({face_id:?})");
+            assert!(
+                self.faces.contains(face_id),
+                "{edge_id:?} has non-existing face ({face_id:?})"
+            );
 
             let next_id = self.next(edge_id);
-            assert!(self.edges.contains(next_id), "{edge_id:?} has non-existing next ({next_id:?})");
+            assert!(
+                self.edges.contains(next_id),
+                "{edge_id:?} has non-existing next ({next_id:?})"
+            );
 
             let twin_id = self.twin(edge_id);
-            assert!(self.edges.contains(twin_id), "{edge_id:?} has non-existing twin ({twin_id:?})");
+            assert!(
+                self.edges.contains(twin_id),
+                "{edge_id:?} has non-existing twin ({twin_id:?})"
+            );
         }
         for vert_id in self.vert_ids() {
             if let Some(repr_id) = self.vert_repr.get(vert_id) {
-                assert!(self.edges.contains(repr_id), "{vert_id:?} has non-existing face reference ({repr_id:?})");
+                assert!(
+                    self.edges.contains(repr_id),
+                    "{vert_id:?} has non-existing face reference ({repr_id:?})"
+                );
             } else {
                 panic!("{vert_id:?} has no face reference defined");
             }
         }
         for face_id in self.face_ids() {
             if let Some(repr_id) = self.face_repr.get(face_id) {
-                assert!(self.edges.contains(repr_id), "{face_id:?} has non-existing vertex reference ({repr_id:?})");
+                assert!(
+                    self.edges.contains(repr_id),
+                    "{face_id:?} has non-existing vertex reference ({repr_id:?})"
+                );
             } else {
                 panic!("{face_id:?} has no vertex reference defined");
             }
@@ -62,7 +80,10 @@ impl<M: Tag> Mesh<M> {
     pub fn assert_invariants(&self) {
         // this->twin->twin == this
         for edge_id in self.edge_ids() {
-            assert!(self.twin(self.twin(edge_id)) == edge_id, "{edge_id:?}: [this->twin->twin == this] violated");
+            assert!(
+                self.twin(self.twin(edge_id)) == edge_id,
+                "{edge_id:?}: [this->twin->twin == this] violated"
+            );
         }
         // this->twin->next->root == this->root
         for edge_id in self.edge_ids() {
@@ -88,7 +109,10 @@ impl<M: Tag> Mesh<M> {
                     break;
                 }
             }
-            assert!(next_id == edge_id, "{edge_id:?}: [this->next->...->next == this] violated");
+            assert!(
+                next_id == edge_id,
+                "{edge_id:?}: [this->next->...->next == this] violated"
+            );
         }
     }
 
@@ -117,16 +141,21 @@ impl<M: Tag> Mesh<M> {
             }
 
             // Check that the face is simple
-            for edge_a in self.edges(face_id) {
-                for edge_b in self.edges(face_id) {
-                    if edge_a == edge_b {
-                        continue;
-                    }
-                    let a_u = self.position(self.root(edge_a));
-                    let a_v = self.position(self.toor(edge_a));
+            let face_edges = self.edges(face_id).collect_vec();
+            for i in 0..face_edges.len() {
+                let edge_a = face_edges[i];
+                let a_u = self.position(self.root(edge_a));
+                let a_v = self.position(self.toor(edge_a));
+                for j in (i + 1)..face_edges.len() {
+                    let edge_b = face_edges[j];
                     let b_u = self.position(self.root(edge_b));
                     let b_v = self.position(self.toor(edge_b));
-                    if geom::calculate_3d_lineseg_intersection(a_u, a_v, b_u, b_v).is_some() && a_u != b_u && a_u != b_v && a_v != b_u && a_v != b_v {
+                    if a_u != b_u
+                        && a_u != b_v
+                        && a_v != b_u
+                        && a_v != b_v
+                        && geom::calculate_3d_lineseg_intersection(a_u, a_v, b_u, b_v).is_some()
+                    {
                         return Err(MeshError::FaceNotSimple(face_id));
                     }
                 }

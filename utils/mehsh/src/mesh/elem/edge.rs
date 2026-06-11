@@ -154,17 +154,22 @@ impl<M: Tag> HasNeighbors<EDGE, M> for Mesh<M> {
         id: ids::Key<EDGE, M>,
         k: usize,
     ) -> impl Iterator<Item = ids::Key<EDGE, M>> {
-        let mut neighbors = vec![id];
+        let mut visited: HashSet<ids::Key<EDGE, M>> = HashSet::new();
+        visited.insert(id);
+        let mut frontier = vec![id];
         for _ in 0..k {
-            neighbors = neighbors
-                .into_iter()
-                .flat_map(|n| self.neighbors(n))
-                .collect::<HashSet<_>>()
-                .into_iter()
-                .collect();
+            let mut next_frontier = vec![];
+            for n in frontier {
+                for neighbor in self.neighbors(n) {
+                    if visited.insert(neighbor) {
+                        next_frontier.push(neighbor);
+                    }
+                }
+            }
+            frontier = next_frontier;
         }
-        neighbors.retain(|&n| n != id);
-        neighbors.into_iter()
+        visited.remove(&id);
+        visited.into_iter()
     }
 }
 

@@ -131,17 +131,23 @@ impl<M: Tag> HasNeighbors<FACE, M> for Mesh<M> {
         id: ids::Key<FACE, M>,
         k: usize,
     ) -> impl Iterator<Item = ids::Key<FACE, M>> {
-        let mut neighbors = vec![id];
+        // BFS: track visited across all depths so k-1 ring nodes are never dropped
+        let mut visited: HashSet<ids::Key<FACE, M>> = HashSet::new();
+        visited.insert(id);
+        let mut frontier = vec![id];
         for _ in 0..k {
-            neighbors = neighbors
-                .into_iter()
-                .flat_map(|n| self.neighbors(n))
-                .collect::<HashSet<_>>()
-                .into_iter()
-                .collect();
+            let mut next_frontier = vec![];
+            for n in frontier {
+                for neighbor in self.neighbors(n) {
+                    if visited.insert(neighbor) {
+                        next_frontier.push(neighbor);
+                    }
+                }
+            }
+            frontier = next_frontier;
         }
-        neighbors.retain(|&n| n != id);
-        neighbors.into_iter()
+        visited.remove(&id);
+        visited.into_iter()
     }
 }
 
@@ -151,16 +157,18 @@ impl<M: Tag> HasRing<FACE, M> for Mesh<M> {
         // k = 1 [neighbors of id, but not id]
         // etc
         let mut rings = vec![vec![id]];
+        // Track ALL previously seen faces — not just last ring — so faces can't
+        // bleed into later rings. Also gives O(1) membership checks.
+        let mut visited: HashSet<ids::Key<FACE, M>> = HashSet::new();
+        visited.insert(id);
 
-        for _ in 1..k {
-            let last_ring = rings.last().unwrap();
+        for _ in 0..k {
+            // Clone so the borrow on `rings` ends before `rings.push` below.
+            let last_ring = rings.last().unwrap().clone();
             let mut next_ring = vec![];
-            for &face_id in last_ring {
+            for face_id in last_ring {
                 for neighbor in self.neighbors(face_id) {
-                    if !next_ring.contains(&neighbor)
-                        && neighbor != id
-                        && !last_ring.contains(&neighbor)
-                    {
+                    if visited.insert(neighbor) {
                         next_ring.push(neighbor);
                     }
                 }

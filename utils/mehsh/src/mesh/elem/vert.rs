@@ -115,11 +115,12 @@ impl<M: Tag> Mesh<M> {
 
     #[must_use]
     pub fn verts_to_edges(&self, verts: &[VertKey<M>]) -> Vec<EdgeKey<M>> {
+        let vert_set: HashSet<VertKey<M>> = verts.iter().copied().collect();
         verts
             .iter()
             .flat_map(|&vert_id| {
                 self.edges(vert_id)
-                    .filter(|&edge_id| verts.contains(&self.toor(edge_id)))
+                    .filter(|&edge_id| vert_set.contains(&self.toor(edge_id)))
                     .collect_vec()
             })
             .collect_vec()
@@ -133,12 +134,9 @@ impl<M: Tag> Mesh<M> {
         id_b: VertKey<M>,
     ) -> Option<(EdgeKey<M>, EdgeKey<M>)> {
         for edge_a_id in self.edges(id_a) {
-            let id_a2 = self.toor(edge_a_id);
-            for edge_b_id in self.edges(id_b) {
-                let id_b2 = self.toor(edge_b_id);
-                if id_a2 == id_b && id_b2 == id_a {
-                    return Some((edge_a_id, edge_b_id));
-                }
+            if self.toor(edge_a_id) == id_b {
+                // In a DCEL the twin is always the reverse half-edge (id_b → id_a)
+                return Some((edge_a_id, self.twin(edge_a_id)));
             }
         }
         None
@@ -211,14 +209,23 @@ impl<M: Tag> HasNeighbors<VERT, M> for Mesh<M> {
         id: ids::Key<VERT, M>,
         k: usize,
     ) -> impl Iterator<Item = ids::Key<VERT, M>> {
-        let mut ring: HashSet<_> = std::iter::once(id).collect();
+        // BFS up to depth k. Only the newly-discovered frontier is expanded each
+        // step, so vertices at distance 1 are never dropped when computing k=2+.
+        let mut visited: HashSet<ids::Key<VERT, M>> = HashSet::new();
+        visited.insert(id);
+        let mut frontier = vec![id];
         for _ in 0..k {
-            ring = ring
-                .into_iter()
-                .flat_map(|n| self.neighbors(n)) // assume neighbors() -> impl Iterator
-                .collect::<HashSet<_>>(); // dedup at each step
+            let mut next_frontier = vec![];
+            for n in frontier {
+                for neighbor in self.neighbors(n) {
+                    if visited.insert(neighbor) {
+                        next_frontier.push(neighbor);
+                    }
+                }
+            }
+            frontier = next_frontier;
         }
-        ring.remove(&id); // don't include the center
-        ring.into_iter()
+        visited.remove(&id);
+        visited.into_iter()
     }
 }

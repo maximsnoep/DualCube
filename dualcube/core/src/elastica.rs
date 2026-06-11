@@ -18,6 +18,7 @@ use std::sync::Arc;
 //      satisfy the angle threshold, and pass the axis filter.
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 struct AxisGraph<T: Tag> {
     derivative_graph: DiGraph<(), f64>,
     eg_to_vgp: HashMap<EdgeIndex, NodeIndex>,
@@ -73,8 +74,6 @@ impl<T: Tag> ElasticaGraph<T> {
         k: usize,
         threshold_degrees: usize,
         max_out_degree: usize,
-        beta_curvature: f64,
-        beta_axis: f64,
     ) -> Self {
         let threshold_radians = (threshold_degrees as f64).to_radians();
 
@@ -93,6 +92,22 @@ impl<T: Tag> ElasticaGraph<T> {
         let mut vg_kappa_max = Vec::with_capacity(edge_ids.len());
         let mut vg_dmin = Vec::with_capacity(edge_ids.len());
         let mut vg_dmax = Vec::with_capacity(edge_ids.len());
+
+        // Pre-compute per-vertex principal frames once. Each vertex is shared by ~6 edges on
+        // average, so without caching estimate_vertex_principal_frame would be called ~12x per
+        // vertex. Computing once per vertex gives a proportional speedup.
+        let mut vert_frame_cache: HashMap<ids::Key<VERT, T>, (f64, f64, Vector3D, Vector3D)> =
+            HashMap::with_capacity(mesh.nr_verts());
+        for &em_id in &edge_ids {
+            let v0 = mesh.root(em_id);
+            let v1 = mesh.toor(em_id);
+            vert_frame_cache
+                .entry(v0)
+                .or_insert_with(|| estimate_vertex_principal_frame(&mesh, v0));
+            vert_frame_cache
+                .entry(v1)
+                .or_insert_with(|| estimate_vertex_principal_frame(&mesh, v1));
+        }
 
         for em_id in &edge_ids {
             let vg_id = g.add_node(());
@@ -115,7 +130,14 @@ impl<T: Tag> ElasticaGraph<T> {
             };
             vg_normal.push(average_normal);
 
-            let (kappa_min, kappa_max, dmin, dmax) = estimate_principal_frame(&mesh, *em_id);
+            let v0 = mesh.root(*em_id);
+            let v1 = mesh.toor(*em_id);
+            let (kappa_min, kappa_max, dmin, dmax) = estimate_principal_frame(
+                mesh.position(v0),
+                mesh.position(v1),
+                vert_frame_cache[&v0],
+                vert_frame_cache[&v1],
+            );
             vg_kappa_min.push(kappa_min);
             vg_kappa_max.push(kappa_max);
             vg_dmin.push(dmin);
@@ -169,56 +191,19 @@ impl<T: Tag> ElasticaGraph<T> {
             })
             .collect::<Vec<_>>();
 
-        let axis_graphs = [
-            Self::build_axis_graph(
-                &g,
-                &vg_to_em,
-                &vg_pos,
-                &vg_normal,
-                &g_edge_endpoints,
-                threshold_radians,
-                max_out_degree,
-                beta_curvature,
-                beta_axis,
-                PrincipalDirection::X,
-                &vg_kappa_min,
-                &vg_kappa_max,
-                &vg_dmin,
-                &vg_dmax,
-            ),
-            Self::build_axis_graph(
-                &g,
-                &vg_to_em,
-                &vg_pos,
-                &vg_normal,
-                &g_edge_endpoints,
-                threshold_radians,
-                max_out_degree,
-                beta_curvature,
-                beta_axis,
-                PrincipalDirection::Y,
-                &vg_kappa_min,
-                &vg_kappa_max,
-                &vg_dmin,
-                &vg_dmax,
-            ),
-            Self::build_axis_graph(
-                &g,
-                &vg_to_em,
-                &vg_pos,
-                &vg_normal,
-                &g_edge_endpoints,
-                threshold_radians,
-                max_out_degree,
-                beta_curvature,
-                beta_axis,
-                PrincipalDirection::Z,
-                &vg_kappa_min,
-                &vg_kappa_max,
-                &vg_dmin,
-                &vg_dmax,
-            ),
-        ];
+        let axis_graphs = Self::build_all_axis_graphs(
+            &g,
+            &vg_to_em,
+            &vg_pos,
+            &vg_normal,
+            &g_edge_endpoints,
+            threshold_radians,
+            max_out_degree,
+            &vg_kappa_min,
+            &vg_kappa_max,
+            &vg_dmin,
+            &vg_dmax,
+        );
 
         Self {
             extended_neighborhood_graph,
@@ -228,7 +213,7 @@ impl<T: Tag> ElasticaGraph<T> {
         }
     }
 
-    fn build_axis_graph(
+    fn build_all_axis_graphs(
         g: &DiGraph<(), ()>,
         vg_to_em: &HashMap<NodeIndex, ids::Key<EDGE, T>>,
         vg_pos: &[Vector3D],
@@ -236,52 +221,61 @@ impl<T: Tag> ElasticaGraph<T> {
         g_edge_endpoints: &[(usize, usize)],
         threshold_radians: f64,
         max_out_degree: usize,
-        beta_curvature: f64,
-        beta_axis: f64,
-        axis: PrincipalDirection,
         vg_kappa_min: &[f64],
         vg_kappa_max: &[f64],
         vg_dmin: &[Vector3D],
         vg_dmax: &[Vector3D],
-    ) -> AxisGraph<T> {
-        let mut derivative_graph = DiGraph::<(), f64>::new();
-        let gprime = &mut derivative_graph;
-        let mut eg_to_vgp = HashMap::new();
-        let mut vgp_to_eg = HashMap::new();
+    ) -> [AxisGraph<T>; 3] {
+        const AXES: [PrincipalDirection; 3] = [
+            PrincipalDirection::X,
+            PrincipalDirection::Y,
+            PrincipalDirection::Z,
+        ];
+
+        // Build 3 derivative graphs in one pass over g-edges.
+        // eg_to_vgp / vgp_to_eg are identical for all 3 axes.
+        let mut gprime_x = DiGraph::<(), f64>::new();
+        let mut gprime_y = DiGraph::<(), f64>::new();
+        let mut gprime_z = DiGraph::<(), f64>::new();
+        let mut eg_to_vgp: HashMap<EdgeIndex, NodeIndex> = HashMap::new();
+        let mut vgp_to_eg: HashMap<NodeIndex, EdgeIndex> = HashMap::new();
 
         for eg_id in g.edge_indices() {
-            let vgp_id = gprime.add_node(());
-            eg_to_vgp.insert(eg_id, vgp_id);
-            vgp_to_eg.insert(vgp_id, eg_id);
+            let vgp_x = gprime_x.add_node(());
+            let vgp_y = gprime_y.add_node(());
+            let vgp_z = gprime_z.add_node(());
+            debug_assert!(vgp_x == vgp_y && vgp_y == vgp_z);
+            eg_to_vgp.insert(eg_id, vgp_x);
+            vgp_to_eg.insert(vgp_x, eg_id);
         }
 
         for eg_id in g.edge_indices() {
             let (u, v) = g_edge_endpoints[eg_id.index()];
 
-            let mut best_candidates = BinaryHeap::new();
+            // Per-axis candidate lists: (weight, EdgeIndex)
+            let mut cands_x: Vec<(f64, EdgeIndex)> = Vec::new();
+            let mut cands_y: Vec<(f64, EdgeIndex)> = Vec::new();
+            let mut cands_z: Vec<(f64, EdgeIndex)> = Vec::new();
+
             for next_ref in g.edges_directed(NodeIndex::new(v), Direction::Outgoing) {
                 let next_eg_id = next_ref.id();
                 if next_eg_id == eg_id {
                     continue;
                 }
-
                 let (v2, w) = g_edge_endpoints[next_eg_id.index()];
                 debug_assert_eq!(v, v2);
-
                 if w == u {
                     continue;
                 }
 
-                let Some(weight) = transition_weight(
+                // Compute axis-independent parts once
+                let Some(common) = transition_common(
                     vg_pos,
                     vg_normal,
                     g_edge_endpoints,
                     eg_id.index(),
                     next_eg_id.index(),
                     threshold_radians,
-                    beta_curvature,
-                    beta_axis,
-                    axis,
                     vg_kappa_min,
                     vg_kappa_max,
                     vg_dmin,
@@ -290,62 +284,84 @@ impl<T: Tag> ElasticaGraph<T> {
                     continue;
                 };
 
-                best_candidates.push((MinScored(weight, next_eg_id.index()), next_eg_id));
-                if best_candidates.len() > max_out_degree {
-                    best_candidates.pop();
+                // Compute per-axis weights from shared common data
+                cands_x.push((
+                    transition_weight_for_axis(&common, PrincipalDirection::X),
+                    next_eg_id,
+                ));
+                cands_y.push((
+                    transition_weight_for_axis(&common, PrincipalDirection::Y),
+                    next_eg_id,
+                ));
+                cands_z.push((
+                    transition_weight_for_axis(&common, PrincipalDirection::Z),
+                    next_eg_id,
+                ));
+            }
+
+            // Keep only the max_out_degree lowest-weight transitions per axis
+            let src_vgp = eg_to_vgp[&eg_id];
+            for (cands, gprime) in [
+                (&mut cands_x, &mut gprime_x),
+                (&mut cands_y, &mut gprime_y),
+                (&mut cands_z, &mut gprime_z),
+            ] {
+                cands.sort_unstable_by(|a, b| {
+                    a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+                });
+                cands.truncate(max_out_degree);
+                for (weight, next_eg_id) in cands.iter() {
+                    let dst_vgp = eg_to_vgp[next_eg_id];
+                    gprime.add_edge(src_vgp, dst_vgp, *weight);
                 }
             }
-
-            let src_vgp = eg_to_vgp[&eg_id];
-            for (_, next_eg_id) in best_candidates.into_sorted_vec() {
-                let weight = transition_weight(
-                    vg_pos,
-                    vg_normal,
-                    g_edge_endpoints,
-                    eg_id.index(),
-                    next_eg_id.index(),
-                    threshold_radians,
-                    beta_curvature,
-                    beta_axis,
-                    axis,
-                    vg_kappa_min,
-                    vg_kappa_max,
-                    vg_dmin,
-                    vg_dmax,
-                )
-                .expect("selected derivative edge should still have a valid weight");
-
-                let dst_vgp = eg_to_vgp[&next_eg_id];
-                gprime.add_edge(src_vgp, dst_vgp, weight);
-            }
         }
 
-        info!(
-            "Derivative graph ({axis:?}): {} vertices, {} edges, avg out-degree {:.3}",
-            gprime.node_count(),
-            gprime.edge_count(),
-            gprime.edge_count() as f64 / gprime.node_count().max(1) as f64
-        );
-
-        let n = derivative_graph.node_count();
-        let mut out_adj = vec![Vec::<(usize, f64)>::new(); n];
-        let mut in_adj = vec![Vec::<(usize, f64)>::new(); n];
-        let mut source_em_of_vgp: Vec<Option<ids::Key<EDGE, T>>> = vec![None; n];
-
-        for e in derivative_graph.edge_references() {
-            let a = e.source().index();
-            let b = e.target().index();
-            let w = *e.weight();
-            out_adj[a].push((b, w));
-            in_adj[b].push((a, w));
+        for (gprime, axis) in [
+            (&gprime_x, AXES[0]),
+            (&gprime_y, AXES[1]),
+            (&gprime_z, AXES[2]),
+        ] {
+            info!(
+                "Derivative graph ({axis:?}): {} vertices, {} edges, avg out-degree {:.3}",
+                gprime.node_count(),
+                gprime.edge_count(),
+                gprime.edge_count() as f64 / gprime.node_count().max(1) as f64
+            );
         }
 
+        // Shared per-node attributes (same structure for all 3 axes)
+        fn src_attr<U: Copy>(
+            n: usize,
+            vgp_to_eg: &HashMap<NodeIndex, EdgeIndex>,
+            g: &DiGraph<(), ()>,
+            data: &[U],
+        ) -> Vec<U> {
+            (0..n)
+                .map(|vgp_idx| {
+                    let vgp = NodeIndex::new(vgp_idx);
+                    let eg = vgp_to_eg[&vgp];
+                    let (src_vg, _) = g.edge_endpoints(eg).expect("valid g edge");
+                    data[src_vg.index()]
+                })
+                .collect()
+        }
+
+        let n = gprime_x.node_count();
+
+        let source_pos_of_vgp = src_attr(n, &vgp_to_eg, g, vg_pos);
+        let source_normal_of_vgp = src_attr(n, &vgp_to_eg, g, vg_normal);
+        let source_kappa_min_of_vgp = src_attr(n, &vgp_to_eg, g, vg_kappa_min);
+        let source_kappa_max_of_vgp = src_attr(n, &vgp_to_eg, g, vg_kappa_max);
+        let source_dmin_of_vgp = src_attr(n, &vgp_to_eg, g, vg_dmin);
+        let source_dmax_of_vgp = src_attr(n, &vgp_to_eg, g, vg_dmax);
+
+        let mut source_em_of_vgp_opt: Vec<Option<ids::Key<EDGE, T>>> = vec![None; n];
         for (&vgp, &eg) in &vgp_to_eg {
-            let (src_vg, _dst_vg) = g.edge_endpoints(eg).expect("valid g edge");
-            source_em_of_vgp[vgp.index()] = Some(vg_to_em[&src_vg]);
+            let (src_vg, _) = g.edge_endpoints(eg).expect("valid g edge");
+            source_em_of_vgp_opt[vgp.index()] = Some(vg_to_em[&src_vg]);
         }
-
-        let source_em_of_vgp = source_em_of_vgp
+        let source_em_of_vgp = source_em_of_vgp_opt
             .into_iter()
             .map(|x| x.expect("every derivative node should map to a mesh edge"))
             .collect::<Vec<_>>();
@@ -360,76 +376,35 @@ impl<T: Tag> ElasticaGraph<T> {
             start_vgps_by_em.insert(em_id, starts);
         }
 
-        let source_pos_of_vgp = (0..n)
-            .map(|vgp_idx| {
-                let vgp = NodeIndex::new(vgp_idx);
-                let eg = vgp_to_eg[&vgp];
-                let (src_vg, _) = g.edge_endpoints(eg).expect("valid g edge");
-                vg_pos[src_vg.index()]
-            })
-            .collect::<Vec<_>>();
+        // Build one AxisGraph per axis from shared data (clone shared parts)
+        let make_axis_graph = |derivative_graph: DiGraph<(), f64>| {
+            let mut out_adj = vec![Vec::<(usize, f64)>::new(); n];
+            for e in derivative_graph.edge_references() {
+                out_adj[e.source().index()].push((e.target().index(), *e.weight()));
+            }
+            AxisGraph {
+                derivative_graph,
+                eg_to_vgp: eg_to_vgp.clone(),
+                vgp_to_eg: vgp_to_eg.clone(),
+                start_vgps_by_em: start_vgps_by_em.clone(),
+                mwc_from_vgp_cache: HashMap::new(),
+                mwc_cache: HashMap::new(),
+                out_adj,
+                source_em_of_vgp: source_em_of_vgp.clone(),
+                source_pos_of_vgp: source_pos_of_vgp.clone(),
+                source_normal_of_vgp: source_normal_of_vgp.clone(),
+                source_kappa_min_of_vgp: source_kappa_min_of_vgp.clone(),
+                source_kappa_max_of_vgp: source_kappa_max_of_vgp.clone(),
+                source_dmin_of_vgp: source_dmin_of_vgp.clone(),
+                source_dmax_of_vgp: source_dmax_of_vgp.clone(),
+            }
+        };
 
-        let source_normal_of_vgp = (0..n)
-            .map(|vgp_idx| {
-                let vgp = NodeIndex::new(vgp_idx);
-                let eg = vgp_to_eg[&vgp];
-                let (src_vg, _) = g.edge_endpoints(eg).expect("valid g edge");
-                vg_normal[src_vg.index()]
-            })
-            .collect::<Vec<_>>();
-
-        let source_kappa_min_of_vgp = (0..n)
-            .map(|vgp_idx| {
-                let vgp = NodeIndex::new(vgp_idx);
-                let eg = vgp_to_eg[&vgp];
-                let (src_vg, _) = g.edge_endpoints(eg).expect("valid g edge");
-                vg_kappa_min[src_vg.index()]
-            })
-            .collect::<Vec<_>>();
-
-        let source_kappa_max_of_vgp = (0..n)
-            .map(|vgp_idx| {
-                let vgp = NodeIndex::new(vgp_idx);
-                let eg = vgp_to_eg[&vgp];
-                let (src_vg, _) = g.edge_endpoints(eg).expect("valid g edge");
-                vg_kappa_max[src_vg.index()]
-            })
-            .collect::<Vec<_>>();
-
-        let source_dmin_of_vgp = (0..n)
-            .map(|vgp_idx| {
-                let vgp = NodeIndex::new(vgp_idx);
-                let eg = vgp_to_eg[&vgp];
-                let (src_vg, _) = g.edge_endpoints(eg).expect("valid g edge");
-                vg_dmin[src_vg.index()]
-            })
-            .collect::<Vec<_>>();
-
-        let source_dmax_of_vgp = (0..n)
-            .map(|vgp_idx| {
-                let vgp = NodeIndex::new(vgp_idx);
-                let eg = vgp_to_eg[&vgp];
-                let (src_vg, _) = g.edge_endpoints(eg).expect("valid g edge");
-                vg_dmax[src_vg.index()]
-            })
-            .collect::<Vec<_>>();
-
-        AxisGraph {
-            derivative_graph,
-            eg_to_vgp,
-            vgp_to_eg,
-            start_vgps_by_em,
-            mwc_from_vgp_cache: HashMap::new(),
-            mwc_cache: HashMap::new(),
-            out_adj,
-            source_em_of_vgp,
-            source_pos_of_vgp,
-            source_normal_of_vgp,
-            source_kappa_min_of_vgp,
-            source_kappa_max_of_vgp,
-            source_dmin_of_vgp,
-            source_dmax_of_vgp,
-        }
+        [
+            make_axis_graph(gprime_x),
+            make_axis_graph(gprime_y),
+            make_axis_graph(gprime_z),
+        ]
     }
 
     fn axis_graph(&self, axis: PrincipalDirection) -> &AxisGraph<T> {
@@ -532,9 +507,25 @@ impl<T: Tag> ElasticaGraph<T> {
             return cached;
         }
 
-        let starts = axis_graph.start_vgps_by_em.get(&em_id)?;
-        let (start, first_next, first_w) =
-            select_best_start_pair(starts, &axis_graph.out_adj, &axis_graph.source_pos_of_vgp)?;
+        let starts = match axis_graph.start_vgps_by_em.get(&em_id) {
+            Some(s) => s.clone(),
+            None => {
+                axis_graph.mwc_cache.insert(em_id, None);
+                return None;
+            }
+        };
+
+        let (start, first_next, first_w) = match select_best_start_pair(
+            &starts,
+            &axis_graph.out_adj,
+            &axis_graph.source_pos_of_vgp,
+        ) {
+            Some(x) => x,
+            None => {
+                axis_graph.mwc_cache.insert(em_id, None);
+                return None;
+            }
+        };
 
         let cache_key = (start, first_next);
         let cycle_for_start =
@@ -743,10 +734,8 @@ fn heuristic(a: Vector3D, b: Vector3D) -> f64 {
 // The transition curvature deviation is:
 //   (dev(m0, d01) + dev(m1, d01) + dev(m1, d12) + dev(m2, d12)) / 4
 //
-// Current implementation gap:
-// We currently store only scalar principal curvatures per midpoint, not the full principal direction frame.
-// So for now we use a conservative proxy based on curvature magnitude mismatch between consecutive midpoints.
-// This keeps the implementation explicit about what is known and leaves the principal-direction term open.
+// The full principal direction frame (dmin, dmax) is stored per midpoint and used below via
+// principal_direction_deviation, weighted by the squared curvature anisotropy (kappa_min - kappa_max)^2.
 //
 // Axis deviation
 // --------------
@@ -772,23 +761,35 @@ fn heuristic(a: Vector3D, b: Vector3D) -> f64 {
 //   1 -> U-turn
 //
 // A hard turn-angle threshold is still applied before evaluating the weighted score.
-fn transition_weight(
+struct TransitionCommon {
+    /// BETA_LENGTH + beta_curvature * curvature_deviation + BETA_GEODESIC * geodesic_deviation
+    base_factor: f64,
+    length: f64,
+    d01: Vector3D,
+    d12: Vector3D,
+    n_avg_01: Vector3D,
+    n_avg_12: Vector3D,
+}
+
+const BETA_AXIS: f64 = 3.0;
+const BETA_LENGTH: f64 = 0.;
+const BETA_GEODESIC: f64 = 0.0;
+const BETA_CURVATURE: f64 = 0.0;
+
+/// Compute axis-independent transition data. Returns None if the transition is
+/// geometrically invalid (degenerate segments, angle threshold exceeded).
+fn transition_common(
     vg_pos: &[Vector3D],
     vg_normal: &[Vector3D],
     g_edge_endpoints: &[(usize, usize)],
     eg_id: usize,
     next_eg_id: usize,
     threshold_radians: f64,
-    beta_curvature: f64,
-    beta_axis: f64,
-    axis: PrincipalDirection,
     vg_kappa_min: &[f64],
     vg_kappa_max: &[f64],
     vg_dmin: &[Vector3D],
     vg_dmax: &[Vector3D],
-) -> Option<f64> {
-    const BETA_LENGTH: f64 = 1.0;
-    const BETA_GEODESIC: f64 = 1.0;
+) -> Option<TransitionCommon> {
     const EPS: f64 = 1e-12;
 
     let (u, v) = *g_edge_endpoints.get(eg_id)?;
@@ -839,39 +840,51 @@ fn transition_weight(
 
     let length = l01 + l12;
 
-    let axis_dev_01 = axis_deviation(d01, normalize_or(n0 + n1, n1), Vector3D::from(axis));
-    let axis_dev_12 = axis_deviation(d12, normalize_or(n1 + n2, n1), Vector3D::from(axis));
-    let axis_deviation = 0.5 * (axis_dev_01 + axis_dev_12);
-
     let geodesic_deviation = ((1.0 - d01.dot(&d12)) * 0.5).clamp(0.0, 1.0);
 
     let curvature_deviation = 0.25
-        * ((kappa_min_0.abs() - kappa_max_0.abs()).powf(2.)
-            * principal_direction_deviation(d01, dmin0, dmax0)
-            + (kappa_min_1.abs() - kappa_max_1.abs()).powf(2.)
+        * ((kappa_min_0 - kappa_max_0).powf(2.) * principal_direction_deviation(d01, dmin0, dmax0)
+            + (kappa_min_1 - kappa_max_1).powf(2.)
                 * principal_direction_deviation(d01, dmin1, dmax1)
-            + (kappa_min_1.abs() - kappa_max_1.abs()).powf(2.)
+            + (kappa_min_1 - kappa_max_1).powf(2.)
                 * principal_direction_deviation(d12, dmin1, dmax1)
-            + (kappa_min_2.abs() - kappa_max_2.abs()).powf(2.)
+            + (kappa_min_2 - kappa_max_2).powf(2.)
                 * principal_direction_deviation(d12, dmin2, dmax2));
 
-    Some(axis_deviation)
+    let n_avg_01 = normalize_or(n0 + n1, n1);
+    let n_avg_12 = normalize_or(n1 + n2, n1);
+
+    Some(TransitionCommon {
+        base_factor: BETA_LENGTH
+            + BETA_CURVATURE * curvature_deviation
+            + BETA_GEODESIC * geodesic_deviation,
+        length,
+        d01,
+        d12,
+        n_avg_01,
+        n_avg_12,
+    })
 }
 
-fn estimate_principal_frame<T: Tag>(
-    mesh: &Mesh<T>,
-    edge_id: ids::Key<EDGE, T>,
+/// Compute the final edge weight for a specific axis given pre-computed common data.
+fn transition_weight_for_axis(common: &TransitionCommon, axis: PrincipalDirection) -> f64 {
+    let axis_vec = Vector3D::from(axis);
+    let axis_dev_01 = axis_deviation(common.d01, common.n_avg_01, axis_vec);
+    let axis_dev_12 = axis_deviation(common.d12, common.n_avg_12, axis_vec);
+    let axis_dev = 0.5 * (axis_dev_01 + axis_dev_12);
+    (common.base_factor + BETA_AXIS * axis_dev) * common.length
+}
+
+fn estimate_principal_frame(
+    pos_v0: Vector3D,
+    pos_v1: Vector3D,
+    frame_v0: (f64, f64, Vector3D, Vector3D),
+    frame_v1: (f64, f64, Vector3D, Vector3D),
 ) -> (f64, f64, Vector3D, Vector3D) {
-    let v0 = mesh.root(edge_id);
-    let v1 = mesh.toor(edge_id);
+    let (kappa_min_0, kappa_max_0, dmin_0, dmax_0) = frame_v0;
+    let (kappa_min_1, kappa_max_1, dmin_1, dmax_1) = frame_v1;
 
-    let (kappa_min_0, kappa_max_0, dmin_0, dmax_0) = estimate_vertex_principal_frame(mesh, v0);
-    let (kappa_min_1, kappa_max_1, dmin_1, dmax_1) = estimate_vertex_principal_frame(mesh, v1);
-
-    let n_mid = normalize_or(
-        mesh.position(v1) - mesh.position(v0),
-        Vector3D::new(1.0, 0.0, 0.0),
-    );
+    let edge_dir = normalize_or(pos_v1 - pos_v0, Vector3D::new(1.0, 0.0, 0.0));
     let dmin_1 = if dmin_0.dot(&dmin_1) < 0.0 {
         -dmin_1
     } else {
@@ -883,7 +896,7 @@ fn estimate_principal_frame<T: Tag>(
         dmax_1
     };
 
-    let dmin = normalize_or(dmin_0 + dmin_1, orthogonal_unit_vector(n_mid));
+    let dmin = normalize_or(dmin_0 + dmin_1, orthogonal_unit_vector(edge_dir));
     let dmax = normalize_or(dmax_0 + dmax_1, orthogonal_unit_vector(dmin));
 
     (
@@ -911,8 +924,9 @@ pub fn estimate_vertex_principal_frame<T: Tag>(
         return (0.0, 0.0, t1, t2);
     }
 
-    let mut ata = [[0.0_f64; 4]; 4];
-    let mut atb = [0.0_f64; 4];
+    let mut ata2 = [[0.0_f64; 2]; 2];
+    let mut atb_x = [0.0_f64; 2];
+    let mut atb_y = [0.0_f64; 2];
 
     for neighbor_id in neighbors {
         let p = mesh.position(neighbor_id);
@@ -935,43 +949,41 @@ pub fn estimate_vertex_principal_frame<T: Tag>(
 
         let alpha = (1.0 / len2).min(1e6);
 
-        let rows = [[ux, uy, 0.0, 0.0], [0.0, 0.0, ux, uy]];
-        let rhs = [-dn2x, -dn2y];
-
-        for row_id in 0..2 {
-            for i in 0..4 {
-                atb[i] += alpha * rows[row_id][i] * rhs[row_id];
-                for j in 0..4 {
-                    ata[i][j] += alpha * rows[row_id][i] * rows[row_id][j];
-                }
-            }
-        }
+        ata2[0][0] += alpha * ux * ux;
+        ata2[0][1] += alpha * ux * uy;
+        ata2[1][0] += alpha * ux * uy;
+        ata2[1][1] += alpha * uy * uy;
+        atb_x[0] += alpha * (-dn2x) * ux;
+        atb_x[1] += alpha * (-dn2x) * uy;
+        atb_y[0] += alpha * (-dn2y) * ux;
+        atb_y[1] += alpha * (-dn2y) * uy;
     }
 
-    let ata = nalgebra::Matrix4::new(
-        ata[0][0], ata[0][1], ata[0][2], ata[0][3], ata[1][0], ata[1][1], ata[1][2], ata[1][3],
-        ata[2][0], ata[2][1], ata[2][2], ata[2][3], ata[3][0], ata[3][1], ata[3][2], ata[3][3],
-    );
-    let Some(inv) = ata.try_inverse() else {
+    let ata2 = nalgebra::Matrix2::new(ata2[0][0], ata2[0][1], ata2[1][0], ata2[1][1]);
+    let Some(inv2) = ata2.try_inverse() else {
         return (0.0, 0.0, t1, t2);
     };
-    let a = [
-        inv[(0, 0)] * atb[0] + inv[(0, 1)] * atb[1] + inv[(0, 2)] * atb[2] + inv[(0, 3)] * atb[3],
-        inv[(1, 0)] * atb[0] + inv[(1, 1)] * atb[1] + inv[(1, 2)] * atb[2] + inv[(1, 3)] * atb[3],
-        inv[(2, 0)] * atb[0] + inv[(2, 1)] * atb[1] + inv[(2, 2)] * atb[2] + inv[(2, 3)] * atb[3],
-        inv[(3, 0)] * atb[0] + inv[(3, 1)] * atb[1] + inv[(3, 2)] * atb[2] + inv[(3, 3)] * atb[3],
-    ];
+    let a00 = inv2[(0, 0)] * atb_x[0] + inv2[(0, 1)] * atb_x[1];
+    let a01 = inv2[(1, 0)] * atb_x[0] + inv2[(1, 1)] * atb_x[1];
+    let a10 = inv2[(0, 0)] * atb_y[0] + inv2[(0, 1)] * atb_y[1];
+    let a11 = inv2[(1, 0)] * atb_y[0] + inv2[(1, 1)] * atb_y[1];
 
-    let shape = nalgebra::Matrix2::new(a[0], 0.5 * (a[1] + a[2]), 0.5 * (a[1] + a[2]), a[3]);
+    let shape = nalgebra::Matrix2::new(a00, 0.5 * (a01 + a10), 0.5 * (a01 + a10), a11);
     let eig = nalgebra::SymmetricEigen::new(shape);
 
-    let kappa_min = eig.eigenvalues[0];
-    let kappa_max = eig.eigenvalues[1];
+    // SymmetricEigen does not guarantee sorted eigenvalues; sort so kappa_min <= kappa_max.
+    let (i_min, i_max) = if eig.eigenvalues[0] <= eig.eigenvalues[1] {
+        (0, 1)
+    } else {
+        (1, 0)
+    };
+    let kappa_min = eig.eigenvalues[i_min];
+    let kappa_max = eig.eigenvalues[i_max];
 
-    let dmin_x = eig.eigenvectors[(0, 0)];
-    let dmin_y = eig.eigenvectors[(1, 0)];
-    let dmax_x = eig.eigenvectors[(0, 1)];
-    let dmax_y = eig.eigenvectors[(1, 1)];
+    let dmin_x = eig.eigenvectors[(0, i_min)];
+    let dmin_y = eig.eigenvectors[(1, i_min)];
+    let dmax_x = eig.eigenvectors[(0, i_max)];
+    let dmax_y = eig.eigenvectors[(1, i_max)];
 
     let dmin = normalize_or(t1 * dmin_x + t2 * dmin_y, t1);
     let dmax = normalize_or(t1 * dmax_x + t2 * dmax_y, t2);
@@ -992,8 +1004,12 @@ fn normalize_or(v: Vector3D, fallback: Vector3D) -> Vector3D {
 fn axis_deviation(direction: Vector3D, normal: Vector3D, axis: Vector3D) -> f64 {
     let alignment = direction.cross(&normal);
     let res = 0.5 - alignment.dot(&axis) * 0.5;
-    assert!(res >= 0.0 && res <= 1.0);
-    res
+    // Float drift can push res just outside [0, 1] on non-unit inputs; clamp defensively.
+    debug_assert!(
+        res >= -1e-9 && res <= 1.0 + 1e-9,
+        "axis_deviation out of expected range: {res}"
+    );
+    res.clamp(0.0, 1.0)
 }
 
 fn principal_direction_deviation(direction: Vector3D, dmin: Vector3D, dmax: Vector3D) -> f64 {
