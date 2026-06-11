@@ -36,7 +36,7 @@ impl Plugin for RenderPlugin {
             )
             .add_systems(
                 FixedUpdate,
-                store::respawn_renders.run_if(on_timer(Duration::from_millis(100))),
+                store::respawn_renders.run_if(on_timer(Duration::from_millis(1000))),
             );
     }
 }

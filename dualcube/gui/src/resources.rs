@@ -8,9 +8,7 @@ use bevy::prelude::*;
 use dualcube::polycube::POLYCUBE;
 use dualcube::prelude::*;
 use dualcube::solutions::Solution;
-use itertools::Itertools;
 use mehsh::prelude::*;
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -19,6 +17,7 @@ use std::sync::Arc;
 pub enum Phase {
     None,
     Input,
+    Field,
     Loops,
     Dual,
     Layout,
@@ -114,7 +113,6 @@ pub struct InputResource {
     #[allow(dead_code)]
     pub vertex_lookup: mehsh::prelude::VertLocation<INPUT>,
     pub triangle_lookup: mehsh::prelude::FaceLocation<INPUT>,
-    pub flow_graphs: [grapff::fixed::FixedGraph<EdgeID, f64>; 3],
 }
 
 impl InputResource {
@@ -124,60 +122,16 @@ impl InputResource {
         }
         let vertex_lookup = mesh.kdtree();
         let triangle_lookup = mesh.bvh();
-        let mut flow_graphs = [
-            grapff::fixed::FixedGraph::default(),
-            grapff::fixed::FixedGraph::default(),
-            grapff::fixed::FixedGraph::default(),
-        ];
 
         let mut properties = MeshProperties::default();
         (properties.scale, properties.translation) = mesh.scale_translation();
         properties.source = String::from("im blue dabadee dabada");
-
-        let nodes = mesh.edge_ids();
-
-        for axis in [
-            PrincipalDirection::X,
-            PrincipalDirection::Y,
-            PrincipalDirection::Z,
-        ] {
-            let edges = nodes
-                .clone()
-                .into_par_iter()
-                .flat_map(|node| {
-                    mesh.neighbor_function_edgegraph()(node)
-                        .into_iter()
-                        .map(|neighbor| {
-                            let face1 = mesh.face(node);
-                            let face2 = mesh.face(neighbor);
-
-                            if face1 == face2 {
-                                let normal = mesh.normal(face1);
-                                let m1 = mesh.position(node);
-                                let m2 = mesh.position(neighbor);
-                                let direction = m2 - m1;
-                                let cross = direction.cross(&normal);
-                                let angle = cross.angle(&axis.into());
-
-                                (node, neighbor, angle)
-                            } else {
-                                assert!(mesh.twin(node) == neighbor);
-                                (node, neighbor, 0.)
-                            }
-                        })
-                        .collect_vec()
-                })
-                .collect::<Vec<_>>();
-
-            flow_graphs[axis as usize] = grapff::fixed::FixedGraph::from(nodes.clone(), edges);
-        }
 
         Self {
             mesh,
             properties,
             vertex_lookup,
             triangle_lookup,
-            flow_graphs,
         }
     }
 }

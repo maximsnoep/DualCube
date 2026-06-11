@@ -14,13 +14,10 @@ impl Job {
         solution: Solution,
         anchors: Vec<[EdgeID; 2]>,
         direction: PrincipalDirection,
-        flowgraph: grapff::fixed::FixedGraph<EdgeID, f64>,
     ) -> Self {
         Self::new("adding loop", move || {
             let candidate = solution
-                .construct_loop_with_anchors(&anchors, direction, &flowgraph, |a: f64| {
-                    OrderedFloat(a.powi(3))
-                })
+                .construct_loop_with_anchors(&anchors, direction, |a: f64| OrderedFloat(a.powi(3)))
                 .and_then(|(edges, _)| {
                     let mut candidate = solution.clone();
                     candidate.add_loop(Loop { edges, direction });

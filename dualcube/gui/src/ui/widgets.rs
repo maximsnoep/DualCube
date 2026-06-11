@@ -3,6 +3,7 @@
 use super::theme::{colored_text, sized_text, text, RED, TEXT_COLOR, TEXT_COLOR2};
 use bevy::prelude::Time;
 use bevy_egui::egui::{emath, Color32, RichText, Slider, Ui};
+use std::ops::RangeInclusive;
 
 pub fn sep(ui: &mut Ui) {
     ui.add_space(5.);
@@ -23,17 +24,16 @@ pub fn slider<T: emath::Numeric>(
     label: &str,
     value: &mut T,
     range: std::ops::RangeInclusive<T>,
-    logarithmic: bool,
 ) {
-    ui.add(
-        Slider::new(value, range)
-            .logarithmic(logarithmic)
-            .text(text(label)),
-    );
+    ui.add(Slider::new(value, range).text(text(label)));
 }
 
-pub fn log_slider(ui: &mut Ui, label: &str, value: &mut f32, scale: f32) {
-    slider(ui, label, value, 0.0..=scale, true);
+pub fn log_slider<T: emath::Numeric>(ui: &mut Ui, label: &str, value: &mut T, max: T) {
+    ui.add(
+        Slider::new(value, RangeInclusive::new(T::from_f64(0.), max))
+            .logarithmic(true)
+            .text(text(label)),
+    );
 }
 
 pub fn radio<T: PartialEq<T> + std::fmt::Display>(

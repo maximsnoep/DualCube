@@ -81,7 +81,7 @@ fn stage(
 fn stop_toggle(ui: &mut Ui, conf: &mut Configuration, stopped: &mut bool, phase: Phase) {
     if conf.stop == phase {
         *stopped = true;
-        if sleek_button_warn(ui, "  🚫  ") {
+        if sleek_button_warn(ui, "   🚫   ") {
             conf.stop = Phase::None;
         }
     } else if sleek_button_unfocused(ui, "─────") {
@@ -232,7 +232,6 @@ fn menu_bar(
             "sensitivity",
             &mut automatic_rotation.sensitivity,
             -std::f32::consts::PI..=std::f32::consts::PI,
-            false,
         );
 
         sep(ui);
@@ -285,73 +284,6 @@ fn menu_bar(
     menu_button(ui, "Manual", |ui| {
         space(ui);
 
-        let params = &mut conf.fields_params;
-        slider(
-            ui,
-            "outer_iterations",
-            &mut params.outer_iterations,
-            0..=50,
-            false,
-        );
-        slider(
-            ui,
-            "cg_iterations",
-            &mut params.cg_iterations,
-            10..=500,
-            false,
-        );
-        slider(
-            ui,
-            "cg_tolerance",
-            &mut params.cg_tolerance,
-            1e-10..=1e-3,
-            true,
-        );
-        slider(
-            ui,
-            "smooth_weight",
-            &mut params.smooth_weight,
-            1e-3..=100.0,
-            true,
-        );
-        slider(
-            ui,
-            "axis_weight",
-            &mut params.axis_weight,
-            0.0..=100.0,
-            true,
-        );
-        slider(
-            ui,
-            "curvature_weight",
-            &mut params.curvature_weight,
-            0.0..=100.0,
-            true,
-        );
-        slider(
-            ui,
-            "coupling_weight",
-            &mut params.coupling_weight,
-            0.0..=0.5,
-            true,
-        );
-        slider(
-            ui,
-            "damping_weight",
-            &mut params.damping_weight,
-            1e-6..=1.0,
-            true,
-        );
-
-        if sleek_button(ui, "FIELDS") {
-            jobs.write(JobRequest::Run(Job::fields(
-                solution.current_solution.clone(),
-                conf.clone(),
-            )));
-        }
-
-        space(ui);
-
         if conf.interactive_mode == InteractiveMode::LoopModification {
             if sleek_button(ui, "Modify loops [active]") {
                 conf.interactive_mode = InteractiveMode::None;
@@ -376,7 +308,7 @@ fn menu_bar(
             space(ui);
         }
 
-        slider(ui, "alpha", &mut conf.alpha, 0.0..=1.0, false);
+        slider(ui, "alpha", &mut conf.alpha, 0.0..=1.0);
 
         space(ui);
 
@@ -412,13 +344,6 @@ fn menu_bar(
 
         space(ui);
     });
-
-    if sleek_button(ui, "Hex") {
-        jobs.write(JobRequest::Run(Job::export_hex(
-            solution.current_solution.clone(),
-            PathBuf::from("./out/temp2319701278924168937120"),
-        )));
-    }
 }
 
 /// The pipeline bar: one stage per phase, each with its actions and a stop
@@ -443,6 +368,34 @@ fn pipeline_bar(
     );
     stop_toggle(ui, conf, &mut stopped, Phase::Input);
 
+    // Field
+    stage(
+        ui,
+        stopped,
+        "Field",
+        current.mesh_ref.nr_verts() != 0,
+        Some(format!("({})", current.loops.len())),
+        |ui| {
+            let params = &mut conf.fields_params;
+
+            slider(ui, "outer_iterations", &mut params.outer_iterations, 0..=50);
+            slider(ui, "cg_iterations", &mut params.cg_iterations, 10..=500);
+            log_slider(ui, "smooth_weight", &mut params.smooth_weight, 10.0);
+            log_slider(ui, "axis_weight", &mut params.axis_weight, 100.0);
+            log_slider(ui, "curvature_weight", &mut params.curvature_weight, 10.);
+            log_slider(ui, "coupling_weight", &mut params.coupling_weight, 0.5);
+
+            if sleek_button(ui, "initialize") {
+                jobs.write(JobRequest::Run(Job::fields(
+                    solution.current_solution.clone(),
+                    conf.clone(),
+                )));
+                ui.close();
+            }
+        },
+    );
+    stop_toggle(ui, conf, &mut stopped, Phase::Field);
+
     // Loops
     stage(
         ui,
@@ -454,22 +407,17 @@ fn pipeline_bar(
             if sleek_button(ui, "initialize") {
                 jobs.write(JobRequest::Run(Job::initialize_loops(
                     current.clone(),
-                    mesh_ref.flow_graphs.clone(),
                     conf.clone(),
                 )));
                 ui.close();
             }
             if sleek_button(ui, "evolve") {
-                jobs.write(JobRequest::Run(Job::evolve(
-                    current.clone(),
-                    mesh_ref.flow_graphs.clone(),
-                    conf.clone(),
-                )));
+                jobs.write(JobRequest::Run(Job::evolve(current.clone(), conf.clone())));
                 ui.close();
             }
-            slider(ui, "iterations", &mut conf.iterations, 1..=20, false);
-            slider(ui, "pool1", &mut conf.pool1, 1..=20, false);
-            slider(ui, "pool2", &mut conf.pool2, 1..=50, false);
+            slider(ui, "iterations", &mut conf.iterations, 1..=20);
+            slider(ui, "pool1", &mut conf.pool1, 1..=20);
+            slider(ui, "pool2", &mut conf.pool2, 1..=50);
         },
     );
     stop_toggle(ui, conf, &mut stopped, Phase::Loops);
@@ -575,7 +523,7 @@ fn pipeline_bar(
         ui,
         stopped,
         "Quad",
-        true,
+        current.polycube.is_some(),
         Some(if current.quad.is_some() { "(Ok)" } else { "" }.to_string()),
         |ui| {
             if sleek_button(ui, "(re)compute") {
@@ -585,7 +533,18 @@ fn pipeline_bar(
                 )));
                 ui.close();
             }
-            slider(ui, "omega", &mut conf.omega, 1..=20, false);
+            slider(ui, "omega", &mut conf.omega, 1..=20);
         },
     );
+    stop_toggle(ui, conf, &mut stopped, Phase::Quad);
+
+    // Hex
+    stage(ui, stopped, "Hex", current.quad.is_some(), None, |ui| {
+        if sleek_button(ui, "Hex") {
+            jobs.write(JobRequest::Run(Job::export_hex(
+                current.clone(),
+                PathBuf::from("./out/temp2319701278924168937120"),
+            )));
+        }
+    });
 }

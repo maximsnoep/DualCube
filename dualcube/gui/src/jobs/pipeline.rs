@@ -12,17 +12,18 @@ use dualcube::polycube::POLYCUBE;
 use dualcube::prelude::*;
 use mehsh::prelude::VertKey;
 
-type FlowGraphs = [grapff::fixed::FixedGraph<EdgeID, f64>; 3];
-
 /// A completed stage of the pipeline.
 #[derive(Clone, Copy)]
 pub(super) enum Stage {
+    Field,
     Loops,
     Dual,
     Corners,
     Layout,
     Polycube,
     Quad,
+    #[allow(dead_code)]
+    Hex,
 }
 
 impl Stage {
@@ -30,24 +31,28 @@ impl Stage {
     /// the renders) when the configured stop phase has been reached.
     pub(super) fn next_job(self, solution: Solution, configuration: Configuration) -> Job {
         let stop_phase = match self {
+            Self::Field => Some(Phase::Field),
             Self::Loops => Some(Phase::Loops),
             Self::Dual => Some(Phase::Dual),
             Self::Layout => Some(Phase::Layout),
             Self::Polycube => Some(Phase::Polycube),
+            Self::Quad => Some(Phase::Quad),
             // These stages never stop the pipeline themselves.
-            Self::Corners | Self::Quad => None,
+            Self::Corners | Self::Hex => None,
         };
         if stop_phase == Some(configuration.stop.clone()) {
             return Job::refresh(solution);
         }
 
         match self {
+            Self::Field => Job::refresh(solution),
             Self::Loops => Job::compute_dual(solution, configuration),
-            Self::Dual => Job::place_corners(solution, configuration),
+            Self::Dual => Job::refresh(solution),
             Self::Corners => Job::place_paths(solution, configuration),
             Self::Layout => Job::compute_polycube(solution, configuration),
             Self::Polycube => Job::compute_quad(solution, configuration),
             Self::Quad => Job::refresh(solution),
+            Self::Hex => Job::refresh(solution),
         }
     }
 }
@@ -78,29 +83,20 @@ fn completed(stage: Stage, solution: Solution, configuration: &Configuration) ->
 }
 
 impl Job {
-    pub fn initialize_loops(
-        solution: Solution,
-        flowgraphs: FlowGraphs,
-        configuration: Configuration,
-    ) -> Self {
+    pub fn initialize_loops(solution: Solution, configuration: Configuration) -> Self {
         Self::new("initializing loops", move || {
             let mut initialized = Solution::new(solution.mesh_ref.clone());
-            initialized.initialize(&flowgraphs);
+            initialized.initialize();
             completed(Stage::Loops, initialized, &configuration)
         })
     }
 
-    pub fn evolve(
-        solution: Solution,
-        flowgraphs: FlowGraphs,
-        configuration: Configuration,
-    ) -> Self {
+    pub fn evolve(solution: Solution, configuration: Configuration) -> Self {
         Self::new("evolving", move || {
             let Some(evolved) = solution.evolve(
                 configuration.iterations,
                 configuration.pool1,
                 configuration.pool2,
-                &flowgraphs,
             ) else {
                 warn!("Failed to evolve solution.");
                 return None;
@@ -116,7 +112,8 @@ impl Job {
                 &solution.mesh_ref,
                 configuration.fields_params.clone(),
             ));
-            Some(JobResult::Refreshed(render::refresh(&solution)))
+            solution.set_flow_graphs();
+            completed(Stage::Field, solution, &configuration)
         })
     }
 

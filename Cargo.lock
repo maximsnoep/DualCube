@@ -3568,7 +3568,6 @@ dependencies = [
  "grapff",
  "io",
  "itertools 0.14.0",
- "log",
  "mehsh",
  "nalgebra 0.32.6",
  "ordered-float",

@@ -6,10 +6,10 @@ mod resources;
 mod ui;
 
 use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, SystemInformationDiagnosticsPlugin};
+use bevy::log::{Level, LogPlugin};
 use bevy::prelude::*;
 use bevy::ui::UiScale;
 use bevy::window::{WindowMode, WindowResolution};
-use bevy_egui::EguiPlugin;
 use dualcube::prelude::*;
 use resources::{Configuration, InputResource, SolutionResource};
 
@@ -34,16 +34,23 @@ fn main() {
             ..Default::default()
         })
         // Load default plugins
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "DualCube".to_string(),
-                mode: WindowMode::Windowed,
-
-                resolution: WindowResolution::default().with_scale_factor_override(1.),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }))
+        .add_plugins(
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "DualCube".to_string(),
+                        mode: WindowMode::Windowed,
+                        resolution: WindowResolution::default().with_scale_factor_override(1.),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                })
+                .set(LogPlugin {
+                    level: Level::TRACE,
+                    filter: "info,dualcube=trace".to_string(),
+                    ..default()
+                }),
+        )
         // Plugin for diagnostics
         .add_plugins((
             FrameTimeDiagnosticsPlugin::default(),
@@ -66,10 +73,10 @@ fn main() {
         ))
         // The application itself: jobs, rendering, UI, and controls.
         .add_plugins((
-            jobs::JobPlugin,
-            render::RenderPlugin,
             ui::UiPlugin,
+            jobs::JobPlugin,
             controls::ControlsPlugin,
+            render::RenderPlugin,
         ))
         .run();
 }

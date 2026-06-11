@@ -22,7 +22,7 @@ pub struct UiPlugin;
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<dock::UiResource>()
-            // .add_plugins((bevy_egui::EguiPlugin))
+            .add_plugins(bevy_egui::EguiPlugin::default())
             .add_observer(setup)
             .add_systems(
                 EguiPrimaryContextPass,
@@ -33,6 +33,7 @@ impl Plugin for UiPlugin {
 
 /// Sets the fonts and the theme once the primary egui context is created.
 fn setup(_: On<Add, PrimaryEguiContext>, mut ui: bevy_egui::EguiContexts) -> Result<(), BevyError> {
+    println!("running ui setup");
     // Font
     let mut fonts = bevy_egui::egui::FontDefinitions::default();
     fonts.font_data.insert(
