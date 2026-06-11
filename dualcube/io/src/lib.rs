@@ -1,6 +1,6 @@
 pub mod formats {
     pub mod apg;
-    pub mod dsol;
+    pub mod dc;
     pub mod flag;
     pub mod hex;
     pub mod loops;
@@ -18,7 +18,7 @@ pub trait Import {
 }
 
 pub use crate::formats::{
-    apg::APG, dsol::Dsol, flag::Flag, hex::HEX, loops::Loops, nlr::NLR, obj::OBJ,
+    apg::APG, dc::Dc, flag::Flag, hex::HEX, loops::Loops, nlr::NLR, obj::OBJ,
 };
 use dualcube::prelude::Solution;
 use std::{path::PathBuf, sync::Arc};
@@ -49,11 +49,11 @@ pub fn import_solution(path: PathBuf) -> Solution {
             };
             Solution::new(mesh.clone())
         }
-        Some("dsol") => {
-            if let Ok(sol) = Dsol::import(&path) {
+        Some("dc") => {
+            if let Ok(sol) = Dc::import(&path) {
                 sol
             } else {
-                panic!("Error while parsing Dsol file {path:?}");
+                panic!("Error while parsing Dc file {path:?}");
             }
         }
         Some("loops") => {

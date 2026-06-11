@@ -109,6 +109,51 @@ impl Loop {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SolutionPersistence {
+    pub mesh_ref: Arc<Mesh<INPUT>>,
+    pub loops: SlotMap<LoopID, Loop>,
+    pub dual: Result<Dual, PropertyViolationError>,
+
+    #[serde(default)]
+    pub polycube: Option<Polycube>,
+
+    #[serde(default)]
+    pub layout: Option<Layout>,
+}
+
+impl Solution {
+    pub fn to_persistence(&self) -> SolutionPersistence {
+        SolutionPersistence {
+            mesh_ref: self.mesh_ref.clone(),
+            loops: self.loops.clone(),
+            dual: self.dual.clone(),
+            polycube: self.polycube.clone(),
+            layout: self.layout.clone(),
+        }
+    }
+
+    pub fn from_persistence(data: SolutionPersistence) -> Self {
+        Self {
+            elastica_graph: ElasticaGraph::new(data.mesh_ref.clone(), 2, 40, 6, 0.0, 100.),
+
+            occupied: Loop::occupied(&data.loops),
+            loops: data.loops,
+            last_loop: None,
+
+            dual: data.dual,
+            polycube: data.polycube,
+            layout: data.layout,
+            quad: None,
+
+            fields: None,
+            external_flag: None,
+
+            mesh_ref: data.mesh_ref,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Solution {
     pub mesh_ref: Arc<Mesh<INPUT>>,
     pub loops: SlotMap<LoopID, Loop>,
@@ -120,11 +165,11 @@ pub struct Solution {
     pub layout: Option<Layout>,
     pub quad: Option<Quad>,
 
-    // #[serde(skip)]
+    #[serde(skip)]
     pub fields: Option<crate::gfield::Fields<INPUT>>,
     #[serde(skip)]
     pub elastica_graph: ElasticaGraph<INPUT>,
-    // #[serde(skip)]
+    #[serde(skip)]
     pub external_flag: Option<ids::SecMap<FACE, INPUT, usize>>,
 }
 
