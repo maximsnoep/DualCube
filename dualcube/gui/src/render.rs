@@ -1093,62 +1093,71 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                 }
 
                 // Visualize the vector fields
-                let mut gizmos_xfield: GizmoAsset = GizmoAsset::new();
-                let mut gizmos_yfield: GizmoAsset = GizmoAsset::new();
-                let mut gizmos_zfield: GizmoAsset = GizmoAsset::new();
+
+                fn mesh_diagonal<T: Tag>(mesh: &mehsh::prelude::Mesh<T>) -> f64 {
+                    let ids = mesh.vert_ids();
+
+                    let Some(&first_id) = ids.first().to_owned() else {
+                        return 1.0;
+                    };
+
+                    let first = mesh.position(first_id);
+                    let mut min_p = first;
+                    let mut max_p = first;
+
+                    for id in ids {
+                        let p = mesh.position(id);
+
+                        min_p = Vector3D::new(min_p.x.min(p.x), min_p.y.min(p.y), min_p.z.min(p.z));
+
+                        max_p = Vector3D::new(max_p.x.max(p.x), max_p.y.max(p.y), max_p.z.max(p.z));
+                    }
+
+                    (max_p - min_p).norm().max(1e-12)
+                }
+
+                let mut gizmos_xfield = GizmoAsset::new();
+                let mut gizmos_yfield = GizmoAsset::new();
+                let mut gizmos_zfield = GizmoAsset::new();
+
+                fn draw_field(
+                    gizmos: &mut GizmoAsset,
+                    mesh: &mehsh::prelude::Mesh<INPUT>,
+                    field: &dualcube::gfield::Field<INPUT>,
+                    dir: PrincipalDirection,
+                    field_scale: f64,
+                    translation: Vector3D,
+                    scale: f64,
+                ) {
+                    let color = colors::to_bevy(colors::from_direction(dir, None, None));
+
+                    for (&vert_id, &vector_id) in &field.map {
+                        let Some(v) = field.vectors.get(vector_id) else {
+                            continue;
+                        };
+
+                        if v.norm() <= 1e-12 {
+                            continue;
+                        }
+
+                        let p = mesh.position(vert_id);
+                        gizmos.arrow(
+                            world_to_view(p, translation, scale),
+                            world_to_view(p + v.normalize() * field_scale, translation, scale),
+                            color,
+                        );
+                    }
+                }
+
                 if let Some(fields) = &solution.fields {
-                    let field_scale = 0.01;
+                    let field_scale = 0.015 * mesh_diagonal(input);
 
-                    for (&vert_id, &vector_id) in &fields.field_x.map {
-                        println!("Drawing vector at vert_id: {:?}", vert_id);
-                        let vector = fields.field_x.vectors.get(vector_id).unwrap();
-                        let vert_pos = input.position(vert_id);
-                        let start = world_to_view(vert_pos, translation, scale);
-                        let end_world = vert_pos + vector.normalize() * field_scale;
-                        let end = world_to_view(end_world, translation, scale);
-                        gizmos_xfield.arrow(
-                            start,
-                            end,
-                            colors::to_bevy(colors::from_direction(
-                                PrincipalDirection::X,
-                                None,
-                                None,
-                            )),
-                        );
-                    }
-
-                    for (&vert_id, &vector_id) in &fields.field_y.map {
-                        let vector = fields.field_y.vectors.get(vector_id).unwrap();
-                        let vert_pos = input.position(vert_id);
-                        let start = world_to_view(vert_pos, translation, scale);
-                        let end_world = vert_pos + vector.normalize() * field_scale;
-                        let end = world_to_view(end_world, translation, scale);
-                        gizmos_yfield.arrow(
-                            start,
-                            end,
-                            colors::to_bevy(colors::from_direction(
-                                PrincipalDirection::Y,
-                                None,
-                                None,
-                            )),
-                        );
-                    }
-
-                    for (&vert_id, &vector_id) in &fields.field_z.map {
-                        let vector = fields.field_z.vectors.get(vector_id).unwrap();
-                        let vert_pos = input.position(vert_id);
-                        let start = world_to_view(vert_pos, translation, scale);
-                        let end_world = vert_pos + vector.normalize() * field_scale;
-                        let end = world_to_view(end_world, translation, scale);
-                        gizmos_zfield.arrow(
-                            start,
-                            end,
-                            colors::to_bevy(colors::from_direction(
-                                PrincipalDirection::Z,
-                                None,
-                                None,
-                            )),
-                        );
+                    for (gizmos, field, dir) in [
+                        (&mut gizmos_xfield, &fields.field_x, PrincipalDirection::X),
+                        (&mut gizmos_yfield, &fields.field_y, PrincipalDirection::Y),
+                        (&mut gizmos_zfield, &fields.field_z, PrincipalDirection::Z),
+                    ] {
+                        draw_field(gizmos, input, field, dir, field_scale, translation, scale);
                     }
                 }
 
@@ -1360,26 +1369,10 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                         .gizmo(gizmos_zloops, 3., -0.000111, "z-loops")
                         .gizmo(gizmos_paths, 3., -0.0001, "paths")
                         .gizmo(gizmos_flat_paths, 1., -0.00011, "flat paths")
-                        .gizmo(gizmos_features, 5., -0.00012, "features")
                         .gizmo(granulated_mesh_gizmos, 0.5, -0.00001, "refined wireframe")
                         .gizmo(gizmos_xfield, 1., -0.0001, "x-vector field")
                         .gizmo(gizmos_yfield, 1., -0.00011, "y-vector field")
                         .gizmo(gizmos_zfield, 1., -0.000111, "z-vector field")
-                        .gizmo(
-                            gizmos_curvature_max,
-                            2.,
-                            -0.00012,
-                            "maximum principal curvature",
-                        )
-                        .gizmo(
-                            gizmos_curvature_min,
-                            2.,
-                            -0.00013,
-                            "minimum principal curvature",
-                        )
-                        .gizmo(elastica_gizmos_x, 2., -0.00014, "elastica graph x")
-                        .gizmo(elastica_gizmos_y, 2., -0.00015, "elastica graph y")
-                        .gizmo(elastica_gizmos_z, 2., -0.00016, "elastica graph z")
                         .to_owned(),
                 );
             }

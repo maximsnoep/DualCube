@@ -2,10 +2,10 @@ pub mod formats {
     pub mod apg;
     pub mod dsol;
     pub mod flag;
+    pub mod hex;
     pub mod loops;
     pub mod nlr;
     pub mod obj;
-    pub mod hex;
 }
 
 pub trait Export {
@@ -17,7 +17,9 @@ pub trait Import {
     fn import(path: &std::path::Path) -> anyhow::Result<dualcube::prelude::Solution>;
 }
 
-pub use crate::formats::{apg::APG, dsol::Dsol, flag::Flag, loops::Loops, nlr::NLR, obj::OBJ, hex::HEX};
+pub use crate::formats::{
+    apg::APG, dsol::Dsol, flag::Flag, hex::HEX, loops::Loops, nlr::NLR, obj::OBJ,
+};
 use dualcube::prelude::Solution;
 use std::{path::PathBuf, sync::Arc};
 
@@ -25,7 +27,13 @@ pub fn import_solution(path: PathBuf) -> Solution {
     match path.extension().unwrap().to_str() {
         Some("obj") => {
             let mesh = match mehsh::mesh::connectivity::Mesh::from_obj(&path) {
-                Ok(res) => Arc::new(res.0),
+                Ok(mut res) => {
+                    let params = dualcube::pca::AxisFitParams::default();
+
+                    dualcube::pca::reorient_mesh_by_face_normal_axis_fit(&mut res.0, params);
+
+                    Arc::new(res.0)
+                }
                 Err(err) => {
                     panic!("Error while parsing OBJ file {path:?}: {err:?}");
                 }

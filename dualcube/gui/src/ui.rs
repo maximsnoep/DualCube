@@ -1,6 +1,7 @@
 use crate::controls::InteractiveMode;
 use crate::jobs::{Job, JobRequest, JobState};
-use crate::render::{CameraFor, Objects, RenderObjectSetting, RenderObjectSettingStore};
+use crate::render::CameraFor;
+use crate::render::{Objects, RenderObjectSetting, RenderObjectSettingStore};
 use crate::{
     colors, CameraHandles, Configuration, InputResource, Perspective, Phase, PrincipalDirection,
     SolutionResource,
@@ -696,6 +697,7 @@ pub fn update(
                                         "sensitivity",
                                         &mut automatic_rotation.sensitivity,
                                         -std::f32::consts::PI..=std::f32::consts::PI,
+                                        false,
                                     );
 
                                     sep(ui);
@@ -704,21 +706,21 @@ pub fn update(
 
                                     let mut rotate =
                                         1. + conf.camera_rotate_sensitivity.log10() / m;
-                                    slider(ui, "rotate", &mut rotate, 0.1..=1.);
+                                    slider(ui, "rotate", &mut rotate, 0.1..=1.,false);
                                     conf.camera_rotate_sensitivity = 10f32.powf((rotate - 1.) * m);
 
                                     space(ui);
 
                                     let mut translate =
                                         1. + ((conf.camera_translate_sensitivity / 3.).log10() / m);
-                                    slider(ui, "translate", &mut translate, 0.1..=1.);
+                                    slider(ui, "translate", &mut translate, 0.1..=1., false);
                                     conf.camera_translate_sensitivity =
                                         10f32.powf((translate - 1.) * m) * 3.;
 
                                     space(ui);
 
                                     let mut zoom = 1. + conf.camera_zoom_sensitivity.log10() / m;
-                                    slider(ui, "zoom", &mut zoom, 0.1..=1.);
+                                    slider(ui, "zoom", &mut zoom, 0.1..=1., false);
                                     conf.camera_zoom_sensitivity = 10f32.powf((zoom - 1.) * m);
 
                                     space(ui);
@@ -756,6 +758,71 @@ pub fn update(
 
                                 menu_button(ui, "Manual", |ui| {
                                     space(ui);
+
+                                    slider(
+                                        ui,
+                                        "outer_iterations",
+                                        &mut conf.fields_params.outer_iterations,
+                                        0..=50,
+                                        false,
+                                    );
+
+                                    slider(
+                                        ui,
+                                        "cg_iterations",
+                                        &mut conf.fields_params.cg_iterations,
+                                        10..=500,
+                                        false,
+                                    );
+
+                                    slider(
+                                        ui,
+                                        "cg_tolerance",
+                                        &mut conf.fields_params.cg_tolerance,
+                                        1e-10..=1e-3,
+                                        true,
+                                    );
+
+                                    slider(
+                                        ui,
+                                        "smooth_weight",
+                                        &mut conf.fields_params.smooth_weight,
+                                        1e-3..=100.0,
+                                        true,
+                                    );
+
+                                    slider(
+                                        ui,
+                                        "axis_weight",
+                                        &mut conf.fields_params.axis_weight,
+                                        0.0..=100.0,
+                                        true,
+                                    );
+
+                                    slider(
+                                        ui,
+                                        "curvature_weight",
+                                        &mut conf.fields_params.curvature_weight,
+                                        0.0..=100.0,
+                                        true,
+                                    );
+
+                                    slider(
+                                        ui,
+                                        "coupling_weight",
+                                        &mut conf.fields_params.coupling_weight,
+                                        0.0..=0.5,
+                                        true,
+                                    );
+
+                                    slider(
+                                        ui,
+                                        "damping_weight",
+                                        &mut conf.fields_params.damping_weight,
+                                        1e-6..=1.0,
+                                        true,
+                                    );
+
 
                                     if sleek_button(ui, "FIELDS") {
                                         jobs.write(JobRequest::Run(Box::new(Job::Fields {
@@ -812,7 +879,7 @@ pub fn update(
                                         space(ui);
                                     }
 
-                                    slider(ui, "alpha", &mut conf.alpha, 0.0..=1.0);
+                                    slider(ui, "alpha", &mut conf.alpha, 0.0..=1.0, false);
 
                                     space(ui);
 
@@ -920,9 +987,9 @@ pub fn update(
                                         ui.close();
                                     }
 
-                                    slider(ui, "iterations", &mut conf.iterations, 1..=20);
-                                    slider(ui, "pool1", &mut conf.pool1, 1..=20);
-                                    slider(ui, "pool2", &mut conf.pool2, 1..=50);
+                                    slider(ui, "iterations", &mut conf.iterations, 1..=20, false);
+                                    slider(ui, "pool1", &mut conf.pool1, 1..=20, false);
+                                    slider(ui, "pool2", &mut conf.pool2, 1..=50, false);
                                 });
                                 label(
                                     ui,
@@ -1070,7 +1137,7 @@ pub fn update(
                                         ui.close();
                                     }
 
-                                    slider(ui, "omega", &mut conf.omega, 1..=20);
+                                    slider(ui, "omega", &mut conf.omega, 1..=20, false);
                                 });
 
                                 label(
@@ -1194,8 +1261,13 @@ fn slider<T: emath::Numeric>(
     label: &str,
     value: &mut T,
     range: std::ops::RangeInclusive<T>,
+    logarithmic: bool,
 ) {
-    ui.add(Slider::new(value, range).text(text(label)));
+    ui.add(
+        Slider::new(value, range)
+            .logarithmic(logarithmic)
+            .text(text(label)),
+    );
 }
 
 fn radio<T: PartialEq<T> + std::fmt::Display>(

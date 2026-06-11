@@ -121,7 +121,7 @@ pub struct Solution {
     pub quad: Option<Quad>,
 
     // #[serde(skip)]
-    pub fields: Option<crate::field::Fields<INPUT>>,
+    pub fields: Option<crate::gfield::Fields<INPUT>>,
     #[serde(skip)]
     pub elastica_graph: ElasticaGraph<INPUT>,
     // #[serde(skip)]
@@ -151,7 +151,7 @@ impl Solution {
             quad: None,
             external_flag: None,
             last_loop: None,
-            fields: None,
+            fields: Some(crate::gfield::Fields::from_mesh(&mesh_ref.clone())),
             elastica_graph: ElasticaGraph::new(mesh_ref.clone(), 2, 40, 6, 0.0, 100.),
         }
     }

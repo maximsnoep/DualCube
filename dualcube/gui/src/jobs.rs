@@ -3,6 +3,7 @@ use crate::{Configuration, InputResource, Phase, SolutionResource};
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task};
+use dualcube::field::*;
 use dualcube::polycube::POLYCUBE;
 use dualcube::prelude::*;
 use dualcube::solutions::{Loop, LoopID};
@@ -18,16 +19,12 @@ use std::path::PathBuf;
 
 async fn run_job(job: Job) -> Option<JobResult> {
     match job {
-        Job::Hex {
-        	solution,
-        	path,
-         } => {
-	         if let Err(err) = io::HEX::export(&solution, &path) {
-	             warn!("Failed to export HEX file: {err:?}");
-	         }
-         None
-
-         },
+        Job::Hex { solution, path } => {
+            if let Err(err) = io::HEX::export(&solution, &path) {
+                warn!("Failed to export HEX file: {err:?}");
+            }
+            None
+        }
         Job::Import {
             path,
             configuration,
@@ -53,17 +50,9 @@ async fn run_job(job: Job) -> Option<JobResult> {
             let mut solution = solution.clone();
 
             let mesh = &solution.mesh_ref;
-            let mut field_x = dualcube::field::Field::from_mesh(mesh);
-            let mut field_y = dualcube::field::Field::from_mesh(mesh);
-            let mut field_z = dualcube::field::Field::from_mesh(mesh);
-            field_x.align_with_normals(mesh, Vector3D::from(PrincipalDirection::X));
-            field_y.align_with_normals(mesh, Vector3D::from(PrincipalDirection::Y));
-            field_z.align_with_normals(mesh, Vector3D::from(PrincipalDirection::Z));
-            solution.fields = Some(dualcube::field::Fields {
-                field_x,
-                field_y,
-                field_z,
-            });
+            let fields =
+                dualcube::gfield::Fields::from_mesh_with_params(&mesh, configuration.fields_params);
+            solution.fields = Some(fields);
 
             return Some(JobResult::Refreshed(render::refresh(&solution)));
         }
@@ -494,7 +483,6 @@ fn poll_jobs(
                         solution: solution_resource.current_solution.clone(),
                     })));
                 }
-
 
                 Some(JobResult::Imported((solution, configuration))) => {
                     *input_resource = InputResource::new(solution.mesh_ref.clone());

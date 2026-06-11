@@ -68,6 +68,8 @@ pub struct Configuration {
     pub stop: Phase,
 
     pub clear_color: [u8; 3],
+
+    pub fields_params: dualcube::gfield::FieldParams,
 }
 
 impl Default for Configuration {
@@ -98,6 +100,8 @@ impl Default for Configuration {
             camera_translate_sensitivity: 2.,
             camera_zoom_sensitivity: 0.2,
             automatic_rotation_camera: true,
+
+            fields_params: dualcube::gfield::FieldParams::default(),
         };
 
         #[cfg(feature = "light_mode")]
@@ -298,7 +302,6 @@ fn main() {
         .add_systems(Update, render::update_camera_settings)
         .add_systems(Update, render::update_render_settings)
         .add_systems(Update, controls::system)
-        .add_systems(Update, update_field)
         .run();
 }
 
@@ -310,18 +313,4 @@ fn vec3_to_vector3d(v: Vec3) -> Vector3D {
 #[inline]
 fn vector3d_to_vec3(v: Vector3D) -> Vec3 {
     Vec3::new(v.x as f32, v.y as f32, v.z as f32)
-}
-
-pub fn update_field(mut sol_res: ResMut<SolutionResource>) {
-    // If field_res is empty (None), then initialize it
-    if sol_res.current_solution.fields.is_none() {
-        let field_x = dualcube::field::Field::from_mesh(&sol_res.current_solution.mesh_ref);
-        let field_y = dualcube::field::Field::from_mesh(&sol_res.current_solution.mesh_ref);
-        let field_z = dualcube::field::Field::from_mesh(&sol_res.current_solution.mesh_ref);
-        sol_res.current_solution.fields = Some(dualcube::field::Fields {
-            field_x,
-            field_y,
-            field_z,
-        });
-    }
 }

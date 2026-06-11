@@ -76,6 +76,8 @@ impl<T: Tag> ElasticaGraph<T> {
         beta_curvature: f64,
         beta_axis: f64,
     ) -> Self {
+        return Self::default();
+
         let threshold_radians = (threshold_degrees as f64).to_radians();
 
         // --------------------------------------------------------------------
