@@ -18,6 +18,7 @@ pub enum Phase {
     None,
     Input,
     Field,
+    Graph,
     Loops,
     Dual,
     Layout,
@@ -63,7 +64,8 @@ pub struct Configuration {
 
     pub clear_color: [u8; 3],
 
-    pub fields_params: dualcube::gfield::FieldParams,
+    pub fields_params: dualcube::flow::FieldParams,
+    pub graph_params: dualcube::flow::GraphParams,
 }
 
 impl Default for Configuration {
@@ -99,7 +101,8 @@ impl Default for Configuration {
             camera_zoom_sensitivity: 0.2,
             automatic_rotation_camera: true,
 
-            fields_params: dualcube::gfield::FieldParams::default(),
+            fields_params: dualcube::flow::FieldParams::default(),
+            graph_params: dualcube::flow::GraphParams::default(),
         }
     }
 }

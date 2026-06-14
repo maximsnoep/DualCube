@@ -1,11 +1,18 @@
+// Folders are prefixed (a_, b_, ...) so they sort in pipeline order in the file
+// tree, while the module names stay clean (`flow`, `loops`, `dual`, ...).
+#[path = "c_dual/mod.rs"]
 pub mod dual;
-pub mod elastica;
-pub mod feature;
-pub mod gfield;
+#[path = "a_flow/mod.rs"]
+pub mod flow;
+#[path = "g_hex/mod.rs"]
 pub mod hex;
+#[path = "d_layout/mod.rs"]
 pub mod layout;
-pub mod pca;
+#[path = "b_loops/mod.rs"]
+pub mod loops;
+#[path = "e_polycube/mod.rs"]
 pub mod polycube;
+#[path = "f_quad/mod.rs"]
 pub mod quad;
 pub mod solutions;
 

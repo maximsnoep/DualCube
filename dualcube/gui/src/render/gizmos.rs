@@ -133,6 +133,69 @@ pub fn edge_endpoints_view<M: Tag>(
     )
 }
 
+/// Gizmos visualizing a single flow graph (one principal direction).
+///
+/// Each entry of `edges` is a directed flow-graph edge `(from, to, weight)`
+/// between two half-edges of `mesh`; we draw a line from the `from` half-edge's
+/// midpoint to the midpoint of the segment connecting the two half-edges, so the
+/// two directed copies of an edge color their own half independently.
+///
+/// Low-weight (good) edges are drawn bright and opaque in `base_color`; as the
+/// weight grows the edge fades toward black and becomes more transparent, so
+/// high-weight (bad) edges visually disappear.
+#[must_use]
+pub fn flow_graph_gizmos(
+    edges: &[(EdgeID, EdgeID, f64)],
+    mesh: &mehsh::prelude::Mesh<INPUT>,
+    base_color: colors::Color,
+    translation: Vector3D,
+    scale: f64,
+) -> GizmoAsset {
+    let mut gizmos = GizmoAsset::new();
+
+    // Determine the weight range, ignoring the free twin transitions (weight ~0,
+    // which connect a half-edge to its twin and would be drawn as zero-length).
+    let (mut min_weight, mut max_weight) = (f64::MAX, f64::MIN);
+    for &(_, _, weight) in edges {
+        if weight <= 1e-9 {
+            continue;
+        }
+        min_weight = min_weight.min(weight);
+        max_weight = max_weight.max(weight);
+    }
+    if max_weight <= min_weight {
+        return gizmos;
+    }
+
+    for &(from, to, weight) in edges {
+        if weight <= 1e-9 {
+            continue;
+        }
+
+        let from_mid = mesh.position(from);
+        let segment_mid = (from_mid + mesh.position(to)) * 0.5;
+
+        // Normalize: 0 = lowest weight (best), 1 = highest weight (worst).
+        let t = ((weight - min_weight) / (max_weight - min_weight)).clamp(0.0, 1.0) as f32;
+        // Brightness: bright for low weight, fading to black for high weight.
+        let brightness = 1.0 - t;
+        let color = bevy::color::Color::srgba(
+            base_color[0] * brightness,
+            base_color[1] * brightness,
+            base_color[2] * brightness,
+            0.1 + 0.9 * brightness,
+        );
+
+        gizmos.line(
+            world_to_view(from_mid, translation, scale),
+            world_to_view(segment_mid, translation, scale),
+            color,
+        );
+    }
+
+    gizmos
+}
+
 /// Gizmos for the layout paths, drawn on `position_mesh` (which must share edge
 /// ids with the layout's granulated mesh). Returns `(paths, flat_paths)`:
 /// `flat_paths` contains all path segments, `paths` only those between polycube

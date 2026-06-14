@@ -1,5 +1,5 @@
+use crate::loops::{Loop, LoopID};
 use crate::prelude::*;
-use crate::solutions::{Loop, LoopID};
 use grapff::Grapff;
 use itertools::Itertools;
 use log::{error, info};
@@ -104,7 +104,10 @@ impl Default for PropertyViolationError {
 }
 
 impl Dual {
-    pub fn from(mesh_ref: Arc<Mesh<INPUT>>, loops_ref: &SlotMap<LoopID, Loop>) -> Result<Self, PropertyViolationError> {
+    pub fn from(
+        mesh_ref: Arc<Mesh<INPUT>>,
+        loops_ref: &SlotMap<LoopID, Loop>,
+    ) -> Result<Self, PropertyViolationError> {
         let mut dual = Self {
             mesh_ref,
             loops_ref: loops_ref.clone(),
@@ -158,7 +161,10 @@ impl Dual {
         let Some([start, end]) = self.loop_structure.vertices(segment).collect_array::<2>() else {
             panic!("Expecting segment {segment:?} to have exactly two endpoints");
         };
-        (self.intersection_to_edge(start), self.intersection_to_edge(end))
+        (
+            self.intersection_to_edge(start),
+            self.intersection_to_edge(end),
+        )
     }
 
     #[must_use]
@@ -170,7 +176,13 @@ impl Dual {
     pub fn vert_to_region(&self, vert: VertID) -> LoopRegionID {
         self.loop_regions
             .iter()
-            .find_map(|(region_id, region)| if region.verts.contains(&vert) { Some(*region_id) } else { None })
+            .find_map(|(region_id, region)| {
+                if region.verts.contains(&vert) {
+                    Some(*region_id)
+                } else {
+                    None
+                }
+            })
             .unwrap()
     }
 
@@ -233,11 +245,17 @@ impl Dual {
                 let candidate_missing2 = self.mesh_ref.twin(to);
 
                 // the true missing edge is the one that is twin to one and shares face with the other.
-                let candidate_missing1_is_true = self.mesh_ref.face(candidate_missing1) == self.mesh_ref.face(to);
-                let candidate_missing2_is_true = self.mesh_ref.face(candidate_missing2) == self.mesh_ref.face(from);
+                let candidate_missing1_is_true =
+                    self.mesh_ref.face(candidate_missing1) == self.mesh_ref.face(to);
+                let candidate_missing2_is_true =
+                    self.mesh_ref.face(candidate_missing2) == self.mesh_ref.face(from);
                 assert!(candidate_missing1_is_true ^ candidate_missing2_is_true);
 
-                let missing = if candidate_missing1_is_true { candidate_missing1 } else { candidate_missing2 };
+                let missing = if candidate_missing1_is_true {
+                    candidate_missing1
+                } else {
+                    candidate_missing2
+                };
 
                 fixed_edges.push(from);
                 fixed_edges.push(missing);
@@ -310,7 +328,11 @@ impl Dual {
             .map(|(loop_id, lewp)| {
                 (
                     loop_id,
-                    lewp.edges.iter().filter(|edge| intersection_markers.contains_key(edge)).copied().collect_vec(),
+                    lewp.edges
+                        .iter()
+                        .filter(|edge| intersection_markers.contains_key(edge))
+                        .copied()
+                        .collect_vec(),
                 )
             })
             .collect();
@@ -357,14 +379,29 @@ impl Dual {
             let ordered_adjacent_intersections = quad
                 .iter()
                 .filter_map(|&x| match x {
-                    x if x == l1_edges_next => Some((l1, l1_next_intersection, Orientation::Forwards)),
-                    x if x == l1_edges_prev => Some((l1, l1_prev_intersection, Orientation::Backwards)),
-                    x if x == l2_edges_next => Some((l2, l2_next_intersection, Orientation::Forwards)),
-                    x if x == l2_edges_prev => Some((l2, l2_prev_intersection, Orientation::Backwards)),
+                    x if x == l1_edges_next => {
+                        Some((l1, l1_next_intersection, Orientation::Forwards))
+                    }
+                    x if x == l1_edges_prev => {
+                        Some((l1, l1_prev_intersection, Orientation::Backwards))
+                    }
+                    x if x == l2_edges_next => {
+                        Some((l2, l2_next_intersection, Orientation::Forwards))
+                    }
+                    x if x == l2_edges_prev => {
+                        Some((l2, l2_prev_intersection, Orientation::Backwards))
+                    }
                     _ => None,
                 })
                 .collect_vec();
-            if (ordered_adjacent_intersections.len() != 4) || (ordered_adjacent_intersections.iter().map(|x| x.1).collect::<HashSet<_>>().len() != 4) {
+            if (ordered_adjacent_intersections.len() != 4)
+                || (ordered_adjacent_intersections
+                    .iter()
+                    .map(|x| x.1)
+                    .collect::<HashSet<_>>()
+                    .len()
+                    != 4)
+            {
                 error!(
                     "Invalid intersection: ordered adjacent intersections are not unique or not 4. {:?} ({:?})",
                     ordered_adjacent_intersections, quad
@@ -373,7 +410,14 @@ impl Dual {
             }
 
             assert!(ordered_adjacent_intersections.len() == 4);
-            assert!(ordered_adjacent_intersections.iter().map(|x| x.1).collect::<HashSet<_>>().len() == 4);
+            assert!(
+                ordered_adjacent_intersections
+                    .iter()
+                    .map(|x| x.1)
+                    .collect::<HashSet<_>>()
+                    .len()
+                    == 4
+            );
 
             if ordered_adjacent_intersections[0].0 == ordered_adjacent_intersections[1].0 {
                 error!("[0].0 == [1].0: {:?}", ordered_adjacent_intersections[0].0);
@@ -413,7 +457,11 @@ impl Dual {
 
         // Create DCEL based on the intersections and loop regions
         // Construct all faces
-        let edge_id_to_index: HashMap<EdgeID, usize> = intersections.keys().enumerate().map(|(i, &e)| (e, i)).collect();
+        let edge_id_to_index: HashMap<EdgeID, usize> = intersections
+            .keys()
+            .enumerate()
+            .map(|(i, &e)| (e, i))
+            .collect();
 
         let mut edges = intersections
             .iter()
@@ -444,14 +492,19 @@ impl Dual {
             faces.push(face.iter().map(|&x| edge_id_to_index[&x]).collect_vec());
         }
 
-        if let Ok((douconel, vmap, _)) = LoopStructure::from(&faces, &vec![Vector3D::new(0., 0., 0.); intersections.len()]) {
+        if let Ok((douconel, vmap, _)) = LoopStructure::from(
+            &faces,
+            &vec![Vector3D::new(0., 0., 0.); intersections.len()],
+        ) {
             assert!(4 * douconel.vert_ids().len() == douconel.edge_ids().len());
 
             let intersection_ids = intersections.keys().copied().collect_vec();
             let vert_ids = douconel.vert_ids();
             for vertex_id in vert_ids {
-                self.intersection_to_edge
-                    .insert(vertex_id, intersection_ids[vmap.id(&vertex_id).unwrap().to_owned()]);
+                self.intersection_to_edge.insert(
+                    vertex_id,
+                    intersection_ids[vmap.id(&vertex_id).unwrap().to_owned()],
+                );
             }
             for edge_id in douconel.edge_ids() {
                 let Some([this, next]) = douconel.vertices(edge_id).collect_array::<2>() else {
@@ -460,9 +513,19 @@ impl Dual {
                 let this = self.intersection_to_edge(this);
                 let next = self.intersection_to_edge(next);
 
-                let (loop_id, _, orientation) = intersections[&this].iter().find(|&(_, x, _)| *x == next).unwrap().to_owned();
+                let (loop_id, _, orientation) = intersections[&this]
+                    .iter()
+                    .find(|&(_, x, _)| *x == next)
+                    .unwrap()
+                    .to_owned();
 
-                self.loop_segments.insert(edge_id, LoopSegment { loop_id, orientation });
+                self.loop_segments.insert(
+                    edge_id,
+                    LoopSegment {
+                        loop_id,
+                        orientation,
+                    },
+                );
             }
 
             self.loop_structure = douconel;
@@ -476,13 +539,25 @@ impl Dual {
 
     fn assign_subsurfaces(&mut self) -> Result<(), PropertyViolationError> {
         // All edges contained in loops can be considered blocked
-        let blocked = self.loops_ref.values().flat_map(|lewp| lewp.edges.iter().copied()).collect::<HashSet<_>>();
+        let blocked = self
+            .loops_ref
+            .values()
+            .flat_map(|lewp| lewp.edges.iter().copied())
+            .collect::<HashSet<_>>();
         // Then all connected components of the mesh that are not blocked are loop regions
 
         let loop_regions = grapff::fluid::FluidGraph::new(|vertex: VertKey<INPUT>| {
             self.mesh_ref
                 .neighbors(vertex)
-                .filter(|&neighbor| !blocked.contains(&self.mesh_ref.edge_between_verts(vertex, neighbor).unwrap().0))
+                .filter(|&neighbor| {
+                    !blocked.contains(
+                        &self
+                            .mesh_ref
+                            .edge_between_verts(vertex, neighbor)
+                            .unwrap()
+                            .0,
+                    )
+                })
                 .collect_vec()
         })
         .connected_components(&self.mesh_ref.vert_ids());
@@ -503,11 +578,18 @@ impl Dual {
             // Loop segment should simply have only two connected components (one for each side)
             // We do not check all its edges, but only the first one (since they should all be the same)
             let arbitrary_edge = self.segment_to_edges_excl(segment_id)[0];
-            let Some([start, end]) = self.mesh_ref.vertices(arbitrary_edge).collect_array::<2>() else {
+            let Some([start, end]) = self.mesh_ref.vertices(arbitrary_edge).collect_array::<2>()
+            else {
                 panic!("Expecting edge {arbitrary_edge:?} to have exactly two vertices");
             };
-            let component1 = loop_regions.iter().position(|cc| cc.contains(&start)).unwrap();
-            let component2 = loop_regions.iter().position(|cc| cc.contains(&end)).unwrap();
+            let component1 = loop_regions
+                .iter()
+                .position(|cc| cc.contains(&start))
+                .unwrap();
+            let component2 = loop_regions
+                .iter()
+                .position(|cc| cc.contains(&end))
+                .unwrap();
             segment_to_components.insert(segment_id, [component1, component2]);
         }
 
@@ -515,9 +597,11 @@ impl Dual {
         for &face_id in &self.loop_structure.face_ids() {
             let mut loop_segments = self.loop_structure.edges(face_id);
             // Select an arbitrary loop segment
-            let [component1, component2] = segment_to_components[&self.loop_structure.edges(face_id).next().unwrap()];
+            let [component1, component2] =
+                segment_to_components[&self.loop_structure.edges(face_id).next().unwrap()];
             // Check whether all loop segments share the same connected component
-            let component1_is_shared = loop_segments.all(|segment| segment_to_components[&segment].contains(&component1));
+            let component1_is_shared =
+                loop_segments.all(|segment| segment_to_components[&segment].contains(&component1));
 
             self.loop_regions.insert(
                 face_id,
@@ -538,7 +622,11 @@ impl Dual {
         // A zone is a collection of loop regions that are connected, and are bounded by only one type of loop segment (either X, Y, or Z).
         self.level_graphs.zones = SlotMap::with_key();
 
-        for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
+        for direction in [
+            PrincipalDirection::X,
+            PrincipalDirection::Y,
+            PrincipalDirection::Z,
+        ] {
             // All loop segments with the given direction are blocked
             let blocked = self
                 .loop_structure
@@ -550,17 +638,32 @@ impl Dual {
             // Then all connected components of the loop structure that are not blocked are zones
             let zones = grapff::fluid::FluidGraph::new(|loop_region_id: LoopRegionID| {
                 let mut neighbors = self.loop_structure.neighbors(loop_region_id).collect_vec();
-                neighbors.retain(|&neighbor_id| !blocked.contains(&self.loop_structure.edge_between_faces(loop_region_id, neighbor_id).unwrap().0));
+                neighbors.retain(|&neighbor_id| {
+                    !blocked.contains(
+                        &self
+                            .loop_structure
+                            .edge_between_faces(loop_region_id, neighbor_id)
+                            .unwrap()
+                            .0,
+                    )
+                });
                 neighbors
             })
             .connected_components(&self.loop_structure.face_ids());
 
             for zone in zones {
-                self.level_graphs.zones.insert(Zone { direction, regions: zone });
+                self.level_graphs.zones.insert(Zone {
+                    direction,
+                    regions: zone,
+                });
             }
         }
 
-        for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
+        for direction in [
+            PrincipalDirection::X,
+            PrincipalDirection::Y,
+            PrincipalDirection::Z,
+        ] {
             // Add all the zones as nodes to the level graph
             let mut edges = vec![];
 
@@ -575,7 +678,12 @@ impl Dual {
             // Create a mapping from loop regions to zones
             let region_to_zone = zone_ids
                 .iter()
-                .flat_map(|&zone_id| self.level_graphs.zones[zone_id].regions.iter().map(move |&region_id| (region_id, zone_id)))
+                .flat_map(|&zone_id| {
+                    self.level_graphs.zones[zone_id]
+                        .regions
+                        .iter()
+                        .map(move |&region_id| (region_id, zone_id))
+                })
                 .collect::<HashMap<_, _>>();
             self.level_graphs.region_to_zones[direction as usize] = region_to_zone;
 
@@ -586,39 +694,62 @@ impl Dual {
                     .iter()
                     .flat_map(|&region_id| self.loop_structure.edges(region_id))
                     .filter(|&segment_id| {
-                        self.segment_to_direction(segment_id) == direction && self.segment_to_orientation(segment_id) == Orientation::Forwards
+                        self.segment_to_direction(segment_id) == direction
+                            && self.segment_to_orientation(segment_id) == Orientation::Forwards
                     });
                 // The adjacent loop regions of this zone
                 let adjacent_regions = segments.map(|segment_id| {
                     let corresponding_loop = self.segment_to_loop(segment_id);
-                    (self.loop_structure.face(self.loop_structure.twin(segment_id)), corresponding_loop)
+                    (
+                        self.loop_structure
+                            .face(self.loop_structure.twin(segment_id)),
+                        corresponding_loop,
+                    )
                 });
                 // The adjacent zones of this zone
-                let adjacent_zones = adjacent_regions.map(|(region_id, corresponding_loop)| (self.region_to_zone(region_id, direction), corresponding_loop));
+                let adjacent_zones = adjacent_regions.map(|(region_id, corresponding_loop)| {
+                    (
+                        self.region_to_zone(region_id, direction),
+                        corresponding_loop,
+                    )
+                });
 
                 for (adjacent_id, loop_id) in adjacent_zones {
                     edges.push((zone_id, adjacent_id, loop_id));
                 }
-
-                self.level_graphs.graphs[direction as usize] = grapff::fixed::FixedGraph::from(zone_ids.clone(), edges.clone());
             }
+
+            // Build the level graph once, after collecting every zone's edges
+            // (previously this was rebuilt on every iteration of the loop above).
+            self.level_graphs.graphs[direction as usize] =
+                grapff::fixed::FixedGraph::from(zone_ids, edges);
         }
     }
 
     pub fn assign_levels(&mut self) {
-        for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
+        for direction in [
+            PrincipalDirection::X,
+            PrincipalDirection::Y,
+            PrincipalDirection::Z,
+        ] {
             let graph = &self.level_graphs.graphs[direction as usize];
             let mut topo_sort = graph.topological_sort().unwrap();
 
-            println!("{:?}", topo_sort);
+            log::debug!(
+                "assign_levels: {direction} topological order over {} zones: {topo_sort:?}",
+                topo_sort.len()
+            );
             let mut levels = HashMap::new();
             levels.insert(topo_sort.first().unwrap().to_owned(), 100_000usize);
 
             for node in topo_sort.clone() {
-                println!("Visiting node: {:?}", node);
+                log::debug!("assign_levels: forward pass visiting zone {node:?}");
                 if let Some(node_level) = levels.get(&node).cloned() {
                     for neighbor in graph.neighbors_undirected(node) {
-                        match (graph.directed_edge_exists(node, neighbor), graph.directed_edge_exists(neighbor, node)) {
+                        match (
+                            graph.directed_edge_exists(node, neighbor),
+                            graph.directed_edge_exists(neighbor, node),
+                        ) {
                             (true, false) => {
                                 if levels.contains_key(&neighbor) {
                                     let cur = levels[&neighbor];
@@ -646,10 +777,13 @@ impl Dual {
             topo_sort.reverse();
 
             for node in topo_sort {
-                println!("Visiting node: {:?}", node);
+                log::debug!("assign_levels: backward pass visiting zone {node:?}");
                 if let Some(node_level) = levels.get(&node).cloned() {
                     for neighbor in graph.neighbors_undirected(node) {
-                        match (graph.directed_edge_exists(node, neighbor), graph.directed_edge_exists(neighbor, node)) {
+                        match (
+                            graph.directed_edge_exists(node, neighbor),
+                            graph.directed_edge_exists(neighbor, node),
+                        ) {
                             (true, false) => {
                                 if levels.contains_key(&neighbor) {
                                     let cur = levels[&neighbor];
@@ -679,7 +813,8 @@ impl Dual {
             for (zone_id, level) in levels {
                 level_to_zone.insert(zone_id, level - minimum);
             }
-            self.level_graphs.levels[direction as usize] = vec![HashSet::new(); *level_to_zone.values().max().unwrap() + 1];
+            self.level_graphs.levels[direction as usize] =
+                vec![HashSet::new(); *level_to_zone.values().max().unwrap() + 1];
             for (zone_id, level) in level_to_zone {
                 self.level_graphs.levels[direction as usize][level].insert(zone_id);
             }
@@ -726,7 +861,8 @@ impl Dual {
 
         // Verify 5.
         for graph in &self.level_graphs.graphs {
-            let topological_sort = grapff::fluid::FluidGraph::new(|z| graph.neighbors(z)).topological_sort(&graph.nodes());
+            let topological_sort = grapff::fluid::FluidGraph::new(|z| graph.neighbors(z))
+                .topological_sort(&graph.nodes());
 
             if topological_sort.is_none() {
                 return Err(PropertyViolationError::CyclicDependency);

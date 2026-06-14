@@ -1,7 +1,6 @@
 use crate::parser::{Args, Command};
 use dualcube::prelude::*;
 use io::Export;
-use mehsh::prelude::{HasNormal, HasPosition};
 use std::path::{Path, PathBuf};
 
 pub fn run(args: anyhow::Result<Args>) -> anyhow::Result<()> {
@@ -30,7 +29,6 @@ pub fn run(args: anyhow::Result<Args>) -> anyhow::Result<()> {
             omega,
         } => {
             let mut solution = io::import_solution(input.clone());
-            let flow_graphs = build_flow_graphs(&solution.mesh_ref);
 
             if samples != 3 {
                 println!(
@@ -38,7 +36,7 @@ pub fn run(args: anyhow::Result<Args>) -> anyhow::Result<()> {
                 );
             }
 
-            solution.initialize(&flow_graphs);
+            solution.initialize();
 
             if reconstruct {
                 solution.reconstruct_solution(unit, omega)?;
@@ -60,9 +58,8 @@ pub fn run(args: anyhow::Result<Args>) -> anyhow::Result<()> {
             omega,
         } => {
             let solution = io::import_solution(input.clone());
-            let flow_graphs = build_flow_graphs(&solution.mesh_ref);
 
-            let Some(mut evolved) = solution.evolve(iterations, pool1, pool2, &flow_graphs) else {
+            let Some(mut evolved) = solution.evolve(iterations, pool1, pool2) else {
                 anyhow::bail!("evolution produced no valid solution");
             };
 
@@ -119,7 +116,7 @@ fn export_solution(solution: &Solution, output: &Path) -> anyhow::Result<()> {
 
 fn export_solution_as(solution: &Solution, output: &Path, format: &str) -> anyhow::Result<()> {
     match format {
-        "dsol" => io::Dsol::export(solution, output),
+        "dc" => io::Dc::export(solution, output),
         "obj" => io::OBJ::export(solution, output),
         "flag" => io::Flag::export(solution, output),
         "apg" => io::APG::export(solution, output),
@@ -128,58 +125,6 @@ fn export_solution_as(solution: &Solution, output: &Path, format: &str) -> anyho
         "hex" | "hex.mesh" => io::HEX::export(solution, output),
         other => anyhow::bail!("unsupported export format: {other}"),
     }
-}
-
-fn build_flow_graphs(
-    mesh: &std::sync::Arc<mehsh::prelude::Mesh<INPUT>>,
-) -> [grapff::fixed::FixedGraph<EdgeID, f64>; 3] {
-    use itertools::Itertools;
-    use rayon::iter::{IntoParallelIterator, ParallelIterator};
-
-    let nodes = mesh.edge_ids();
-    let mut flow_graphs = [
-        grapff::fixed::FixedGraph::default(),
-        grapff::fixed::FixedGraph::default(),
-        grapff::fixed::FixedGraph::default(),
-    ];
-
-    for axis in [
-        PrincipalDirection::X,
-        PrincipalDirection::Y,
-        PrincipalDirection::Z,
-    ] {
-        let edges = nodes
-            .clone()
-            .into_par_iter()
-            .flat_map(|node| {
-                mesh.neighbor_function_edgegraph()(node)
-                    .into_iter()
-                    .map(|neighbor| {
-                        let face1 = mesh.face(node);
-                        let face2 = mesh.face(neighbor);
-
-                        if face1 == face2 {
-                            let normal = mesh.normal(face1);
-                            let m1 = mesh.position(node);
-                            let m2 = mesh.position(neighbor);
-                            let direction = m2 - m1;
-                            let cross = direction.cross(&normal);
-                            let angle = cross.angle(&Into::into(axis));
-
-                            (node, neighbor, angle)
-                        } else {
-                            assert!(mesh.twin(node) == neighbor);
-                            (node, neighbor, 0.0)
-                        }
-                    })
-                    .collect_vec()
-            })
-            .collect::<Vec<_>>();
-
-        flow_graphs[axis as usize] = grapff::fixed::FixedGraph::from(nodes.clone(), edges);
-    }
-
-    flow_graphs
 }
 
 fn print_solution_summary(command: &str, input: &Path, output: &Path, solution: &Solution) {

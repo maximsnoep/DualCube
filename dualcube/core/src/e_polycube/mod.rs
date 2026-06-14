@@ -154,11 +154,12 @@ impl Polycube {
             PrincipalDirection::Z,
         ] {
             for (level, verts_in_level) in levels[direction as usize].iter() {
-                println!("Level {:?}", level);
                 let value = level * scale;
                 // round to nearest integer
                 let value = value.round();
-                println!("New level {:?}", value);
+                log::debug!(
+                    "resize: {direction} level {level:.4} scaled to integer coordinate {value}"
+                );
                 for vert in verts_in_level {
                     vert_to_coord.get_mut(vert).unwrap()[direction as usize] = value;
                 }

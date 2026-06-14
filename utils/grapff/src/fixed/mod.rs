@@ -12,6 +12,7 @@ use std::collections::HashMap;
 pub struct FixedGraph<V: Eq + PartialEq + Hash, E> {
     petgraph: Graph<V, E, Directed>,
     node_to_index: HashMap<V, NodeIndex>,
+    edge_to_weight: HashMap<(V, V), E>,
     nodes: Vec<V>,
     edges: Vec<(V, V, E)>,
 }
@@ -20,12 +21,22 @@ impl<V: Eq + PartialEq + Hash + Default + Copy, E: Copy> FixedGraph<V, E> {
     #[must_use]
     pub fn from(nodes: Vec<V>, edges: Vec<(V, V, E)>) -> Self {
         let mut petgraph = Graph::with_capacity(nodes.len(), edges.len());
-        let node_to_index: HashMap<V, NodeIndex> = nodes.iter().map(|&node| (node, petgraph.add_node(node))).collect();
-        let edges_indexed = edges.iter().map(|(from, to, w)| (node_to_index[from], node_to_index[to], w));
+        let node_to_index: HashMap<V, NodeIndex> = nodes
+            .iter()
+            .map(|&node| (node, petgraph.add_node(node)))
+            .collect();
+        let edges_indexed = edges
+            .iter()
+            .map(|(from, to, w)| (node_to_index[from], node_to_index[to], w));
         petgraph.extend_with_edges(edges_indexed);
+        let edge_to_weight = edges
+            .iter()
+            .map(|&(from, to, weight)| ((from, to), weight))
+            .collect();
         Self {
             petgraph,
             node_to_index,
+            edge_to_weight,
             nodes,
             edges,
         }
@@ -44,13 +55,23 @@ impl<V: Eq + PartialEq + Hash + Default + Copy, E: Copy> FixedGraph<V, E> {
     #[must_use]
     pub fn filter_edges(&self, predicate: impl Fn((&V, &V)) -> bool) -> Self {
         let nodes = self.nodes.clone();
-        let edges = self.edges.iter().filter(|(from, to, _)| predicate((from, to))).copied().collect_vec();
+        let edges = self
+            .edges
+            .iter()
+            .filter(|(from, to, _)| predicate((from, to)))
+            .copied()
+            .collect_vec();
         Self::from(nodes, edges)
     }
 
     #[must_use]
     pub fn filter_nodes(&self, predicate: impl Fn(&V) -> bool) -> Self {
-        let nodes = self.nodes.iter().filter(|&&node| predicate(&node)).copied().collect_vec();
+        let nodes = self
+            .nodes
+            .iter()
+            .filter(|&&node| predicate(&node))
+            .copied()
+            .collect_vec();
         let edges = self
             .edges
             .iter()
@@ -61,13 +82,20 @@ impl<V: Eq + PartialEq + Hash + Default + Copy, E: Copy> FixedGraph<V, E> {
     }
 
     pub fn extend(&mut self, nodes: &[V], edges: &[(V, V, E)]) {
-        let extra_node_to_index: HashMap<V, NodeIndex> = nodes.iter().map(|&node| (node, self.petgraph.add_node(node))).collect();
+        let extra_node_to_index: HashMap<V, NodeIndex> = nodes
+            .iter()
+            .map(|&node| (node, self.petgraph.add_node(node)))
+            .collect();
         self.node_to_index.extend(extra_node_to_index);
 
-        let extra_edges_indexed = edges.iter().map(|(from, to, w)| (self.node_to_index[from], self.node_to_index[to], w));
+        let extra_edges_indexed = edges
+            .iter()
+            .map(|(from, to, w)| (self.node_to_index[from], self.node_to_index[to], w));
         self.petgraph.extend_with_edges(extra_edges_indexed);
 
         self.edges.extend_from_slice(edges);
+        self.edge_to_weight
+            .extend(edges.iter().map(|&(from, to, weight)| ((from, to), weight)));
     }
 
     #[must_use]
@@ -81,7 +109,7 @@ impl<V: Eq + PartialEq + Hash + Default + Copy, E: Copy> FixedGraph<V, E> {
     }
 
     pub fn directed_edge_exists(&self, a: V, b: V) -> bool {
-        self.neighbors(a).iter().any(|n| n == &b)
+        self.edge_to_weight.contains_key(&(a, b))
     }
 
     pub fn node_exists(&self, a: V) -> bool {
@@ -119,20 +147,36 @@ impl<V: Eq + PartialEq + Hash + Default + Copy, E: Copy> FixedGraph<V, E> {
     //         .map(|(path, _)| path)
     // }
 
-    pub fn shortest_cycle_edge<F: Fn(E) -> Float>(&self, (a, b): (V, V), measure: &F) -> Option<(Float, Vec<V>)> {
+    pub fn shortest_cycle_edge<F: Fn(E) -> Float>(
+        &self,
+        (a, b): (V, V),
+        measure: &F,
+    ) -> Option<(Float, Vec<V>)> {
         let path = self.shortest_path(b, a, measure);
         path.map(|(cost, path)| (path, cost))
     }
 
     #[must_use]
     pub fn get_weight(&self, a: NodeIndex, b: NodeIndex) -> E {
-        self.petgraph.edges_connecting(a, b).next().unwrap().weight().to_owned()
+        let from = *self.index_to_node(a).unwrap();
+        let to = *self.index_to_node(b).unwrap();
+        self.get_directed_weight(from, to).unwrap()
+    }
+
+    #[must_use]
+    pub fn get_directed_weight(&self, a: V, b: V) -> Option<E> {
+        self.edge_to_weight.get(&(a, b)).copied()
     }
 
     pub fn topological_sort(&self) -> Option<Vec<V>> {
         petgraph::algo::toposort(&self.petgraph, None)
             .ok()
-            .map(|sorted_indices| sorted_indices.into_iter().map(|index| self.index_to_node(index).unwrap().to_owned()).collect())
+            .map(|sorted_indices| {
+                sorted_indices
+                    .into_iter()
+                    .map(|index| self.index_to_node(index).unwrap().to_owned())
+                    .collect()
+            })
     }
 }
 
@@ -148,7 +192,13 @@ impl<T: Eq + Hash + Clone + Copy + Default, E: Copy> Grapff<T, E> for FixedGraph
         self.shortest_path_heuristic(a, b, w, |_| ZERO)
     }
 
-    fn shortest_path_heuristic(&self, a: T, b: T, w: impl Fn(E) -> Float, h: impl Fn((T, T)) -> Float) -> Option<(Vec<T>, Float)> {
+    fn shortest_path_heuristic(
+        &self,
+        a: T,
+        b: T,
+        w: impl Fn(E) -> Float,
+        h: impl Fn((T, T)) -> Float,
+    ) -> Option<(Vec<T>, Float)> {
         if !self.node_exists(a) || !self.node_exists(b) {
             return None;
         }
@@ -161,7 +211,10 @@ impl<T: Eq + Hash + Clone + Copy + Default, E: Copy> Grapff<T, E> for FixedGraph
         );
 
         let (cost, path) = shortest_path?;
-        let path_nodes = path.into_iter().map(|index| self.index_to_node(index).unwrap().to_owned()).collect();
+        let path_nodes = path
+            .into_iter()
+            .map(|index| self.index_to_node(index).unwrap().to_owned())
+            .collect();
         Some((path_nodes, cost))
     }
 
@@ -172,7 +225,11 @@ impl<T: Eq + Hash + Clone + Copy + Default, E: Copy> Grapff<T, E> for FixedGraph
     fn connected_components(&self, _: &[T]) -> Vec<std::collections::HashSet<T>> {
         tarjan_scc(&self.petgraph)
             .into_iter()
-            .map(|cc| cc.into_iter().map(|index| self.index_to_node(index).unwrap().to_owned()).collect())
+            .map(|cc| {
+                cc.into_iter()
+                    .map(|index| self.index_to_node(index).unwrap().to_owned())
+                    .collect()
+            })
             .collect()
     }
 }

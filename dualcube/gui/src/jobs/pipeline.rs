@@ -16,6 +16,7 @@ use mehsh::prelude::VertKey;
 #[derive(Clone, Copy)]
 pub(super) enum Stage {
     Field,
+    Graph,
     Loops,
     Dual,
     Corners,
@@ -32,6 +33,7 @@ impl Stage {
     pub(super) fn next_job(self, solution: Solution, configuration: Configuration) -> Job {
         let stop_phase = match self {
             Self::Field => Some(Phase::Field),
+            Self::Graph => Some(Phase::Graph),
             Self::Loops => Some(Phase::Loops),
             Self::Dual => Some(Phase::Dual),
             Self::Layout => Some(Phase::Layout),
@@ -45,7 +47,8 @@ impl Stage {
         }
 
         match self {
-            Self::Field => Job::refresh(solution),
+            Self::Field => Job::compute_graph(solution, configuration),
+            Self::Graph => Job::refresh(solution),
             Self::Loops => Job::compute_dual(solution, configuration),
             Self::Dual => Job::refresh(solution),
             Self::Corners => Job::place_paths(solution, configuration),
@@ -108,12 +111,19 @@ impl Job {
     pub fn fields(solution: Solution, configuration: Configuration) -> Self {
         Self::new("computing fields", move || {
             let mut solution = solution.clone();
-            solution.fields = Some(dualcube::gfield::Fields::from_mesh_with_params(
+            solution.fields = Some(dualcube::flow::Fields::from_mesh_with_params(
                 &solution.mesh_ref,
                 configuration.fields_params.clone(),
             ));
-            solution.set_flow_graphs();
             completed(Stage::Field, solution, &configuration)
+        })
+    }
+
+    pub fn compute_graph(solution: Solution, configuration: Configuration) -> Self {
+        Self::new("computing flow graphs", move || {
+            let mut solution = solution.clone();
+            solution.set_flow_graphs_with_params(configuration.graph_params.clone());
+            completed(Stage::Graph, solution, &configuration)
         })
     }
 

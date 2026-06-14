@@ -10,6 +10,7 @@ use ordered_float::OrderedFloat;
 impl Job {
     /// Computes a candidate solution containing a new loop through `anchors`.
     /// The candidate is `None` if no valid loop (or solution) could be found.
+    #[allow(dead_code)]
     pub fn add_loop(
         solution: Solution,
         anchors: Vec<[EdgeID; 2]>,

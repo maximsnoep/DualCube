@@ -60,7 +60,7 @@ impl crate::Export for HEX {
             ],
         )?;
 
-        println!("Pipeline output: {:?}", out);
+        info!("hex pipeline output: {out:?}");
 
         anyhow::Context::with_context(layout.granulated_mesh.to_obj(&path_obj), || {
             format!("writing HEX to {}", path_obj.display())

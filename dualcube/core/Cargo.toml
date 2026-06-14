@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-mehsh = { path = "../../utils/mehsh", features = ["obj", "stl", "petgraph"] }
+mehsh = { path = "../../utils/mehsh", features = ["obj", "stl", "petgraph", "serde"] }
 grapff = { path = "../../utils/grapff" }
 log = "0.4.27"
 nalgebra = "0.32.4"
@@ -15,7 +15,7 @@ bimap = "0.6.3"
 rand = "0.10.1"
 faer = "0.24.0"
 faer_gmres = "0.5.0"
-serde = "1.0.188"
+serde = { version = "1.0.188", features = ["rc"] }
 thiserror = "2.0.17"
 orx-parallel = "3.4.0"
 petgraph = "0.8.2"

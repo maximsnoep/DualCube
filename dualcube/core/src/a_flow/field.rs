@@ -18,7 +18,17 @@ const CURVATURE_ALIGNMENT_SHARPNESS: f64 = 2.0;
 
 const REGULARIZATION: f64 = 1e-8;
 
+const STALL_QUALITY_IMPROVEMENT: f64 = 0.01;
+const STALL_PATIENCE: usize = 5;
+
+const X_AXIS: Vector3D = Vector3D::new(1.0, 0.0, 0.0);
+const Y_AXIS: Vector3D = Vector3D::new(0.0, 1.0, 0.0);
+const Z_AXIS: Vector3D = Vector3D::new(0.0, 0.0, 1.0);
+const C_ZERO: Complex64 = Complex64::new(0.0, 0.0);
+const C_ONE: Complex64 = Complex64::new(1.0, 0.0);
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct FieldParams {
     /// Nonlinear outer iterations.
     pub outer_iterations: usize,
@@ -29,83 +39,57 @@ pub struct FieldParams {
     /// Relative residual tolerance for CG.
     pub cg_tolerance: f64,
 
+    /// Fixed numerical damping toward the previous outer iteration.
+    ///
+    /// Higher values make updates more conservative. Set to 0.0 to disable damping.
+    pub damping_weight: f64,
+
     /// Global connection-Laplacian smoothness.
     ///
     /// Higher values produce fewer unnecessary singularities and smoother fields.
-    /// This is the main paper-style term.
     pub smooth_weight: f64,
 
     /// Optional global around-axis target.
     ///
-    /// Use this for polycube-style X/Y/Z behavior. Set to 0.0 when you do not
-    /// want to prescribe global axes.
+    /// For alignment with X/Y/Z axes. Set to 0.0 when you do not want to prescribe global axes.
     pub axis_weight: f64,
+
+    /// Controls how quickly field-vector length fades with bad axis alignment.
+    ///
+    /// Controls how aggressively field-vector length fades with bad axis alignment.
+    ///
+    /// Only very well aligned vectors stay long: 0° maps to length 1.0, 15° maps
+    /// to about 0.5, and angles of 45° or more map to length 0.1. Higher values
+    /// push more vectors toward the 0.1 minimum.
+    pub axis_length_power: f64,
 
     /// Optional principal-curvature-cross target.
     ///
-    /// This is useful for feature awareness, but it fights polycube coherence if
-    /// set too high.
+    /// For feature awareness (through curvature)
     pub curvature_weight: f64,
 
     /// Local coupling between the three N=1 fields.
     ///
     /// This discourages the three tangent vectors from becoming parallel.
     pub coupling_weight: f64,
-
-    /// Numerical damping to previous outer iteration.
-    ///
-    /// This is not a modeling term. It prevents weakly constrained solves from
-    /// collapsing toward the zero mode before normalization.
-    pub damping_weight: f64,
 }
 
 impl Default for FieldParams {
     fn default() -> Self {
         Self {
-            outer_iterations: 0,
-            cg_iterations: 120,
-            cg_tolerance: 1e-7,
-
-            smooth_weight: 1.0,
-            axis_weight: 0.0,
-            curvature_weight: 0.5,
-            coupling_weight: 0.02,
-
-            damping_weight: 0.03,
-        }
-    }
-}
-
-impl FieldParams {
-    /// Good starting point for polycube-ish fields without hard axis locking.
-    pub fn polycube_free_axes() -> Self {
-        Self {
-            outer_iterations: 25,
-            cg_iterations: 120,
-            cg_tolerance: 1e-7,
-
-            smooth_weight: 1.0,
-            axis_weight: 0.0,
-            curvature_weight: 0.25,
-            coupling_weight: 0.03,
-
-            damping_weight: 0.03,
-        }
-    }
-
-    /// Good starting point when you want actual global X/Y/Z polycube behavior.
-    pub fn polycube_axis_guided() -> Self {
-        Self {
-            outer_iterations: 20,
+            // Should be > 0: with zero outer iterations the optimizer never runs and
+            // `Fields::from_mesh` would return the random initial field.
+            outer_iterations: 10,
             cg_iterations: 100,
             cg_tolerance: 1e-7,
 
+            damping_weight: 0.03,
+
             smooth_weight: 1.0,
             axis_weight: 0.5,
-            curvature_weight: 0.15,
-            coupling_weight: 0.03,
-
-            damping_weight: 0.02,
+            axis_length_power: 3.0,
+            curvature_weight: 0.5,
+            coupling_weight: 0.2,
         }
     }
 }
@@ -169,6 +153,10 @@ struct GlobalSolverCache {
     key_x: Vec<GlobalVectorKey>,
     key_y: Vec<GlobalVectorKey>,
     key_z: Vec<GlobalVectorKey>,
+
+    axis_x: Vec<Option<ComplexTarget>>,
+    axis_y: Vec<Option<ComplexTarget>>,
+    axis_z: Vec<Option<ComplexTarget>>,
 
     curvature: Vec<Option<CurvatureData>>,
 }
@@ -250,9 +238,9 @@ impl<T: Tag> Fields<T> {
     }
 
     fn initialize_around_axes(&mut self, mesh: &Mesh<T>) {
-        initialize_field_around_axis(mesh, &mut self.field_x, Vector3D::new(1.0, 0.0, 0.0));
-        initialize_field_around_axis(mesh, &mut self.field_y, Vector3D::new(0.0, 1.0, 0.0));
-        initialize_field_around_axis(mesh, &mut self.field_z, Vector3D::new(0.0, 0.0, 1.0));
+        initialize_field_around_axis(mesh, &mut self.field_x, X_AXIS);
+        initialize_field_around_axis(mesh, &mut self.field_y, Y_AXIS);
+        initialize_field_around_axis(mesh, &mut self.field_z, Z_AXIS);
     }
 
     fn optimize_global_connection(&mut self, cache: &GlobalSolverCache, params: &FieldParams) {
@@ -268,41 +256,107 @@ impl<T: Tag> Fields<T> {
             previous_energy
         );
 
-        let mut work = CgWorkspace::new(cache.len());
+        let mut stalled_iterations = 0;
 
         for iteration in 0..params.outer_iterations {
-            z_x = solve_one_field(cache, &z_x, Vector3D::new(1.0, 0.0, 0.0), params, &mut work);
+            let (mut next_x, mut next_y, mut next_z) =
+                solve_fields_parallel(cache, &z_x, &z_y, &z_z, params);
 
-            z_y = solve_one_field(cache, &z_y, Vector3D::new(0.0, 1.0, 0.0), params, &mut work);
+            apply_complex_angle_coupling(
+                &mut next_x,
+                &mut next_y,
+                &mut next_z,
+                params.coupling_weight,
+            );
 
-            z_z = solve_one_field(cache, &z_z, Vector3D::new(0.0, 0.0, 1.0), params, &mut work);
-
-            apply_complex_angle_coupling(&mut z_x, &mut z_y, &mut z_z, params.coupling_weight);
-
-            let energy = total_energy(cache, &z_x, &z_y, &z_z, params);
-            let delta = previous_energy - energy;
-            let relative_delta = if previous_energy.abs() > EPS {
-                delta / previous_energy.abs()
-            } else {
-                0.0
-            };
+            let energy = total_energy(cache, &next_x, &next_y, &next_z, params);
+            let improvement = relative_energy_delta(previous_energy - energy, previous_energy);
 
             log::info!(
-                "global N=1 fields: iteration = {}/{}, energy = {:.6e}, delta = {:.6e}, relative_delta = {:.6e}",
+                "global N=1 fields: iteration = {}/{}, energy = {:.6e}, improvement = {:.2}%",
                 iteration + 1,
                 params.outer_iterations,
                 energy,
-                delta,
-                relative_delta
+                improvement * 100.0
             );
 
-            previous_energy = energy;
+            if improvement >= 0.0 {
+                z_x = next_x;
+                z_y = next_y;
+                z_z = next_z;
+                previous_energy = energy;
+            } else {
+                log::info!(
+                    "global N=1 fields: rejected iteration because quality decreased by {:.2}%",
+                    -improvement * 100.0
+                );
+            }
+
+            if improvement < STALL_QUALITY_IMPROVEMENT {
+                stalled_iterations += 1;
+            } else {
+                stalled_iterations = 0;
+            }
+
+            if stalled_iterations >= STALL_PATIENCE {
+                log::info!(
+                    "global N=1 fields: stopping after {} iterations below 1% quality improvement",
+                    STALL_PATIENCE
+                );
+                break;
+            }
         }
 
         complex_to_field(&z_x, &mut self.field_x.vectors, &cache.key_x, cache);
         complex_to_field(&z_y, &mut self.field_y.vectors, &cache.key_y, cache);
         complex_to_field(&z_z, &mut self.field_z.vectors, &cache.key_z, cache);
+
+        apply_axis_alignment_lengths(
+            &mut self.field_x.vectors,
+            &cache.key_x,
+            &cache.axis_x,
+            cache,
+            params,
+        );
+        apply_axis_alignment_lengths(
+            &mut self.field_y.vectors,
+            &cache.key_y,
+            &cache.axis_y,
+            cache,
+            params,
+        );
+        apply_axis_alignment_lengths(
+            &mut self.field_z.vectors,
+            &cache.key_z,
+            &cache.axis_z,
+            cache,
+            params,
+        );
     }
+}
+
+fn solve_fields_parallel(
+    cache: &GlobalSolverCache,
+    z_x: &[Complex64],
+    z_y: &[Complex64],
+    z_z: &[Complex64],
+    params: &FieldParams,
+) -> (Vec<Complex64>, Vec<Complex64>, Vec<Complex64>) {
+    let mut solved: Vec<_> = (0..3)
+        .par()
+        .map(|field| {
+            let (current, axis_targets) = match field {
+                0 => (z_x, &cache.axis_x[..]),
+                1 => (z_y, &cache.axis_y[..]),
+                _ => (z_z, &cache.axis_z[..]),
+            };
+
+            let mut work = CgWorkspace::new(cache.len());
+            solve_one_field(cache, current, axis_targets, params, &mut work)
+        })
+        .collect();
+
+    (solved.remove(0), solved.remove(0), solved.remove(0))
 }
 
 fn build_global_solver_cache<T: Tag>(mesh: &Mesh<T>, fields: &Fields<T>) -> GlobalSolverCache {
@@ -314,12 +368,12 @@ fn build_global_solver_cache<T: Tag>(mesh: &Mesh<T>, fields: &Fields<T>) -> Glob
     }
 
     let normals: Vec<_> = ids
-        .iter()
-        .map(|id| safe_normalize(mesh.normal(*id), Vector3D::new(0.0, 0.0, 1.0)))
+        .par()
+        .map(|id| unit_or(mesh.normal(*id), Z_AXIS))
         .collect();
 
     let bases: Vec<_> = normals
-        .iter()
+        .par()
         .map(|normal| {
             let (e1, e2) = tangent_basis(*normal);
             TangentBasis { e1, e2 }
@@ -365,24 +419,27 @@ fn build_global_solver_cache<T: Tag>(mesh: &Mesh<T>, fields: &Fields<T>) -> Glob
     }
 
     let key_x: Vec<_> = ids
-        .iter()
+        .par()
         .map(|id| *fields.field_x.map.get(id).expect("missing x-field key"))
         .collect();
 
     let key_y: Vec<_> = ids
-        .iter()
+        .par()
         .map(|id| *fields.field_y.map.get(id).expect("missing y-field key"))
         .collect();
 
     let key_z: Vec<_> = ids
-        .iter()
+        .par()
         .map(|id| *fields.field_z.map.get(id).expect("missing z-field key"))
         .collect();
 
+    let axis_x = precompute_axis_targets(&normals, &bases, X_AXIS);
+    let axis_y = precompute_axis_targets(&normals, &bases, Y_AXIS);
+    let axis_z = precompute_axis_targets(&normals, &bases, Z_AXIS);
+
     let curvature: Vec<_> = ids
-        .iter()
-        .zip(normals.iter())
-        .map(|(id, normal)| precompute_curvature_data(mesh, *id, *normal))
+        .par()
+        .map(|id| estimate_curvature_data(mesh, *id))
         .collect();
 
     GlobalSolverCache {
@@ -393,6 +450,9 @@ fn build_global_solver_cache<T: Tag>(mesh: &Mesh<T>, fields: &Fields<T>) -> Glob
         key_x,
         key_y,
         key_z,
+        axis_x,
+        axis_y,
+        axis_z,
         curvature,
     }
 }
@@ -400,7 +460,7 @@ fn build_global_solver_cache<T: Tag>(mesh: &Mesh<T>, fields: &Fields<T>) -> Glob
 fn solve_one_field(
     cache: &GlobalSolverCache,
     current: &[Complex64],
-    axis: Vector3D,
+    axis_targets: &[Option<ComplexTarget>],
     params: &FieldParams,
     work: &mut CgWorkspace,
 ) -> Vec<Complex64> {
@@ -410,15 +470,16 @@ fn solve_one_field(
         .par()
         .map(|i| {
             let mut diag = REGULARIZATION;
-            let mut rhs = Complex64::new(0.0, 0.0);
+            let mut rhs = C_ZERO;
 
-            if params.damping_weight > 0.0 {
-                diag += params.damping_weight;
-                rhs += current[i] * params.damping_weight;
+            let damping_weight = params.damping_weight.max(0.0);
+            if damping_weight > 0.0 {
+                diag += damping_weight;
+                rhs += current[i] * damping_weight;
             }
 
             if params.axis_weight > 0.0 {
-                if let Some(target) = axis_target_complex(cache, i, axis) {
+                if let Some(target) = axis_targets[i] {
                     let w = params.axis_weight * target.confidence * target.confidence;
                     diag += w;
                     rhs += target.z * w;
@@ -437,13 +498,7 @@ fn solve_one_field(
         })
         .collect();
 
-    let mut diag = vec![0.0; n];
-    let mut rhs = vec![Complex64::new(0.0, 0.0); n];
-
-    for (i, (d, b)) in terms.into_iter().enumerate() {
-        diag[i] = d;
-        rhs[i] = b;
-    }
+    let (diag, rhs): (Vec<_>, Vec<_>) = terms.into_iter().unzip();
 
     let solved = conjugate_gradient(
         cache,
@@ -465,15 +520,17 @@ struct CgWorkspace {
     r: Vec<Complex64>,
     p: Vec<Complex64>,
     ap: Vec<Complex64>,
+    operator_values: Vec<Complex64>,
 }
 
 impl CgWorkspace {
     fn new(n: usize) -> Self {
         Self {
-            ax: vec![Complex64::new(0.0, 0.0); n],
-            r: vec![Complex64::new(0.0, 0.0); n],
-            p: vec![Complex64::new(0.0, 0.0); n],
-            ap: vec![Complex64::new(0.0, 0.0); n],
+            ax: vec![C_ZERO; n],
+            r: vec![C_ZERO; n],
+            p: vec![C_ZERO; n],
+            ap: vec![C_ZERO; n],
+            operator_values: vec![C_ZERO; n],
         }
     }
 }
@@ -491,7 +548,14 @@ fn conjugate_gradient(
     let n = rhs.len();
     let mut x = initial.to_vec();
 
-    apply_system_operator(cache, diag, &x, smooth_weight, &mut work.ax);
+    apply_system_operator(
+        cache,
+        diag,
+        &x,
+        smooth_weight,
+        &mut work.ax,
+        &mut work.operator_values,
+    );
 
     for i in 0..n {
         work.r[i] = rhs[i] - work.ax[i];
@@ -506,7 +570,14 @@ fn conjugate_gradient(
     }
 
     for _ in 0..max_iterations {
-        apply_system_operator(cache, diag, &work.p, smooth_weight, &mut work.ap);
+        apply_system_operator(
+            cache,
+            diag,
+            &work.p,
+            smooth_weight,
+            &mut work.ap,
+            &mut work.operator_values,
+        );
         let denom = complex_inner_real(&work.p, &work.ap);
 
         if denom.abs() < EPS {
@@ -543,8 +614,9 @@ fn apply_system_operator(
     x: &[Complex64],
     smooth_weight: f64,
     out: &mut [Complex64],
+    values: &mut [Complex64],
 ) {
-    let values: Vec<_> = (0..cache.len())
+    let computed: Vec<_> = (0..cache.len())
         .par()
         .map(|i| {
             let mut y = x[i] * diag[i];
@@ -559,11 +631,20 @@ fn apply_system_operator(
         })
         .collect();
 
-    out.copy_from_slice(&values);
+    values.copy_from_slice(&computed);
+    out.copy_from_slice(values);
 }
 
 fn complex_inner_real(a: &[Complex64], b: &[Complex64]) -> f64 {
-    a.iter().zip(b.iter()).map(|(x, y)| (x.conj() * y).re).sum()
+    (0..a.len()).par().map(|i| (a[i].conj() * b[i]).re).sum()
+}
+
+fn relative_energy_delta(delta: f64, previous_energy: f64) -> f64 {
+    if previous_energy.abs() > EPS {
+        delta / previous_energy.abs()
+    } else {
+        0.0
+    }
 }
 
 fn apply_complex_angle_coupling(
@@ -617,9 +698,9 @@ fn total_energy(
         + connection_laplacian_energy(cache, z_y)
         + connection_laplacian_energy(cache, z_z);
 
-    let axis = axis_energy(cache, z_x, Vector3D::new(1.0, 0.0, 0.0))
-        + axis_energy(cache, z_y, Vector3D::new(0.0, 1.0, 0.0))
-        + axis_energy(cache, z_z, Vector3D::new(0.0, 0.0, 1.0));
+    let axis = axis_energy(z_x, &cache.axis_x)
+        + axis_energy(z_y, &cache.axis_y)
+        + axis_energy(z_z, &cache.axis_z);
 
     let curvature =
         curvature_energy(cache, z_x) + curvature_energy(cache, z_y) + curvature_energy(cache, z_z);
@@ -633,20 +714,21 @@ fn total_energy(
 }
 
 fn connection_laplacian_energy(cache: &GlobalSolverCache, z: &[Complex64]) -> f64 {
-    cache
-        .edges
-        .iter()
-        .map(|edge| {
+    (0..cache.edges.len())
+        .par()
+        .map(|i| {
+            let edge = cache.edges[i];
             let diff = z[edge.i] - edge.phase_j_to_i * z[edge.j];
             edge.weight * diff.norm_sqr()
         })
         .sum()
 }
 
-fn axis_energy(cache: &GlobalSolverCache, z: &[Complex64], axis: Vector3D) -> f64 {
-    (0..cache.len())
+fn axis_energy(z: &[Complex64], targets: &[Option<ComplexTarget>]) -> f64 {
+    (0..z.len())
+        .par()
         .map(|i| {
-            let Some(target) = axis_target_complex(cache, i, axis) else {
+            let Some(target) = targets[i] else {
                 return 0.0;
             };
 
@@ -658,6 +740,7 @@ fn axis_energy(cache: &GlobalSolverCache, z: &[Complex64], axis: Vector3D) -> f6
 
 fn curvature_energy(cache: &GlobalSolverCache, z: &[Complex64]) -> f64 {
     (0..cache.len())
+        .par()
         .map(|i| {
             let Some(target) = curvature_target_complex(cache, i, z[i]) else {
                 return 0.0;
@@ -671,6 +754,7 @@ fn curvature_energy(cache: &GlobalSolverCache, z: &[Complex64]) -> f64 {
 
 fn complex_coupling_energy(z_x: &[Complex64], z_y: &[Complex64], z_z: &[Complex64]) -> f64 {
     (0..z_x.len())
+        .par()
         .map(|i| {
             let tx = z_x[i].arg();
             let ty = z_y[i].arg();
@@ -687,16 +771,21 @@ struct ComplexTarget {
     confidence: f64,
 }
 
-fn axis_target_complex(
-    cache: &GlobalSolverCache,
-    i: usize,
+fn precompute_axis_targets(
+    normals: &[Vector3D],
+    bases: &[TangentBasis],
     axis: Vector3D,
-) -> Option<ComplexTarget> {
-    let target = around_axis_target(cache.normals[i], axis)?;
-    Some(ComplexTarget {
-        z: vector_to_complex(target.direction, cache.bases[i]),
-        confidence: target.confidence,
-    })
+) -> Vec<Option<ComplexTarget>> {
+    (0..normals.len())
+        .par()
+        .map(|i| {
+            let target = around_axis_target(normals[i], axis)?;
+            Some(ComplexTarget {
+                z: vector_to_complex(target.direction, bases[i]),
+                confidence: target.confidence,
+            })
+        })
+        .collect()
 }
 
 fn curvature_target_complex(
@@ -721,7 +810,7 @@ fn field_to_complex(
         .par()
         .map(|i| {
             let n = cache.normals[i];
-            let v = safe_normalize(project_to_tangent(vectors[keys[i]], n), cache.bases[i].e1);
+            let v = unit_or(project_to_tangent(vectors[keys[i]], n), cache.bases[i].e1);
             vector_to_complex(v, cache.bases[i])
         })
         .collect()
@@ -743,22 +832,60 @@ fn complex_to_field(
     }
 }
 
+fn apply_axis_alignment_lengths(
+    vectors: &mut SlotMap<GlobalVectorKey, Vector3D>,
+    keys: &[GlobalVectorKey],
+    axis_targets: &[Option<ComplexTarget>],
+    cache: &GlobalSolverCache,
+    params: &FieldParams,
+) {
+    if params.axis_weight <= 0.0 {
+        return;
+    }
+
+    let power = params.axis_length_power.max(EPS);
+    let lengths: Vec<_> = (0..keys.len())
+        .par()
+        .map(|i| {
+            let Some(target) = axis_targets[i] else {
+                return 0.1;
+            };
+
+            let z = vector_to_complex(vectors[keys[i]], cache.bases[i]);
+            let dot = (z.conj() * target.z).re.clamp(-1.0, 1.0);
+            let angle = dot.acos();
+            let tight_angle = std::f64::consts::PI / 12.0;
+            let bad_angle = std::f64::consts::FRAC_PI_4;
+
+            if angle <= tight_angle {
+                let quality = 1.0 - angle / tight_angle;
+                0.5 + 0.5 * quality.powf(power)
+            } else {
+                let quality =
+                    1.0 - ((angle - tight_angle) / (bad_angle - tight_angle)).clamp(0.0, 1.0);
+                0.1 + 0.4 * quality.powf(power)
+            }
+        })
+        .collect();
+
+    for (i, key) in keys.iter().enumerate() {
+        vectors[*key] *= lengths[i];
+    }
+}
+
 fn vector_to_complex(v: Vector3D, basis: TangentBasis) -> Complex64 {
     normalize_complex_unit(Complex64::new(v.dot(&basis.e1), v.dot(&basis.e2)))
 }
 
 fn complex_to_vector(z: Complex64, basis: TangentBasis) -> Vector3D {
-    let z = normalize_complex_unit(z);
     basis.e1 * z.re + basis.e2 * z.im
 }
 
 fn normalize_complex_unit(z: Complex64) -> Complex64 {
-    let n = z.norm();
-
-    if n > EPS {
-        z / n
+    if z.norm_sqr() > EPS {
+        z / z.norm()
     } else {
-        Complex64::new(1.0, 0.0)
+        C_ONE
     }
 }
 
@@ -776,13 +903,7 @@ fn connection_phase_j_to_i(
     let b_i = bases[i];
     let b_j = bases[j];
 
-    let projected = project_to_tangent(b_j.e1, n_i);
-
-    if projected.norm() < EPS {
-        return Complex64::new(1.0, 0.0);
-    }
-
-    let v = projected.normalize();
+    let v = project_to_tangent(b_j.e1, n_i).normalize();
     let phi = v.dot(&b_i.e2).atan2(v.dot(&b_i.e1));
 
     complex_from_angle(phi)
@@ -790,7 +911,7 @@ fn connection_phase_j_to_i(
 
 fn initialize_field_around_axis<T: Tag>(mesh: &Mesh<T>, field: &mut Field<T>, axis: Vector3D) {
     for (id, key) in &field.map {
-        let n = safe_normalize(mesh.normal(*id), Vector3D::new(0.0, 0.0, 1.0));
+        let n = unit_or(mesh.normal(*id), Z_AXIS);
 
         let v = around_axis_target(n, axis)
             .map(|t| t.direction)
@@ -807,63 +928,74 @@ struct Target {
 }
 
 fn around_axis_target(normal: Vector3D, axis: Vector3D) -> Option<Target> {
-    let n = safe_normalize(normal, Vector3D::new(0.0, 0.0, 1.0));
-    let a = safe_normalize(axis, Vector3D::new(1.0, 0.0, 0.0));
-
-    let tangent_axis = project_to_tangent(a, n);
+    let tangent_axis = project_to_tangent(axis, normal);
     let confidence = tangent_axis.norm();
-
-    if confidence < EPS {
-        return None;
-    }
-
-    let direction = tangent_axis.cross(&n);
-
-    if direction.norm() < EPS {
-        return None;
-    }
-
-    Some(Target {
-        direction: direction.normalize(),
+    (confidence >= EPS).then(|| Target {
+        direction: tangent_axis.cross(&normal).normalize(),
         confidence,
     })
 }
 
-fn precompute_curvature_data<T: Tag>(
-    mesh: &Mesh<T>,
-    id: ids::Key<VERT, T>,
-    normal: Vector3D,
-) -> Option<CurvatureData> {
-    let n = safe_normalize(normal, Vector3D::new(0.0, 0.0, 1.0));
+fn estimate_curvature_data<T: Tag>(mesh: &Mesh<T>, id: ids::Key<VERT, T>) -> Option<CurvatureData> {
+    let p = mesh.position(id);
+    let (t_raw, _, n_raw) = mesh.tangent_frame(id);
+    let n = unit_or(n_raw, Z_AXIS);
+    let t1 = unit_or(project_to_tangent(t_raw, n), tangent_fallback(n));
+    let t2 = n.cross(&t1).normalize();
 
-    let (k_min, k_max, dir_min, dir_max) =
-        crate::elastica::estimate_vertex_principal_frame(mesh, id);
+    let (mut a, mut b, mut d) = (0.0, 0.0, 0.0);
+    let (mut bx0, mut bx1, mut by0, mut by1) = (0.0, 0.0, 0.0, 0.0);
+    let (mut edge_sum, mut edge_count) = (0.0, 0);
 
-    let h = local_edge_scale(mesh, id)?;
+    for nb in mesh.neighbors(id) {
+        let edge = mesh.position(nb) - p;
+        edge_sum += edge.norm();
+        edge_count += 1;
 
-    let c_min = k_min.abs() * h;
-    let c_max = k_max.abs() * h;
+        let e = project_to_tangent(edge, n);
+        let len2 = e.dot(&e);
+        if len2 < EPS {
+            continue;
+        }
 
-    let strength = c_min.max(c_max);
-    if strength < CURVATURE_MIN_CONFIDENCE {
+        let dn = project_to_tangent(unit_or(mesh.normal(nb), n) - n, n);
+        let (ux, uy) = (t1.dot(&e), t2.dot(&e));
+        let (nx, ny) = (-t1.dot(&dn), -t2.dot(&dn));
+        let w = (1.0 / len2).min(1e6);
+
+        a += w * ux * ux;
+        b += w * ux * uy;
+        d += w * uy * uy;
+        bx0 += w * nx * ux;
+        bx1 += w * nx * uy;
+        by0 += w * ny * ux;
+        by1 += w * ny * uy;
+    }
+
+    let det = a * d - b * b;
+    if det.abs() < EPS || edge_count == 0 {
         return None;
     }
 
-    let anisotropy = (c_max - c_min).abs();
-    if anisotropy < CURVATURE_MIN_CONFIDENCE {
+    let inv_det = 1.0 / det;
+    let s00 = (d * bx0 - b * bx1) * inv_det;
+    let s11 = (-b * by0 + a * by1) * inv_det;
+    let s01 = 0.5 * ((-b * bx0 + a * bx1) + (d * by0 - b * by1)) * inv_det;
+    let trace = 0.5 * (s00 + s11);
+    let radius = ((0.5 * (s00 - s11)).powi(2) + s01 * s01).sqrt();
+    let h = (edge_sum / edge_count as f64).max(EPS);
+    let (c_min, c_max) = ((trace - radius).abs() * h, (trace + radius).abs() * h);
+
+    if c_min.max(c_max) < CURVATURE_MIN_CONFIDENCE
+        || (c_max - c_min).abs() < CURVATURE_MIN_CONFIDENCE
+    {
         return None;
     }
 
-    let d_min = project_to_tangent(dir_min, n);
-    let d_max = project_to_tangent(dir_max, n);
-
-    if d_min.norm() < EPS || d_max.norm() < EPS {
-        return None;
-    }
-
+    let dir_min = principal_direction(s00, s01, s11, trace - radius, t1, t2);
     Some(CurvatureData {
-        dir_min: d_min.normalize(),
-        dir_max: d_max.normalize(),
+        dir_min,
+        dir_max: n.cross(&dir_min).normalize(),
         c_min,
         c_max,
     })
@@ -893,19 +1025,11 @@ fn curvature_target_from_cache(data: Option<CurvatureData>, current: Vector3D) -
         }
     }
 
-    if best_dot < CURVATURE_ALIGNMENT_MIN_DOT {
-        return None;
-    }
-
-    if best_strength < CURVATURE_MIN_CONFIDENCE {
+    if best_dot < CURVATURE_ALIGNMENT_MIN_DOT || best_strength < CURVATURE_MIN_CONFIDENCE {
         return None;
     }
 
     let curvature_confidence = (CURVATURE_CONFIDENCE_SENSITIVITY * best_strength).tanh();
-
-    if curvature_confidence < CURVATURE_MIN_CONFIDENCE {
-        return None;
-    }
 
     let alignment_t = ((best_dot - CURVATURE_ALIGNMENT_MIN_DOT)
         / (1.0 - CURVATURE_ALIGNMENT_MIN_DOT))
@@ -914,32 +1038,26 @@ fn curvature_target_from_cache(data: Option<CurvatureData>, current: Vector3D) -
     let alignment_confidence = alignment_t.powf(CURVATURE_ALIGNMENT_SHARPNESS);
     let confidence = curvature_confidence * alignment_confidence;
 
-    if confidence < CURVATURE_MIN_CONFIDENCE {
-        return None;
-    }
-
-    Some(Target {
+    (confidence >= CURVATURE_MIN_CONFIDENCE).then_some(Target {
         direction: best_direction,
         confidence,
     })
 }
 
-fn local_edge_scale<T: Tag>(mesh: &Mesh<T>, id: ids::Key<VERT, T>) -> Option<f64> {
-    let p = mesh.position(id);
-
-    let mut sum = 0.0;
-    let mut count = 0.0;
-
-    for nb in mesh.neighbors(id) {
-        let q = mesh.position(nb);
-        sum += (q - p).norm();
-        count += 1.0;
-    }
-
-    if count <= 0.0 {
-        None
+fn principal_direction(
+    s00: f64,
+    s01: f64,
+    s11: f64,
+    k: f64,
+    t1: Vector3D,
+    t2: Vector3D,
+) -> Vector3D {
+    if s01.abs() > EPS {
+        (t1 * s01 + t2 * (k - s00)).normalize()
+    } else if s00 <= s11 {
+        t1
     } else {
-        Some((sum / count).max(EPS))
+        t2
     }
 }
 
@@ -948,40 +1066,23 @@ fn project_to_tangent(v: Vector3D, n: Vector3D) -> Vector3D {
 }
 
 fn tangent_basis(normal: Vector3D) -> (Vector3D, Vector3D) {
-    let n = safe_normalize(normal, Vector3D::new(0.0, 0.0, 1.0));
+    let n = unit_or(normal, Z_AXIS);
     let e1 = tangent_fallback(n);
-    let e2 = safe_normalize(n.cross(&e1), Vector3D::new(0.0, 1.0, 0.0));
+    let e2 = n.cross(&e1).normalize();
     (e1, e2)
 }
 
-fn tangent_fallback(normal: Vector3D) -> Vector3D {
-    let n = safe_normalize(normal, Vector3D::new(0.0, 0.0, 1.0));
+fn tangent_fallback(n: Vector3D) -> Vector3D {
+    let axis = if n.x.abs() < 0.9 { X_AXIS } else { Y_AXIS };
 
-    let x_axis = Vector3D::new(1.0, 0.0, 0.0);
-    let y_axis = Vector3D::new(0.0, 1.0, 0.0);
-
-    let axis = if n.dot(&x_axis).abs() < 0.9 {
-        x_axis
-    } else {
-        y_axis
-    };
-
-    safe_normalize(project_to_tangent(axis, n), x_axis)
+    project_to_tangent(axis, n).normalize()
 }
 
-fn safe_normalize(v: Vector3D, fallback: Vector3D) -> Vector3D {
-    let len = v.norm();
-
-    if len > EPS {
-        v / len
+fn unit_or(v: Vector3D, fallback: Vector3D) -> Vector3D {
+    if v.norm() > EPS {
+        v.normalize()
     } else {
-        let fallback_len = fallback.norm();
-
-        if fallback_len > EPS {
-            fallback / fallback_len
-        } else {
-            Vector3D::new(1.0, 0.0, 0.0)
-        }
+        fallback
     }
 }
 
@@ -992,7 +1093,7 @@ fn random_unit_vector() -> Vector3D {
         rand::random::<f64>() - 0.5,
     );
 
-    safe_normalize(v, Vector3D::new(1.0, 0.0, 0.0))
+    unit_or(v, X_AXIS)
 }
 
 fn sin2(theta: f64) -> f64 {

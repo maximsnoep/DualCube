@@ -1,4 +1,4 @@
-# compile and run dev build: cargo run -bin gui --profile dev
+# compile and run dev build: cargo run --bin gui --profile dev
 # compile and run release: cargo run --bin gui --profile release
 # compile and profile: cargo samply --bin gui --profile profiling
 

@@ -1,7 +1,7 @@
 //! Render object for the input (triangle) mesh.
 
 use super::gizmos::{
-    edge_endpoints_view, lambert_color_map, layout_path_gizmos, segmentation_color_map,
+    flow_graph_gizmos, lambert_color_map, layout_path_gizmos, segmentation_color_map,
     uniform_color_map, world_to_view, DirectionalGizmos,
 };
 use super::store::RenderObject;
@@ -21,8 +21,7 @@ const PRINCIPAL_DIRECTIONS: [PrincipalDirection; 3] = [
 /// - meshes with gray / black / lambert-shaded faces
 /// - segmentation and alignment colorings (if a layout exists)
 /// - wireframes (input and granulated mesh)
-/// - the dual loops, layout paths, vector fields, feature edges,
-///   principal-curvature glyphs, and elastica polylines
+/// - the dual loops, layout paths, and vector fields
 pub(super) fn build(solution: &Solution) -> Option<RenderObject> {
     let input = solution.mesh_ref.as_ref();
     let (scale, translation) = input.scale_translation();
@@ -71,17 +70,6 @@ pub(super) fn build(solution: &Solution) -> Option<RenderObject> {
         }
     }
 
-    // Sharp feature edges, colored per principal direction.
-    let features = dualcube::feature::feature_extraction(input, std::f64::consts::FRAC_PI_3, 1);
-    let mut gizmos_features = GizmoAsset::new();
-    for (feature_edges, dir) in features.iter().zip(PRINCIPAL_DIRECTIONS) {
-        let color = colors::to_bevy(colors::from_direction(dir, None, None));
-        for &edge_id in feature_edges {
-            let (u, v) = edge_endpoints_view(input, edge_id, translation, scale);
-            gizmos_features.line(u, v, color);
-        }
-    }
-
     // The vector fields, per principal direction.
     let mut field_gizmos = DirectionalGizmos::default();
     if let Some(fields) = &solution.fields {
@@ -115,90 +103,21 @@ pub(super) fn build(solution: &Solution) -> Option<RenderObject> {
                 let p = input.position(vert_id);
                 gizmos.arrow(
                     world_to_view(p, translation, scale),
-                    world_to_view(p + v.normalize() * field_scale, translation, scale),
+                    world_to_view(p + *v * field_scale, translation, scale),
                     color,
                 );
             }
         }
     }
 
-    // Principal curvature glyphs (direction + resolution-robust magnitude).
-    let mut gizmos_curvature_max = GizmoAsset::new();
-    let mut gizmos_curvature_min = GizmoAsset::new();
-    let curvature_color = colors::to_bevy(colors::from_direction(
-        PrincipalDirection::X,
-        Some(Perspective::Dual),
-        None,
-    ));
-    // Tunables for glyph sizing
-    let s: f64 = 2.0; // sensitivity of length to curvature (dimensionless)
-    let base_frac: f64 = 0.5; // glyph base length as fraction of local edge scale
-
-    for vert_id in input.vert_ids() {
-        let v = input.position(vert_id);
-
-        // Local scale h(v): mean 1-ring edge length (resolution proxy).
-        let mut h_sum = 0.0;
-        let mut h_cnt = 0.0;
-        for neighbor_id in input.neighbors(vert_id) {
-            h_sum += (input.position(neighbor_id) - v).norm();
-            h_cnt += 1.0;
-        }
-        if h_cnt < 1.0 {
-            continue;
-        }
-        let h = (h_sum / h_cnt).max(1e-9);
-
-        let (k_min, k_max, dir_min, dir_max) =
-            dualcube::elastica::estimate_vertex_principal_frame(input, vert_id);
-
-        // Sanity checks (debug-friendly).
-        let n = input.tangent_frame(vert_id).2.normalize();
-        debug_assert!((dir_max.norm() - 1.0).abs() < 1e-5);
-        debug_assert!((dir_min.norm() - 1.0).abs() < 1e-5);
-        debug_assert!(dir_max.dot(&n).abs() < 1e-6);
-        debug_assert!(dir_min.dot(&n).abs() < 1e-6);
-        debug_assert!(dir_max.dot(&dir_min).abs() < 1e-5);
-
-        let v_view = world_to_view(v, translation, scale);
-        for (k, dir, gizmo) in [
-            (k_max, dir_max, &mut gizmos_curvature_max),
-            (k_min, dir_min, &mut gizmos_curvature_min),
-        ] {
-            // Curvature k has units 1/length, so |k| * h is a dimensionless
-            // "bending per step", mapped to a saturating glyph length in world
-            // units that is tied to the local resolution.
-            let len = base_frac * h * (s * (k.abs() * h)).tanh();
-            for endpoint in [v + dir * len, v - dir * len] {
-                gizmo.line(
-                    v_view,
-                    world_to_view(endpoint, translation, scale),
-                    curvature_color,
-                );
-            }
-        }
-    }
-
-    // Elastica derivative polylines, per principal direction.
-    let mut elastica_gizmos = DirectionalGizmos::default();
-    for dir in PRINCIPAL_DIRECTIONS {
-        let polylines = solution.elastica_graph.derivative_edge_polylines(dir);
-        let max_weight = polylines
-            .iter()
-            .map(|&(_, _, _, weight)| weight)
-            .fold(0.0_f64, f64::max);
-        debug!("Max elastica weight for {dir}: {max_weight}");
-
-        let c = colors::to_bevy(colors::from_direction(dir, None, None));
-        let gizmos = elastica_gizmos.get_mut(dir);
-        for &(v0, v1, v2, weight) in &polylines {
-            if weight > 0.2 {
-                continue;
-            }
-            let [p0, p1, p2] =
-                [v0, v1, v2].map(|v| world_to_view(input.position(v), translation, scale));
-            gizmos.line(p0, p1, c);
-            gizmos.line(p1, p2, c);
+    // The flow graphs, per principal direction: edge-to-edge transition weights.
+    // Bright = low weight (good), fading to black/transparent = high weight (bad).
+    let mut flow_graph_dir = DirectionalGizmos::default();
+    if let Some(flow_graphs) = &solution.flow_graphs {
+        for (graph, dir) in flow_graphs.iter().zip(PRINCIPAL_DIRECTIONS) {
+            let color = colors::from_direction(dir, None, None);
+            *flow_graph_dir.get_mut(dir) =
+                flow_graph_gizmos(&graph.edges(), input, color, translation, scale);
         }
     }
 
@@ -216,15 +135,12 @@ pub(super) fn build(solution: &Solution) -> Option<RenderObject> {
             .gizmo(gizmos_paths, 3., -0.0001, "paths")
             .gizmo(gizmos_flat_paths, 1., -0.00011, "flat paths")
             .gizmo(granulated_mesh_gizmos, 0.5, -0.00001, "refined wireframe")
-            .gizmo(field_gizmos.x, 1., -0.0001, "x-field")
-            .gizmo(field_gizmos.y, 1., -0.00011, "y-field")
-            .gizmo(field_gizmos.z, 1., -0.000111, "z-field")
-            // .gizmo(gizmos_features, 1., -0.0001, "features")
-            // .gizmo(gizmos_curvature_max, 1., -0.0001, "max curvature")
-            // .gizmo(gizmos_curvature_min, 1., -0.00011, "min curvature")
-            // .gizmo(elastica_gizmos.x, 1., -0.0001, "x-elastica")
-            // .gizmo(elastica_gizmos.y, 1., -0.00011, "y-elastica")
-            // .gizmo(elastica_gizmos.z, 1., -0.000111, "z-elastica")
+            .gizmo(field_gizmos.x, 1., -0.0010, "x-field")
+            .gizmo(field_gizmos.y, 1., -0.0011, "y-field")
+            .gizmo(field_gizmos.z, 1., -0.0012, "z-field")
+            .gizmo(flow_graph_dir.x, 1., -0.0001, "x-flow-graph")
+            .gizmo(flow_graph_dir.y, 1., -0.00011, "y-flow-graph")
+            .gizmo(flow_graph_dir.z, 1., -0.000111, "z-flow-graph")
             .to_owned(),
     )
 }

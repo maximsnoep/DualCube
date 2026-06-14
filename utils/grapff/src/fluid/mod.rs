@@ -14,7 +14,11 @@ impl<'a, T: Eq + Hash + Clone + Copy> FluidGraph<'a, T> {
         }
     }
 
-    pub fn shortest_cycle(&self, a: T, weight_function: impl Fn((T, T)) -> Float) -> Option<(Vec<T>, Float)> {
+    pub fn shortest_cycle(
+        &self,
+        a: T,
+        weight_function: impl Fn((T, T)) -> Float,
+    ) -> Option<(Vec<T>, Float)> {
         (self.neighborhood)(a)
             .iter()
             .filter_map(|&neighbor| self.shortest_path(neighbor, a, &weight_function))
@@ -22,7 +26,10 @@ impl<'a, T: Eq + Hash + Clone + Copy> FluidGraph<'a, T> {
             .next()
             .map(|(path, score)| {
                 let (last, rest) = path.split_last().unwrap();
-                ([&[*last], rest].concat(), score + weight_function((a, *path.first().unwrap())))
+                (
+                    [&[*last], rest].concat(),
+                    score + weight_function((a, *path.first().unwrap())),
+                )
             })
     }
 
@@ -66,7 +73,10 @@ impl<'a, T: Eq + Hash + Clone + Copy> FluidGraph<'a, T> {
     }
 
     pub fn topological_sort(&self, nodes: &[T]) -> Option<Vec<T>> {
-        pathfinding::directed::topological_sort::topological_sort(nodes, |&x| (self.neighborhood)(x)).ok()
+        pathfinding::directed::topological_sort::topological_sort(nodes, |&x| {
+            (self.neighborhood)(x)
+        })
+        .ok()
     }
 }
 
@@ -75,14 +85,30 @@ impl<T: Eq + Hash + Clone + Copy> Grapff<T, (T, T)> for FluidGraph<'_, T> {
         (self.neighborhood)(v)
     }
 
-    fn shortest_path(&self, a: T, b: T, weight_function: impl Fn((T, T)) -> Float) -> Option<(Vec<T>, Float)> {
+    fn shortest_path(
+        &self,
+        a: T,
+        b: T,
+        weight_function: impl Fn((T, T)) -> Float,
+    ) -> Option<(Vec<T>, Float)> {
         self.shortest_path_heuristic(a, b, &weight_function, |_| ZERO)
     }
 
-    fn shortest_path_heuristic(&self, a: T, b: T, w: impl Fn((T, T)) -> Float, h: impl Fn((T, T)) -> Float) -> Option<(Vec<T>, Float)> {
+    fn shortest_path_heuristic(
+        &self,
+        a: T,
+        b: T,
+        w: impl Fn((T, T)) -> Float,
+        h: impl Fn((T, T)) -> Float,
+    ) -> Option<(Vec<T>, Float)> {
         pathfinding::prelude::astar(
             &a,
-            |&elem| self.neighbors(elem).into_iter().map(|neighbor| (neighbor, w((elem, neighbor)))).collect_vec(),
+            |&elem| {
+                self.neighbors(elem)
+                    .into_iter()
+                    .map(|neighbor| (neighbor, w((elem, neighbor))))
+                    .collect_vec()
+            },
             |&elem| h((elem, b)),
             |&elem| elem == b,
         )

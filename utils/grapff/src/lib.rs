@@ -14,7 +14,13 @@ pub trait Grapff<V, E> {
     fn shortest_path(&self, a: V, b: V, w: impl Fn(E) -> Float) -> Option<(Vec<V>, Float)>;
 
     #[must_use]
-    fn shortest_path_heuristic(&self, a: V, b: V, w: impl Fn(E) -> Float, h: impl Fn((V, V)) -> Float) -> Option<(Vec<V>, Float)>;
+    fn shortest_path_heuristic(
+        &self,
+        a: V,
+        b: V,
+        w: impl Fn(E) -> Float,
+        h: impl Fn((V, V)) -> Float,
+    ) -> Option<(Vec<V>, Float)>;
 
     #[must_use]
     fn connected_component(&self, v: V) -> HashSet<V>;

@@ -45,7 +45,9 @@ impl<'de> Deserialize<'de> for Quad {
 impl Quad {
     fn arc_length_parameterization(verts: &[Vector3D]) -> Vec<f64> {
         // Arc-length parameterization of list of points to [0, 1] interval
-        let distances = std::iter::once(0.0).chain(verts.windows(2).map(|w| (w[1] - w[0]).norm())).collect_vec();
+        let distances = std::iter::once(0.0)
+            .chain(verts.windows(2).map(|w| (w[1] - w[0]).norm()))
+            .collect_vec();
         let total_length = distances.iter().sum::<f64>();
 
         distances
@@ -104,7 +106,8 @@ impl Quad {
             // A map for each vertex in the patch to its corresponding 2D coordinate in the unit square
             let mut map_to_2d = HashMap::new();
 
-            let Some([edge1, edge2, edge3, edge4]) = polycube.edges(patch_id).collect_array::<4>() else {
+            let Some([edge1, edge2, edge3, edge4]) = polycube.edges(patch_id).collect_array::<4>()
+            else {
                 panic!()
             };
 
@@ -161,25 +164,45 @@ impl Quad {
             // Interpolate the vertices on the edges (paths) between p1 and p2, p2 and p3, p3 and p4, p4 and p1
             // Parameterize (using arc-length) the vertices
             // From p1 to p2
-            let interpolation1 = Self::arc_length_parameterization(&boundary1.iter().map(|&v| layout.granulated_mesh.position(v)).collect_vec());
+            let interpolation1 = Self::arc_length_parameterization(
+                &boundary1
+                    .iter()
+                    .map(|&v| layout.granulated_mesh.position(v))
+                    .collect_vec(),
+            );
             for (i, &v) in boundary1.iter().enumerate() {
                 let mapped_pos = d2p1 * (1.0 - interpolation1[i]) + d2p2 * interpolation1[i];
                 map_to_2d.insert(v, mapped_pos);
             }
             // From p2 to p3
-            let interpolation2 = Self::arc_length_parameterization(&boundary2.iter().map(|&v| layout.granulated_mesh.position(v)).collect_vec());
+            let interpolation2 = Self::arc_length_parameterization(
+                &boundary2
+                    .iter()
+                    .map(|&v| layout.granulated_mesh.position(v))
+                    .collect_vec(),
+            );
             for (i, &v) in boundary2.iter().enumerate() {
                 let mapped_pos = d2p2 * (1.0 - interpolation2[i]) + d2p3 * interpolation2[i];
                 map_to_2d.insert(v, mapped_pos);
             }
             // From p3 to p4
-            let interpolation3 = Self::arc_length_parameterization(&boundary3.iter().map(|&v| layout.granulated_mesh.position(v)).collect_vec());
+            let interpolation3 = Self::arc_length_parameterization(
+                &boundary3
+                    .iter()
+                    .map(|&v| layout.granulated_mesh.position(v))
+                    .collect_vec(),
+            );
             for (i, &v) in boundary3.iter().enumerate() {
                 let mapped_pos = d2p3 * (1.0 - interpolation3[i]) + d2p4 * interpolation3[i];
                 map_to_2d.insert(v, mapped_pos);
             }
             // From p4 to p1
-            let interpolation4 = Self::arc_length_parameterization(&boundary4.iter().map(|&v| layout.granulated_mesh.position(v)).collect_vec());
+            let interpolation4 = Self::arc_length_parameterization(
+                &boundary4
+                    .iter()
+                    .map(|&v| layout.granulated_mesh.position(v))
+                    .collect_vec(),
+            );
             for (i, &v) in boundary4.iter().enumerate() {
                 let mapped_pos = d2p4 * (1.0 - interpolation4[i]) + d2p1 * interpolation4[i];
                 map_to_2d.insert(v, mapped_pos);
@@ -198,7 +221,11 @@ impl Quad {
                 .flat_map(|&face_id| layout.granulated_mesh.vertices(face_id))
                 .collect::<HashSet<_>>();
 
-            let interior_verts = all_verts.iter().filter(|&&v| !map_to_2d.contains_key(&v)).copied().collect_vec();
+            let interior_verts = all_verts
+                .iter()
+                .filter(|&&v| !map_to_2d.contains_key(&v))
+                .copied()
+                .collect_vec();
 
             let mut vert_to_id = BiHashMap::new();
             for (i, &v) in interior_verts.iter().enumerate() {
@@ -223,15 +250,25 @@ impl Quad {
                 let w = (0..k)
                     .map(|i| {
                         let vip1 = neighbors[(i + 1) % k];
-                        let eip1 = layout.granulated_mesh.edge_between_verts(v0, vip1).unwrap().0;
+                        let eip1 = layout
+                            .granulated_mesh
+                            .edge_between_verts(v0, vip1)
+                            .unwrap()
+                            .0;
                         let vi = neighbors[i];
                         let ei = layout.granulated_mesh.edge_between_verts(v0, vi).unwrap().0;
                         let vim1 = neighbors[(i + k - 1) % k];
-                        let eim1 = layout.granulated_mesh.edge_between_verts(v0, vim1).unwrap().0;
+                        let eim1 = layout
+                            .granulated_mesh
+                            .edge_between_verts(v0, vim1)
+                            .unwrap()
+                            .0;
 
                         let alpha_im1 = layout.granulated_mesh.angle(eim1, ei);
                         let alpha_i = layout.granulated_mesh.angle(ei, eip1);
-                        let len_ei = (layout.granulated_mesh.position(v0) - layout.granulated_mesh.position(vi)).norm();
+                        let len_ei = (layout.granulated_mesh.position(v0)
+                            - layout.granulated_mesh.position(vi))
+                        .norm();
 
                         ((alpha_im1 / 2.0).tan() + (alpha_i / 2.0).tan()) / len_ei
                     })
@@ -264,8 +301,12 @@ impl Quad {
             let mut x_u = Mat::from_fn(n, 1, |_, _| 0.0);
             let mut x_v = Mat::from_fn(n, 1, |_, _| 0.0);
 
-            let faer_triplets = triplets.into_iter().map(|(i, j, v)| Triplet::new(i, j, v)).collect::<Vec<_>>();
-            let a = SparseColMat::<usize, f64>::try_new_from_triplets(n, n, &faer_triplets).unwrap();
+            let faer_triplets = triplets
+                .into_iter()
+                .map(|(i, j, v)| Triplet::new(i, j, v))
+                .collect::<Vec<_>>();
+            let a =
+                SparseColMat::<usize, f64>::try_new_from_triplets(n, n, &faer_triplets).unwrap();
             if !interior_verts.is_empty() {
                 if gmres(a.as_ref(), b_u.as_ref(), x_u.as_mut(), 1000, 1e-8, None).is_err() {
                     return None;
@@ -414,7 +455,13 @@ impl Quad {
                 }
             }
 
-            face_to_verts_usize.insert(patch_id, vert_map.iter().map(|row| row.iter().filter_map(|&v| v).collect_vec()).collect_vec());
+            face_to_verts_usize.insert(
+                patch_id,
+                vert_map
+                    .iter()
+                    .map(|row| row.iter().filter_map(|&v| v).collect_vec())
+                    .collect_vec(),
+            );
 
             // Add the boundary vertices to the edges_done map
             corners_done.insert(corner1, vert_map[0][0].unwrap());
@@ -467,22 +514,34 @@ impl Quad {
             }
         }
 
-        assert!(patches_done.len() == polycube.face_ids().len(), "Not all patches were done!");
+        assert!(
+            patches_done.len() == polycube.face_ids().len(),
+            "Not all patches were done!"
+        );
 
         // Create the polycube quad mesh:
-        if let Ok((quad_mesh_polycube, vert_id_map, _)) = Mesh::<QUAD>::from(&faces, &vertex_positions) {
+        if let Ok((quad_mesh_polycube, vert_id_map, _)) =
+            Mesh::<QUAD>::from(&faces, &vertex_positions)
+        {
             for (face_id, vert_ids) in &face_to_verts_usize {
                 // Convert usize to VertKey<QUAD>
                 let vert_keys = vert_ids
                     .iter()
-                    .map(|row| row.iter().map(|&v| vert_id_map.key(v).unwrap().to_owned()).collect_vec())
+                    .map(|row| {
+                        row.iter()
+                            .map(|&v| vert_id_map.key(v).unwrap().to_owned())
+                            .collect_vec()
+                    })
                     .collect_vec();
                 face_to_verts.insert(face_id.to_owned(), vert_keys);
             }
 
             for (edge_id, vert_ids) in &edge_to_verts_usize {
                 // Convert usize to VertKey<QUAD>
-                let vert_keys = vert_ids.iter().map(|&v| vert_id_map.key(v).unwrap().to_owned()).collect_vec();
+                let vert_keys = vert_ids
+                    .iter()
+                    .map(|&v| vert_id_map.key(v).unwrap().to_owned())
+                    .collect_vec();
                 edge_to_verts.insert(edge_id.to_owned(), vert_keys.clone());
                 let twin_id = polycube.twin(*edge_id);
                 let rev_vert_keys = vert_keys.iter().rev().cloned().collect_vec();
@@ -493,7 +552,8 @@ impl Quad {
             for vert_id in quad_mesh_polycube.vert_ids() {
                 let mut surrounding_normals = HashSet::new();
                 for neighbor in quad_mesh_polycube.neighbors(vert_id) {
-                    surrounding_normals.insert(to_principal_direction(quad_mesh_polycube.normal(neighbor)));
+                    surrounding_normals
+                        .insert(to_principal_direction(quad_mesh_polycube.normal(neighbor)));
                 }
                 if surrounding_normals.len() > 1 {
                     frozen.insert(vert_id);
@@ -510,7 +570,10 @@ impl Quad {
                 // Get the nearest triangle in the triangle mesh (polycube map)
                 let point = quad_mesh_polycube.position(vert_id);
                 let triangle = triangle_lookup.nearest(&[point.x, point.y, point.z]);
-                let Some([a, b, c]) = triangle_mesh_polycube.vertices(triangle).collect_array::<3>() else {
+                let Some([a, b, c]) = triangle_mesh_polycube
+                    .vertices(triangle)
+                    .collect_array::<3>()
+                else {
                     panic!("Triangle does not have 3 vertices!");
                 };
 
@@ -525,7 +588,9 @@ impl Quad {
                 );
 
                 if distance1 > 0.001 {
-                    log::warn!("Distance from point to triangle is very large: {distance1} (> 0.001)");
+                    log::warn!(
+                        "Distance from point to triangle is very large: {distance1} (> 0.001)"
+                    );
                 }
 
                 // Calculate the barycentric coordinates of the point in the triangle

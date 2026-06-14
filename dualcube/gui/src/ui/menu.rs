@@ -10,7 +10,7 @@ use crate::controls::InteractiveMode;
 use crate::jobs::{Job, JobRequest, JobState};
 use crate::render::store::RenderObjectSettingStore;
 use crate::render::Objects;
-use crate::resources::{Configuration, InputResource, Phase, SolutionResource};
+use crate::resources::{Configuration, Phase, SolutionResource};
 use bevy::prelude::*;
 use bevy_egui::egui::{Align, CursorIcon, Frame, Layout, MenuBar, TopBottomPanel, Ui};
 use bevy_orbit_camera::automatic::AutomaticRotation;
@@ -97,7 +97,6 @@ pub fn show(
     job_state: Res<JobState>,
     solution: Res<SolutionResource>,
     mut render_setting_store: ResMut<RenderObjectSettingStore>,
-    mesh_ref: Res<InputResource>,
     mut automatic_rotation: ResMut<AutomaticRotation>,
 ) -> Result<(), BevyError> {
     TopBottomPanel::top("panel")
@@ -138,7 +137,7 @@ pub fn show(
                     ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
                         ui.add_space(17.);
                         MenuBar::new().ui(ui, |ui| {
-                            pipeline_bar(ui, &mut jobs, &mut conf, &solution, &mesh_ref);
+                            pipeline_bar(ui, &mut jobs, &mut conf, &solution);
                         });
                     });
 
@@ -353,7 +352,6 @@ fn pipeline_bar(
     jobs: &mut MessageWriter<JobRequest>,
     conf: &mut Configuration,
     solution: &SolutionResource,
-    mesh_ref: &InputResource,
 ) {
     let current = &solution.current_solution;
     let mut stopped = false;
@@ -382,10 +380,19 @@ fn pipeline_bar(
             slider(ui, "cg_iterations", &mut params.cg_iterations, 10..=500);
             log_slider(ui, "smooth_weight", &mut params.smooth_weight, 10.0);
             log_slider(ui, "axis_weight", &mut params.axis_weight, 100.0);
+            log_slider(ui, "axis_length_power", &mut params.axis_length_power, 10.0);
             log_slider(ui, "curvature_weight", &mut params.curvature_weight, 10.);
             log_slider(ui, "coupling_weight", &mut params.coupling_weight, 0.5);
 
-            if sleek_button(ui, "initialize") {
+            space(ui);
+
+            if sleek_button(ui, "default weights") {
+                *params = dualcube::flow::FieldParams::default();
+            }
+
+            sep(ui);
+
+            if sleek_button(ui, "compute") {
                 jobs.write(JobRequest::Run(Job::fields(
                     solution.current_solution.clone(),
                     conf.clone(),
@@ -395,6 +402,61 @@ fn pipeline_bar(
         },
     );
     stop_toggle(ui, conf, &mut stopped, Phase::Field);
+
+    // Graph
+    stage(
+        ui,
+        stopped,
+        "Graph",
+        current.fields.is_some(),
+        Some(
+            if current.flow_graphs.is_some() {
+                "(Ok)"
+            } else {
+                ""
+            }
+            .to_string(),
+        ),
+        |ui| {
+            let params = &mut conf.graph_params;
+
+            log_slider(
+                ui,
+                "alignment_penalty_weight",
+                &mut params.alignment_penalty_weight,
+                100.0,
+            );
+            log_slider(
+                ui,
+                "length_penalty_weight",
+                &mut params.length_penalty_weight,
+                100.0,
+            );
+            log_slider(
+                ui,
+                "combined_penalty_weight",
+                &mut params.combined_penalty_weight,
+                100.0,
+            );
+
+            space(ui);
+
+            if sleek_button(ui, "default weights") {
+                *params = dualcube::flow::GraphParams::default();
+            }
+
+            sep(ui);
+
+            if sleek_button(ui, "compute") {
+                jobs.write(JobRequest::Run(Job::compute_graph(
+                    solution.current_solution.clone(),
+                    conf.clone(),
+                )));
+                ui.close();
+            }
+        },
+    );
+    stop_toggle(ui, conf, &mut stopped, Phase::Graph);
 
     // Loops
     stage(

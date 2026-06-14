@@ -33,7 +33,7 @@ impl Plugin for UiPlugin {
 
 /// Sets the fonts and the theme once the primary egui context is created.
 fn setup(_: On<Add, PrimaryEguiContext>, mut ui: bevy_egui::EguiContexts) -> Result<(), BevyError> {
-    println!("running ui setup");
+    info!("running ui setup");
     // Font
     let mut fonts = bevy_egui::egui::FontDefinitions::default();
     fonts.font_data.insert(

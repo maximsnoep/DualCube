@@ -27,13 +27,7 @@ pub fn import_solution(path: PathBuf) -> Solution {
     match path.extension().unwrap().to_str() {
         Some("obj") => {
             let mesh = match mehsh::mesh::connectivity::Mesh::from_obj(&path) {
-                Ok(mut res) => {
-                    let params = dualcube::pca::AxisFitParams::default();
-
-                    dualcube::pca::reorient_mesh_by_face_normal_axis_fit(&mut res.0, params);
-
-                    Arc::new(res.0)
-                }
+                Ok(res) => Arc::new(res.0),
                 Err(err) => {
                     panic!("Error while parsing OBJ file {path:?}: {err:?}");
                 }

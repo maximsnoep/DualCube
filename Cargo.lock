@@ -440,9 +440,7 @@ dependencies = [
 
 [[package]]
 name = "bevy-orbit-camera"
-version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e13edd2b92321d914c98e38c412f52f011e7f2659d085441b159a213dbf29ec3"
+version = "0.3.0"
 dependencies = [
  "bevy",
 ]

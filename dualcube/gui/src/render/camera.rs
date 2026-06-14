@@ -15,7 +15,6 @@ use bevy_egui::{EguiGlobalSettings, PrimaryEguiContext};
 use bevy_orbit_camera::*;
 use bevy_toon::ToonMaterial;
 use egui_dock::LeafNode;
-use enum_iterator::all;
 use std::ops::Index;
 use wgpu_types::BlendState;
 
@@ -41,7 +40,7 @@ pub fn setup(
     mut images: ResMut<Assets<Image>>,
     mut handles: ResMut<CameraHandles>,
     cameras: Query<Entity, With<Camera>>,
-    configuration: ResMut<Configuration>,
+    configuration: Res<Configuration>,
 ) {
     for camera in cameras.iter() {
         commands.entity(camera).despawn();
@@ -117,7 +116,7 @@ pub fn setup(
     };
     image.resize(image.texture_descriptor.size);
 
-    for object in all::<Objects>() {
+    for object in configuration.window_shows_object {
         let handle = images.add(image.clone());
         handles.map.insert(CameraFor(object), handle.clone());
 
@@ -150,7 +149,7 @@ pub fn setup(
 /// Applies the configured mouse sensitivities to the main camera controller.
 pub fn update_camera_settings(
     mut camera_controller: Query<&mut Controller>,
-    configuration: ResMut<Configuration>,
+    configuration: Res<Configuration>,
 ) {
     let Ok(mut main_camera) = camera_controller.single_mut() else {
         // This system runs every frame; only warn once to avoid log spam.
@@ -158,12 +157,18 @@ pub fn update_camera_settings(
         return;
     };
 
-    *main_camera = Controller {
-        mouse_rotate_sensitivity: Vec2::splat(configuration.camera_rotate_sensitivity),
-        mouse_translate_sensitivity: Vec2::splat(configuration.camera_translate_sensitivity),
-        mouse_wheel_zoom_sensitivity: configuration.camera_zoom_sensitivity,
-        ..Default::default()
-    };
+    let rotate_sensitivity = Vec2::splat(configuration.camera_rotate_sensitivity);
+    let translate_sensitivity = Vec2::splat(configuration.camera_translate_sensitivity);
+
+    if main_camera.mouse_rotate_sensitivity != rotate_sensitivity {
+        main_camera.mouse_rotate_sensitivity = rotate_sensitivity;
+    }
+    if main_camera.mouse_translate_sensitivity != translate_sensitivity {
+        main_camera.mouse_translate_sensitivity = translate_sensitivity;
+    }
+    if main_camera.mouse_wheel_zoom_sensitivity != configuration.camera_zoom_sensitivity {
+        main_camera.mouse_wheel_zoom_sensitivity = configuration.camera_zoom_sensitivity;
+    }
 }
 
 /// Fits the main camera to its dock viewport, and keeps the sub cameras (and
@@ -194,15 +199,15 @@ pub fn update(
 
     if window.physical_size().x == 0
         || window.physical_size().y == 0
-        || viewport_width == 0.
-        || viewport_height == 0.
-        || viewport_width.is_infinite()
-        || viewport_height.is_infinite()
+        || viewport_width <= 0.
+        || viewport_height <= 0.
+        || !viewport_width.is_finite()
+        || !viewport_height.is_finite()
     {
         main_camera.is_active = false;
     } else {
         main_camera.is_active = true;
-        main_camera.viewport = Some(Viewport {
+        let viewport = Viewport {
             physical_position: UVec2 {
                 x: main_surface_viewport.min[0] as u32,
                 y: main_surface_viewport.min[1] as u32,
@@ -212,14 +217,22 @@ pub fn update(
                 y: viewport_height as u32,
             },
             ..Default::default()
+        };
+        let viewport_changed = main_camera.viewport.as_ref().is_none_or(|current| {
+            current.physical_position != viewport.physical_position
+                || current.physical_size != viewport.physical_size
+                || current.depth != viewport.depth
         });
+        if viewport_changed {
+            main_camera.viewport = Some(viewport);
+        }
     }
 
     look.up = configuration.camera_up.normalize();
 
     let normalized_translation = main_transform.translation - Vec3::from(Objects::InputMesh);
     let normalized_rotation = main_transform.rotation;
-    let distance = normalized_translation.length();
+    let distance = normalized_translation.length().max(0.001);
 
     for (mut sub_transform, mut sub_projection, _sub_camera, sub_object) in &mut other_cameras {
         sub_transform.translation = normalized_translation + Vec3::from(sub_object.0);
@@ -232,7 +245,9 @@ pub fn update(
     }
 
     // The toon shading is based on the view direction of the camera.
-    for material in custom_materials.iter_mut() {
-        material.1.view_dir = normalized_translation.normalize();
+    if let Some(view_dir) = normalized_translation.try_normalize() {
+        for material in custom_materials.iter_mut() {
+            material.1.view_dir = view_dir;
+        }
     }
 }

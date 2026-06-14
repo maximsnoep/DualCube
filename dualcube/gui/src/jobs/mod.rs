@@ -102,6 +102,7 @@ enum JobResult {
     /// New render objects are ready to be displayed.
     Refreshed(RenderObjectStore),
     /// A candidate loop was computed (or failed: `solution` is `None`).
+    #[allow(dead_code)]
     AddedLoop {
         anchors: Vec<[EdgeID; 2]>,
         direction: PrincipalDirection,
