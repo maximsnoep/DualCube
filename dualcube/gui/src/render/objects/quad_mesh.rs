@@ -1,7 +1,7 @@
 //! Render object for the quad mesh.
 
-use super::gizmos::{edge_endpoints_view, uniform_color_map};
-use super::store::RenderObject;
+use super::super::gizmos::{edge_endpoints_view, uniform_color_map};
+use super::super::store::RenderObject;
 use crate::colors;
 use bevy::prelude::*;
 use dualcube::prelude::*;
@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet};
 /// - mesh with colored faces
 /// - wireframe (the quads)
 /// - paths along irregular edge loops (flat and non-flat)
-pub(super) fn build(solution: &Solution) -> Option<RenderObject> {
+pub(in crate::render) fn build(solution: &Solution) -> Option<RenderObject> {
     let quad = solution.quad.as_ref()?;
 
     let mesh = &quad.quad_mesh;

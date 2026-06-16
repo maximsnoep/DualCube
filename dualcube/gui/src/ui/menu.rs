@@ -293,11 +293,7 @@ fn menu_bar(
 
         space(ui);
 
-        for direction in [
-            PrincipalDirection::X,
-            PrincipalDirection::Y,
-            PrincipalDirection::Z,
-        ] {
+        for direction in DIRECTIONS {
             let color = to_color32(colors::from_direction(
                 direction,
                 Some(Perspective::Dual),
@@ -343,6 +339,10 @@ fn menu_bar(
 
         space(ui);
     });
+
+    if sleek_button(ui, "CANCEL") {
+        jobs.write(JobRequest::Cancel);
+    }
 }
 
 /// The pipeline bar: one stage per phase, each with its actions and a stop
@@ -387,7 +387,7 @@ fn pipeline_bar(
             space(ui);
 
             if sleek_button(ui, "default weights") {
-                *params = dualcube::flow::FieldParams::default();
+                *params = FieldParams::default();
             }
 
             sep(ui);
@@ -420,29 +420,29 @@ fn pipeline_bar(
         |ui| {
             let params = &mut conf.graph_params;
 
-            log_slider(
+            slider(
                 ui,
-                "alignment_penalty_weight",
-                &mut params.alignment_penalty_weight,
-                100.0,
+                "alignment_weight",
+                &mut params.alignment_weight,
+                1.0..=100.0,
             );
-            log_slider(
+            slider(
                 ui,
-                "length_penalty_weight",
-                &mut params.length_penalty_weight,
-                100.0,
+                "confidence_weight",
+                &mut params.confidence_weight,
+                0.0..=10.0,
             );
-            log_slider(
+            slider(
                 ui,
-                "combined_penalty_weight",
-                &mut params.combined_penalty_weight,
-                100.0,
+                "flow graph top %",
+                &mut conf.flow_graph_top_percent,
+                0.0..=100.0,
             );
 
             space(ui);
 
             if sleek_button(ui, "default weights") {
-                *params = dualcube::flow::GraphParams::default();
+                *params = GraphParams::default();
             }
 
             sep(ui);

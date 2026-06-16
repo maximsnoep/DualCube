@@ -1,5 +1,3 @@
-use crate::dual::{Dual, LoopRegionID};
-use crate::layout::Layout;
 use crate::prelude::*;
 use bimap::BiHashMap;
 use itertools::Itertools;
@@ -88,11 +86,7 @@ impl Polycube {
         let mut levels = [Vec::new(), Vec::new(), Vec::new()];
 
         // Fix the positions of the vertices that are in the same level
-        for direction in [
-            PrincipalDirection::X,
-            PrincipalDirection::Y,
-            PrincipalDirection::Z,
-        ] {
+        for direction in DIRECTIONS {
             for (level, zones) in dual.level_graphs.levels[direction as usize]
                 .iter()
                 .enumerate()
@@ -130,11 +124,7 @@ impl Polycube {
 
         // scale the coordinates s.t. smallest edge is 1, and all other edges are multiples of 1 (integer lengths)
         let mut min_distance = f64::MAX;
-        for direction in [
-            PrincipalDirection::X,
-            PrincipalDirection::Y,
-            PrincipalDirection::Z,
-        ] {
+        for direction in DIRECTIONS {
             let direction_levels = &levels[direction as usize];
             for (level1, level2) in direction_levels.iter().tuple_windows() {
                 let distance = (level2.0 - level1.0).abs();
@@ -148,11 +138,7 @@ impl Polycube {
             "The distance between two levels is 0. This should not happen."
         );
         let scale = 1. / min_distance;
-        for direction in [
-            PrincipalDirection::X,
-            PrincipalDirection::Y,
-            PrincipalDirection::Z,
-        ] {
+        for direction in DIRECTIONS {
             for (level, verts_in_level) in levels[direction as usize].iter() {
                 let value = level * scale;
                 // round to nearest integer
@@ -178,7 +164,7 @@ impl Polycube {
         &self,
         a: VertKey<POLYCUBE>,
         b: VertKey<POLYCUBE>,
-    ) -> (PrincipalDirection, Orientation) {
+    ) -> (Direction, Sign) {
         to_principal_direction(
             self.structure
                 .vector(self.structure.edge_between_verts(a, b).unwrap().0),
@@ -236,13 +222,13 @@ impl Polycube {
         for edge_id in polycube.structure.edge_ids() {
             let direction_vector = polycube.structure.vector(edge_id).normalize();
             let (direction, orientation) = to_principal_direction(direction_vector);
-            if orientation == Orientation::Backwards {
+            if orientation == Sign::Negative {
                 continue;
             }
             let label = match direction {
-                PrincipalDirection::X => "X",
-                PrincipalDirection::Y => "Y",
-                PrincipalDirection::Z => "Z",
+                Direction::X => "X",
+                Direction::Y => "Y",
+                Direction::Z => "Z",
             };
             let Some([v1, v2]) = polycube.structure.vertices(edge_id).collect_array::<2>() else {
                 panic!()

@@ -28,6 +28,8 @@ pub enum MeshError<M> {
     NotConnected,
     #[error("{0} is not a polygon (less than 3 vertices)")]
     FaceNotPolygon(FaceKey<M>),
+    #[error("{0} is not a triangle")]
+    FaceNotTriangle(FaceKey<M>),
     #[error("{0} is not planar (vertices are not coplanar)")]
     FaceNotPlanar(FaceKey<M>),
     #[error("{0} is not simple (edges intersect)")]

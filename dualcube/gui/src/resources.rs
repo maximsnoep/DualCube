@@ -5,9 +5,7 @@ use crate::controls::InteractiveMode;
 use crate::render::store::MeshProperties;
 use crate::render::Objects;
 use bevy::prelude::*;
-use dualcube::polycube::POLYCUBE;
 use dualcube::prelude::*;
-use dualcube::solutions::Solution;
 use mehsh::prelude::*;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -29,7 +27,7 @@ pub enum Phase {
 
 #[derive(Resource, Debug, Clone)]
 pub struct Configuration {
-    pub direction: PrincipalDirection,
+    pub direction: Direction,
     pub alpha: f64,
 
     pub unit: bool,
@@ -64,14 +62,15 @@ pub struct Configuration {
 
     pub clear_color: [u8; 3],
 
-    pub fields_params: dualcube::flow::FieldParams,
-    pub graph_params: dualcube::flow::GraphParams,
+    pub fields_params: FieldParams,
+    pub graph_params: GraphParams,
+    pub flow_graph_top_percent: f32,
 }
 
 impl Default for Configuration {
     fn default() -> Self {
         Self {
-            direction: PrincipalDirection::X,
+            direction: Direction::X,
             alpha: 0.5,
 
             unit: true,
@@ -101,8 +100,9 @@ impl Default for Configuration {
             camera_zoom_sensitivity: 0.2,
             automatic_rotation_camera: true,
 
-            fields_params: dualcube::flow::FieldParams::default(),
-            graph_params: dualcube::flow::GraphParams::default(),
+            fields_params: FieldParams::default(),
+            graph_params: GraphParams::default(),
+            flow_graph_top_percent: 100.0,
         }
     }
 }
@@ -112,7 +112,6 @@ impl Default for Configuration {
 pub struct InputResource {
     pub mesh: Arc<mehsh::prelude::Mesh<INPUT>>,
     pub properties: MeshProperties,
-    /// Reserved (currently unused, but kept up-to-date with the mesh).
     #[allow(dead_code)]
     pub vertex_lookup: mehsh::prelude::VertLocation<INPUT>,
     pub triangle_lookup: mehsh::prelude::FaceLocation<INPUT>,

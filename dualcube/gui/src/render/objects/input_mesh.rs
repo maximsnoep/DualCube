@@ -1,28 +1,24 @@
 //! Render object for the input (triangle) mesh.
 
-use super::gizmos::{
+use super::super::gizmos::{
     flow_graph_gizmos, lambert_color_map, layout_path_gizmos, segmentation_color_map,
     uniform_color_map, world_to_view, DirectionalGizmos,
 };
-use super::store::RenderObject;
+use super::super::store::RenderObject;
 use crate::colors;
 use bevy::prelude::*;
 use dualcube::prelude::*;
 use mehsh::prelude::*;
 use std::collections::HashMap;
 
-const PRINCIPAL_DIRECTIONS: [PrincipalDirection; 3] = [
-    PrincipalDirection::X,
-    PrincipalDirection::Y,
-    PrincipalDirection::Z,
-];
+const PRINCIPAL_DIRECTIONS: [Direction; 3] = DIRECTIONS;
 
 /// The INPUT MESH render object, it has:
 /// - meshes with gray / black / lambert-shaded faces
 /// - segmentation and alignment colorings (if a layout exists)
 /// - wireframes (input and granulated mesh)
 /// - the dual loops, layout paths, and vector fields
-pub(super) fn build(solution: &Solution) -> Option<RenderObject> {
+pub(in crate::render) fn build(solution: &Solution) -> Option<RenderObject> {
     let input = solution.mesh_ref.as_ref();
     let (scale, translation) = input.scale_translation();
 
@@ -38,7 +34,7 @@ pub(super) fn build(solution: &Solution) -> Option<RenderObject> {
         let c = colors::to_bevy(colors::from_direction(
             direction,
             Some(Perspective::Dual),
-            Some(Orientation::Forwards),
+            Some(Sign::Positive),
         ));
         loops.get_mut(direction).linestrip(positions, c);
     }
@@ -117,7 +113,7 @@ pub(super) fn build(solution: &Solution) -> Option<RenderObject> {
         for (graph, dir) in flow_graphs.iter().zip(PRINCIPAL_DIRECTIONS) {
             let color = colors::from_direction(dir, None, None);
             *flow_graph_dir.get_mut(dir) =
-                flow_graph_gizmos(&graph.edges(), input, color, translation, scale);
+                flow_graph_gizmos(&graph.edges(), input, color, translation, scale, 100.0);
         }
     }
 

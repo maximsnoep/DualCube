@@ -15,11 +15,7 @@
 //! The loop bookkeeping and tracing methods live in [`crate::loops`]; the flow
 //! graph construction lives in [`crate::flow::graph`].
 
-use crate::dual::{Dual, PropertyViolationError};
-use crate::layout::{Layout, LayoutError};
-use crate::polycube::{Polycube, POLYCUBE};
 use crate::prelude::*;
-use crate::quad::Quad;
 use itertools::Itertools;
 use mehsh::prelude::*;
 use ordered_float::OrderedFloat;
@@ -27,10 +23,8 @@ use orx_parallel::*;
 use rand::seq::IteratorRandom;
 use serde::{Deserialize, Serialize};
 use slotmap::SlotMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use thiserror::Error;
-
-pub use crate::loops::{wrap_pairs, Loop, LoopID, NodeCopy};
 
 #[derive(Error, Debug, Clone, Serialize, Deserialize)]
 pub enum SolutionError {
@@ -78,11 +72,7 @@ pub struct Solution {
     pub flow_graphs: Option<[grapff::fixed::FixedGraph<EdgeID, f64>; 3]>,
 
     #[serde(skip)]
-    pub(crate) available_flow_graphs:
-        Arc<RwLock<Option<Arc<[grapff::fixed::FixedGraph<EdgeID, f64>; 3]>>>>,
-
-    #[serde(skip)]
-    pub fields: Option<crate::flow::Fields<INPUT>>,
+    pub fields: Option<Fields<INPUT>>,
 }
 
 impl Clone for Solution {
@@ -97,7 +87,6 @@ impl Clone for Solution {
             layout: self.layout.clone(),
             quad: self.quad.clone(),
             flow_graphs: self.flow_graphs.clone(),
-            available_flow_graphs: Arc::new(RwLock::new(None)),
             fields: self.fields.clone(),
         }
     }
@@ -130,7 +119,6 @@ impl Solution {
             quad: None,
 
             flow_graphs: None,
-            available_flow_graphs: Arc::new(RwLock::new(None)),
 
             mesh_ref: data.mesh_ref,
         }
@@ -162,7 +150,6 @@ impl Solution {
             // reconstructed rather than initialized from scratch.
             fields: None,
             flow_graphs: None,
-            available_flow_graphs: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -177,9 +164,9 @@ impl Solution {
             return;
         }
         if self.fields.is_none() {
-            self.fields = Some(crate::flow::Fields::from_mesh(&self.mesh_ref));
+            self.fields = Some(Fields::new(&self.mesh_ref, FieldParams::default()));
         }
-        self.set_flow_graphs();
+        self.set_flow_graphs(GraphParams::default());
     }
 
     /// Initialize the loop structure by sampling per-axis loops and keeping the
@@ -192,9 +179,9 @@ impl Solution {
         let s = |(p, _): (&[EdgeID], f64)| -(p.len() as f64);
 
         let samples = 3;
-        let x_loops = self.sample_loops(samples, PrincipalDirection::X, m, s);
-        let y_loops = self.sample_loops(samples, PrincipalDirection::Y, m, s);
-        let z_loops = self.sample_loops(samples, PrincipalDirection::Z, m, s);
+        let x_loops = self.sample_loops(samples, Direction::X, m, s);
+        let y_loops = self.sample_loops(samples, Direction::Y, m, s);
+        let z_loops = self.sample_loops(samples, Direction::Z, m, s);
 
         // Compute all n^3 combinations
         let combinations = x_loops
@@ -210,15 +197,15 @@ impl Solution {
                 let mut solution = self.clone();
                 solution.add_loop(Loop {
                     edges: x_loop,
-                    direction: PrincipalDirection::X,
+                    direction: Direction::X,
                 });
                 solution.add_loop(Loop {
                     edges: y_loop,
-                    direction: PrincipalDirection::Y,
+                    direction: Direction::Y,
                 });
                 solution.add_loop(Loop {
                     edges: z_loop,
-                    direction: PrincipalDirection::Z,
+                    direction: Direction::Z,
                 });
                 if solution.reconstruct_solution(false, 1).is_err() {
                     None
@@ -539,19 +526,19 @@ impl Solution {
                 }
 
                 let x_loops = self
-                    .sample_loops(x as usize, PrincipalDirection::X, m, s)
+                    .sample_loops(x as usize, Direction::X, m, s)
                     .into_iter()
-                    .map(|x| (x, PrincipalDirection::X))
+                    .map(|x| (x, Direction::X))
                     .collect_vec();
                 let y_loops = self
-                    .sample_loops(y as usize, PrincipalDirection::Y, m, s)
+                    .sample_loops(y as usize, Direction::Y, m, s)
                     .into_iter()
-                    .map(|y| (y, PrincipalDirection::Y))
+                    .map(|y| (y, Direction::Y))
                     .collect_vec();
                 let z_loops = self
-                    .sample_loops(z as usize, PrincipalDirection::Z, m, s)
+                    .sample_loops(z as usize, Direction::Z, m, s)
                     .into_iter()
-                    .map(|z| (z, PrincipalDirection::Z))
+                    .map(|z| (z, Direction::Z))
                     .collect_vec();
 
                 // Iteratively add the loops, save result if result is valid.

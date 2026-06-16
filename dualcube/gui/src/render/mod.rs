@@ -2,10 +2,12 @@
 
 pub mod camera;
 pub mod gizmos;
-mod input_mesh;
-mod polycube;
-mod polycube_map;
-mod quad_mesh;
+pub mod objects {
+    pub mod input_mesh;
+    pub mod polycube;
+    pub mod polycube_map;
+    pub mod quad_mesh;
+}
 pub mod store;
 
 use crate::resources::Configuration;
@@ -58,10 +60,10 @@ impl Objects {
     /// The display name and scene builder of each object.
     fn spec(self) -> (&'static str, fn(&Solution) -> Option<RenderObject>) {
         match self {
-            Self::InputMesh => ("input mesh", input_mesh::build),
-            Self::Polycube => ("polycube", polycube::build),
-            Self::PolycubeMap => ("polycube-map", polycube_map::build),
-            Self::QuadMesh => ("quad mesh", quad_mesh::build),
+            Self::InputMesh => ("input mesh", objects::input_mesh::build),
+            Self::Polycube => ("polycube", objects::polycube::build),
+            Self::PolycubeMap => ("polycube-map", objects::polycube_map::build),
+            Self::QuadMesh => ("quad mesh", objects::quad_mesh::build),
         }
     }
 }

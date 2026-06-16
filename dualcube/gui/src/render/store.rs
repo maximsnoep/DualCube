@@ -6,6 +6,7 @@ use crate::colors;
 use crate::resources::Configuration;
 use bevy::prelude::*;
 use bevy_toon::ToonMaterial;
+use dualcube::prelude::Direction;
 use itertools::Itertools;
 use mehsh::prelude::*;
 use std::collections::HashMap;
@@ -24,6 +25,13 @@ pub struct Rendered;
 /// Marks the input mesh, the target for raycasting in the interactive modes.
 #[derive(Component)]
 pub struct MainMesh;
+
+/// Marks a spawned flow-graph gizmo so it can be updated without rebuilding the
+/// full render-object store.
+#[derive(Component)]
+pub struct FlowGraphGizmo {
+    pub direction: Direction,
+}
 
 /// A single renderable feature of a [`RenderObject`].
 #[derive(Clone)]
@@ -224,7 +232,7 @@ pub fn respawn_renders(
                     line_width,
                     depth_bias,
                 } => {
-                    commands.spawn((
+                    let mut entity = commands.spawn((
                         Gizmo {
                             handle: gizmos.add(asset.clone()),
                             line_config: GizmoLineConfig {
@@ -237,6 +245,16 @@ pub fn respawn_renders(
                         Transform::from_translation(translation),
                         Rendered,
                     ));
+
+                    let direction = match (object, label.as_str()) {
+                        (Objects::InputMesh, "x-flow-graph") => Some(Direction::X),
+                        (Objects::InputMesh, "y-flow-graph") => Some(Direction::Y),
+                        (Objects::InputMesh, "z-flow-graph") => Some(Direction::Z),
+                        _ => None,
+                    };
+                    if let Some(direction) = direction {
+                        entity.insert(FlowGraphGizmo { direction });
+                    }
                 }
             }
         }

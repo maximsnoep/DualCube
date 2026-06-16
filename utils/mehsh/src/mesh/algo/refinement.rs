@@ -2,6 +2,19 @@ use crate::prelude::*;
 
 impl<M: Tag> Mesh<M> {
     pub fn split_edge(&mut self, edge_id: EdgeKey<M>) -> (VertKey<M>, [FaceKey<M>; 4]) {
+        let face_a = self.face(edge_id);
+        let face_b = self.face(self.twin(edge_id));
+        assert_eq!(
+            self.vertices(face_a).count(),
+            3,
+            "split_edge only supports triangular faces"
+        );
+        assert_eq!(
+            self.vertices(face_b).count(),
+            3,
+            "split_edge only supports triangular faces"
+        );
+
         // First face
         let e_ab = edge_id;
         let e_b0 = self.next(e_ab);
@@ -118,6 +131,7 @@ impl<M: Tag> Mesh<M> {
 
     pub fn split_face(&mut self, face_id: FaceKey<M>) -> (VertKey<M>, [FaceKey<M>; 3]) {
         let edges = self.edges(face_id).collect_vec();
+        assert_eq!(edges.len(), 3, "split_face only supports triangular faces");
         // let centroid = self.centroid(face_id);
 
         // Original face

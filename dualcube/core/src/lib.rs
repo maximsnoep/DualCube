@@ -1,28 +1,36 @@
-// Folders are prefixed (a_, b_, ...) so they sort in pipeline order in the file
-// tree, while the module names stay clean (`flow`, `loops`, `dual`, ...).
-#[path = "c_dual/mod.rs"]
+#[path = "201-dual/mod.rs"]
 pub mod dual;
-#[path = "a_flow/mod.rs"]
-pub mod flow;
-#[path = "g_hex/mod.rs"]
+#[path = "100-flowfield/mod.rs"]
+pub mod flowfield;
+#[path = "101-flowgraph/mod.rs"]
+pub mod flowgraph;
+#[path = "600-hex/mod.rs"]
 pub mod hex;
-#[path = "d_layout/mod.rs"]
+#[path = "300-layout/mod.rs"]
 pub mod layout;
-#[path = "b_loops/mod.rs"]
+#[path = "200-loops/mod.rs"]
 pub mod loops;
-#[path = "e_polycube/mod.rs"]
+#[path = "301-polycube/mod.rs"]
 pub mod polycube;
-#[path = "f_quad/mod.rs"]
+#[path = "500-quad/mod.rs"]
 pub mod quad;
-pub mod solutions;
+
+pub mod solution;
 
 pub mod prelude {
     use mehsh::prelude::*;
     use serde::{Deserialize, Serialize};
     use std::fmt::Display;
 
-    pub use crate::polycube::Polycube;
-    pub use crate::solutions::Solution;
+    pub use crate::dual::*;
+    pub use crate::flowfield::*;
+    pub use crate::flowgraph::*;
+    // pub use crate::hex::*;
+    pub use crate::layout::*;
+    pub use crate::loops::*;
+    pub use crate::polycube::*;
+    pub use crate::quad::*;
+    pub use crate::solution::*;
 
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
     pub struct INPUT;
@@ -30,29 +38,31 @@ pub mod prelude {
     pub type EdgeID = EdgeKey<INPUT>;
     pub type FaceID = FaceKey<INPUT>;
 
-    // Principal directions, used to characterize a polycube (each edge and face is associated with a principal direction)
+    // The three coordinate directions X, Y and Z
     #[derive(Copy, Clone, Default, PartialEq, Eq, Debug, Hash, Serialize, Deserialize)]
-    pub enum PrincipalDirection {
+    pub enum Direction {
         #[default]
         X,
         Y,
         Z,
     }
-    impl Display for PrincipalDirection {
+    impl Display for Direction {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match self {
-                Self::X => write!(f, "X-axis"),
-                Self::Y => write!(f, "Y-axis"),
-                Self::Z => write!(f, "Z-axis"),
+                Self::X => write!(f, "x-direction"),
+                Self::Y => write!(f, "y-direction"),
+                Self::Z => write!(f, "z-direction"),
             }
         }
     }
 
+    pub const DIRECTIONS: [Direction; 3] = [Direction::X, Direction::Y, Direction::Z];
+
     #[derive(Default, Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-    pub enum Orientation {
+    pub enum Sign {
         #[default]
-        Forwards,
-        Backwards,
+        Positive,
+        Negative,
     }
 
     #[derive(Copy, Clone, Default, Debug, Serialize, Deserialize)]
@@ -62,12 +72,12 @@ pub mod prelude {
         Dual,
     }
 
-    impl From<PrincipalDirection> for Vector3D {
-        fn from(dir: PrincipalDirection) -> Self {
+    impl From<Direction> for Vector3D {
+        fn from(dir: Direction) -> Self {
             match dir {
-                PrincipalDirection::X => Self::new(1., 0., 0.),
-                PrincipalDirection::Y => Self::new(0., 1., 0.),
-                PrincipalDirection::Z => Self::new(0., 0., 1.),
+                Direction::X => Self::new(1., 0., 0.),
+                Direction::Y => Self::new(0., 1., 0.),
+                Direction::Z => Self::new(0., 0., 1.),
             }
         }
     }
@@ -78,7 +88,7 @@ pub mod prelude {
         Lower,
     }
 
-    pub fn to_principal_direction(v: Vector3D) -> (PrincipalDirection, Orientation) {
+    pub fn to_principal_direction(v: Vector3D) -> (Direction, Sign) {
         let x_is_max = v.x.abs() >= v.y.abs() && v.x.abs() >= v.z.abs();
         let y_is_max = v.y.abs() > v.x.abs() && v.y.abs() >= v.z.abs();
         let z_is_max = v.z.abs() > v.x.abs() && v.z.abs() > v.y.abs();
@@ -86,32 +96,32 @@ pub mod prelude {
 
         if x_is_max {
             if v.x > 0. {
-                (PrincipalDirection::X, Orientation::Forwards)
+                (Direction::X, Sign::Positive)
             } else {
-                (PrincipalDirection::X, Orientation::Backwards)
+                (Direction::X, Sign::Negative)
             }
         } else if y_is_max {
             if v.y > 0. {
-                (PrincipalDirection::Y, Orientation::Forwards)
+                (Direction::Y, Sign::Positive)
             } else {
-                (PrincipalDirection::Y, Orientation::Backwards)
+                (Direction::Y, Sign::Negative)
             }
         } else if z_is_max {
             if v.z > 0. {
-                (PrincipalDirection::Z, Orientation::Forwards)
+                (Direction::Z, Sign::Positive)
             } else {
-                (PrincipalDirection::Z, Orientation::Backwards)
+                (Direction::Z, Sign::Negative)
             }
         } else {
             unreachable!()
         }
     }
 
-    pub fn to_vector(dir: PrincipalDirection, orientation: Orientation) -> Vector3D {
+    pub fn to_vector(dir: Direction, sign: Sign) -> Vector3D {
         let v = Vector3D::from(dir);
-        match orientation {
-            Orientation::Forwards => v,
-            Orientation::Backwards => -v,
+        match sign {
+            Sign::Positive => v,
+            Sign::Negative => -v,
         }
     }
 }

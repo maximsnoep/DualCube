@@ -1,5 +1,3 @@
-use crate::layout::Layout;
-use crate::polycube::{Polycube, POLYCUBE};
 use crate::prelude::*;
 use bimap::BiHashMap;
 use faer::sparse::{SparseColMat, Triplet};

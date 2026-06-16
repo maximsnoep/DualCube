@@ -4,18 +4,12 @@ use super::{Job, JobResult};
 use crate::resources::Configuration;
 use bevy::prelude::*;
 use dualcube::prelude::*;
-use dualcube::solutions::{Loop, LoopID};
 use ordered_float::OrderedFloat;
 
 impl Job {
     /// Computes a candidate solution containing a new loop through `anchors`.
     /// The candidate is `None` if no valid loop (or solution) could be found.
-    #[allow(dead_code)]
-    pub fn add_loop(
-        solution: Solution,
-        anchors: Vec<[EdgeID; 2]>,
-        direction: PrincipalDirection,
-    ) -> Self {
+    pub fn add_loop(solution: Solution, anchors: Vec<[EdgeID; 2]>, direction: Direction) -> Self {
         Self::new("adding loop", move || {
             let candidate = solution
                 .construct_loop_with_anchors(&anchors, direction, |a: f64| OrderedFloat(a.powi(3)))

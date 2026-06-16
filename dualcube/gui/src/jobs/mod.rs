@@ -28,7 +28,6 @@ use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task};
 use dualcube::prelude::*;
-use dualcube::solutions::Solution;
 use pipeline::Stage;
 use std::sync::Arc;
 
@@ -43,7 +42,7 @@ impl Plugin for JobPlugin {
                 (
                     submit_jobs,
                     poll_jobs.run_if(bevy::time::common_conditions::on_timer(
-                        std::time::Duration::from_millis(1000),
+                        std::time::Duration::from_millis(10),
                     )),
                 ),
             );
@@ -105,7 +104,7 @@ enum JobResult {
     #[allow(dead_code)]
     AddedLoop {
         anchors: Vec<[EdgeID; 2]>,
-        direction: PrincipalDirection,
+        direction: Direction,
         solution: Option<Solution>,
     },
     /// A loop was removed.
@@ -127,8 +126,13 @@ fn submit_jobs(mut ev_reader: MessageReader<JobRequest>, mut job_state: ResMut<J
                 let task = AsyncComputeTaskPool::get().spawn(async move { (job.run)() });
                 job_state.current = Some(task);
             }
-            (JobRequest::Cancel, Some(_)) => {
-                //
+            (JobRequest::Cancel, Some(job)) => {
+                info!("Cancelling job: {}", job);
+                job_state.request = None;
+                // Cancel the thread
+                if let Some(task) = job_state.current.take() {
+                    let future = task.cancel();
+                }
             }
             _ => {}
         }

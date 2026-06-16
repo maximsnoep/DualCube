@@ -77,39 +77,29 @@ pub fn calculate_2d_lineseg_intersection(p_u: Vector2D, p_v: Vector2D, q_u: Vect
     let u_numerator = (x1 - x3) * (y1 - y2) - (y1 - y3) * (x1 - x2);
     let denominator = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
 
-    if denominator.abs() < EPS {
+    const INTERSECTION_EPS: f64 = 1.0e-12;
+    if denominator.abs() < INTERSECTION_EPS {
         return None;
     }
 
-    if is_within_inclusive_range(t_numerator, 0.0, denominator) {
-        let t = t_numerator / denominator;
-        if t.abs() < EPS {
-            return Some((p_u, IntersectionType::Endpoint));
-        }
-        if (t - 1.0).abs() < EPS {
-            return Some((p_v, IntersectionType::Endpoint));
-        }
-        let sx_t = t.mul_add(x2 - x1, x1);
-        let sy_t = t.mul_add(y2 - y1, y1);
-        let s_t = Vector2D::new(sx_t, sy_t);
-
-        Some((s_t, IntersectionType::Proper))
-    } else if is_within_inclusive_range(u_numerator, 0.0, denominator) {
-        let u = u_numerator / denominator;
-        if u.abs() < EPS {
-            return Some((q_u, IntersectionType::Endpoint));
-        }
-        if (u - 1.0).abs() < EPS {
-            return Some((q_v, IntersectionType::Endpoint));
-        }
-        let sx_u = u.mul_add(x4 - x3, x3);
-        let sy_u = u.mul_add(y4 - y3, y3);
-        let s_u = Vector2D::new(sx_u, sy_u);
-
-        Some((s_u, IntersectionType::Proper))
-    } else {
-        None
+    let t = t_numerator / denominator;
+    let u = u_numerator / denominator;
+    if !(-INTERSECTION_EPS..=1.0 + INTERSECTION_EPS).contains(&t) || !(-INTERSECTION_EPS..=1.0 + INTERSECTION_EPS).contains(&u) {
+        return None;
     }
+
+    let point = Vector2D::new(t.mul_add(x2 - x1, x1), t.mul_add(y2 - y1, y1));
+    let intersection_type = if t.abs() < INTERSECTION_EPS
+        || (t - 1.0).abs() < INTERSECTION_EPS
+        || u.abs() < INTERSECTION_EPS
+        || (u - 1.0).abs() < INTERSECTION_EPS
+    {
+        IntersectionType::Endpoint
+    } else {
+        IntersectionType::Proper
+    };
+
+    Some((point, intersection_type))
 }
 
 #[must_use]
@@ -120,7 +110,11 @@ pub fn calculate_3d_lineseg_intersection(p_u: Vector3D, p_v: Vector3D, q_u: Vect
 
     let p = p_v - p_u;
     let q = q_v - q_u;
-    let normal_vector = p.cross(&q).normalize();
+    let normal = p.cross(&q);
+    if normal.norm() < 1.0e-12 {
+        return None;
+    }
+    let normal_vector = normal.normalize();
     let reference_point = p_u;
     let plane = (p.normalize(), p.cross(&normal_vector).normalize());
 

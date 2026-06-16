@@ -8,7 +8,6 @@ use super::{Job, JobResult};
 use crate::render;
 use crate::resources::{Configuration, Phase};
 use bevy::prelude::*;
-use dualcube::polycube::POLYCUBE;
 use dualcube::prelude::*;
 use mehsh::prelude::VertKey;
 
@@ -111,7 +110,7 @@ impl Job {
     pub fn fields(solution: Solution, configuration: Configuration) -> Self {
         Self::new("computing fields", move || {
             let mut solution = solution.clone();
-            solution.fields = Some(dualcube::flow::Fields::from_mesh_with_params(
+            solution.fields = Some(Fields::new(
                 &solution.mesh_ref,
                 configuration.fields_params.clone(),
             ));
@@ -122,7 +121,7 @@ impl Job {
     pub fn compute_graph(solution: Solution, configuration: Configuration) -> Self {
         Self::new("computing flow graphs", move || {
             let mut solution = solution.clone();
-            solution.set_flow_graphs_with_params(configuration.graph_params.clone());
+            solution.set_flow_graphs(configuration.graph_params.clone());
             completed(Stage::Graph, solution, &configuration)
         })
     }

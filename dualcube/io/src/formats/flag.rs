@@ -28,12 +28,12 @@ impl crate::Export for Flag {
             let label = match to_principal_direction(
                 layout.polycube_ref.structure.normal(patch_id).normalize(),
             ) {
-                (PrincipalDirection::X, Orientation::Forwards) => 0,
-                (PrincipalDirection::X, Orientation::Backwards) => 1,
-                (PrincipalDirection::Y, Orientation::Forwards) => 2,
-                (PrincipalDirection::Y, Orientation::Backwards) => 3,
-                (PrincipalDirection::Z, Orientation::Forwards) => 4,
-                (PrincipalDirection::Z, Orientation::Backwards) => 5,
+                (Direction::X, Sign::Positive) => 0,
+                (Direction::X, Sign::Negative) => 1,
+                (Direction::Y, Sign::Positive) => 2,
+                (Direction::Y, Sign::Negative) => 3,
+                (Direction::Z, Sign::Positive) => 4,
+                (Direction::Z, Sign::Negative) => 5,
             };
 
             for &face_id in &patch_faces.faces {

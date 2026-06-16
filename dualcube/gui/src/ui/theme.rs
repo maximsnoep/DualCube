@@ -1,5 +1,3 @@
-//! Colors and text formatting shared by the UI panels.
-
 use crate::colors;
 use bevy_egui::egui::{text, Color32, FontId, TextFormat};
 

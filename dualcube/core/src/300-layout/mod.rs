@@ -1,5 +1,3 @@
-use crate::dual::Dual;
-use crate::polycube::{Polycube, POLYCUBE};
 use crate::prelude::*;
 use bimap::BiHashMap;
 use grapff::Grapff;
@@ -252,16 +250,9 @@ impl Layout {
 
         // Find the actual vertex in the subsurface that is closest to the candidate location (by combining the three candidate coordinates of corresponding zones)
         for region_id in self.dual_ref.loop_structure.face_ids() {
-            let target = Vector3D::from(
-                [
-                    PrincipalDirection::X,
-                    PrincipalDirection::Y,
-                    PrincipalDirection::Z,
-                ]
-                .map(|direction| {
-                    zone_to_candidate[&self.dual_ref.region_to_zone(region_id, direction)]
-                }),
-            );
+            let target = Vector3D::from(DIRECTIONS.map(|direction| {
+                zone_to_candidate[&self.dual_ref.region_to_zone(region_id, direction)]
+            }));
 
             let vertices = &region_to_candidates[&region_id];
             // let vertices = region_obj.verts.clone();
@@ -892,15 +883,15 @@ impl Layout {
                 .get_direction_of_edge(polycube_vert, polycube_neighbor)
                 .0;
             match direction_of_edge {
-                PrincipalDirection::X => {
+                Direction::X => {
                     y_targets.push(mesh_neighbor_position.y);
                     z_targets.push(mesh_neighbor_position.z);
                 }
-                PrincipalDirection::Y => {
+                Direction::Y => {
                     x_targets.push(mesh_neighbor_position.x);
                     z_targets.push(mesh_neighbor_position.z);
                 }
-                PrincipalDirection::Z => {
+                Direction::Z => {
                     x_targets.push(mesh_neighbor_position.x);
                     y_targets.push(mesh_neighbor_position.y);
                 }

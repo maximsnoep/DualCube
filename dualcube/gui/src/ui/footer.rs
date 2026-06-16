@@ -1,5 +1,3 @@
-//! The bottom panel: axis legend, performance stats, and job status.
-
 use super::theme::{sized_text, text_format, to_color32, LIGHT_RED, RED, TEXT_COLOR};
 use super::widgets::timer_animation;
 use crate::colors;
@@ -48,14 +46,7 @@ pub fn show(
                     // The right-handed coordinate tripod, colored per axis.
                     let mut tripod = text::LayoutJob::default();
                     tripod.append("right-hand: ", 0.0, text_format(STAT_SIZE, TEXT_COLOR));
-                    for (i, direction) in [
-                        PrincipalDirection::X,
-                        PrincipalDirection::Y,
-                        PrincipalDirection::Z,
-                    ]
-                    .into_iter()
-                    .enumerate()
-                    {
+                    for (i, direction) in DIRECTIONS.into_iter().enumerate() {
                         if i > 0 {
                             tripod.append(", ", 0.0, text_format(STAT_SIZE, TEXT_COLOR));
                         }

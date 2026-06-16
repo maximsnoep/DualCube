@@ -1,4 +1,3 @@
-use crate::loops::{Loop, LoopID};
 use crate::prelude::*;
 use grapff::Grapff;
 use itertools::Itertools;
@@ -29,7 +28,7 @@ pub struct LoopSegment {
     // A loop segment has a corresponding loop (id) and an orientation (either following the direction of the loop, or opposite direction of the loop)
     pub loop_id: LoopID,
     // TODO: make a function that reads the orientation by checking the corresponding loop..
-    pub orientation: Orientation,
+    pub orientation: Sign,
 }
 
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
@@ -41,7 +40,7 @@ pub struct LoopRegion {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Zone {
     // A zone is defined by a direction
-    pub direction: PrincipalDirection,
+    pub direction: Direction,
     // All regions that are part of the zone
     pub regions: HashSet<LoopRegionID>,
 }
@@ -152,7 +151,7 @@ impl Dual {
     }
 
     #[must_use]
-    pub fn segment_to_orientation(&self, segment: LoopSegmentID) -> Orientation {
+    pub fn segment_to_orientation(&self, segment: LoopSegmentID) -> Sign {
         self.loop_segments.get(&segment).unwrap().orientation
     }
 
@@ -187,7 +186,7 @@ impl Dual {
     }
 
     #[must_use]
-    pub fn region_to_zone(&self, region: LoopRegionID, direction: PrincipalDirection) -> ZoneID {
+    pub fn region_to_zone(&self, region: LoopRegionID, direction: Direction) -> ZoneID {
         self.level_graphs.region_to_zones[direction as usize][&region]
     }
 
@@ -202,7 +201,7 @@ impl Dual {
         let (start, end) = self.segment_to_endpoints(segment);
         let (start_twin, end_twin) = (self.mesh_ref.twin(start), self.mesh_ref.twin(end));
         let loop_id = self.segment_to_loop(segment);
-        if self.segment_to_orientation(segment) == Orientation::Forwards {
+        if self.segment_to_orientation(segment) == Sign::Positive {
             let mut edges = self.loops_ref[loop_id].between(start, end);
             if !edges.contains(&start_twin) {
                 edges.insert(0, start_twin);
@@ -267,7 +266,7 @@ impl Dual {
     }
 
     #[must_use]
-    pub fn segment_to_direction(&self, segment: LoopSegmentID) -> PrincipalDirection {
+    pub fn segment_to_direction(&self, segment: LoopSegmentID) -> Direction {
         let loop_id = self.segment_to_loop(segment);
         self.loops_ref[loop_id].direction
     }
@@ -379,18 +378,10 @@ impl Dual {
             let ordered_adjacent_intersections = quad
                 .iter()
                 .filter_map(|&x| match x {
-                    x if x == l1_edges_next => {
-                        Some((l1, l1_next_intersection, Orientation::Forwards))
-                    }
-                    x if x == l1_edges_prev => {
-                        Some((l1, l1_prev_intersection, Orientation::Backwards))
-                    }
-                    x if x == l2_edges_next => {
-                        Some((l2, l2_next_intersection, Orientation::Forwards))
-                    }
-                    x if x == l2_edges_prev => {
-                        Some((l2, l2_prev_intersection, Orientation::Backwards))
-                    }
+                    x if x == l1_edges_next => Some((l1, l1_next_intersection, Sign::Positive)),
+                    x if x == l1_edges_prev => Some((l1, l1_prev_intersection, Sign::Negative)),
+                    x if x == l2_edges_next => Some((l2, l2_next_intersection, Sign::Positive)),
+                    x if x == l2_edges_prev => Some((l2, l2_prev_intersection, Sign::Negative)),
                     _ => None,
                 })
                 .collect_vec();
@@ -622,11 +613,7 @@ impl Dual {
         // A zone is a collection of loop regions that are connected, and are bounded by only one type of loop segment (either X, Y, or Z).
         self.level_graphs.zones = SlotMap::with_key();
 
-        for direction in [
-            PrincipalDirection::X,
-            PrincipalDirection::Y,
-            PrincipalDirection::Z,
-        ] {
+        for direction in DIRECTIONS {
             // All loop segments with the given direction are blocked
             let blocked = self
                 .loop_structure
@@ -659,11 +646,7 @@ impl Dual {
             }
         }
 
-        for direction in [
-            PrincipalDirection::X,
-            PrincipalDirection::Y,
-            PrincipalDirection::Z,
-        ] {
+        for direction in DIRECTIONS {
             // Add all the zones as nodes to the level graph
             let mut edges = vec![];
 
@@ -695,7 +678,7 @@ impl Dual {
                     .flat_map(|&region_id| self.loop_structure.edges(region_id))
                     .filter(|&segment_id| {
                         self.segment_to_direction(segment_id) == direction
-                            && self.segment_to_orientation(segment_id) == Orientation::Forwards
+                            && self.segment_to_orientation(segment_id) == Sign::Positive
                     });
                 // The adjacent loop regions of this zone
                 let adjacent_regions = segments.map(|segment_id| {
@@ -727,11 +710,7 @@ impl Dual {
     }
 
     pub fn assign_levels(&mut self) {
-        for direction in [
-            PrincipalDirection::X,
-            PrincipalDirection::Y,
-            PrincipalDirection::Z,
-        ] {
+        for direction in DIRECTIONS {
             let graph = &self.level_graphs.graphs[direction as usize];
             let mut topo_sort = graph.topological_sort().unwrap();
 
@@ -844,12 +823,12 @@ impl Dual {
                 let direction = self.loops_ref[loop_id].direction;
                 let orientation = self.segment_to_orientation(edge);
                 match (direction, orientation) {
-                    (PrincipalDirection::X, Orientation::Forwards) => label_count[0] += 1,
-                    (PrincipalDirection::X, Orientation::Backwards) => label_count[1] += 1,
-                    (PrincipalDirection::Y, Orientation::Forwards) => label_count[2] += 1,
-                    (PrincipalDirection::Y, Orientation::Backwards) => label_count[3] += 1,
-                    (PrincipalDirection::Z, Orientation::Forwards) => label_count[4] += 1,
-                    (PrincipalDirection::Z, Orientation::Backwards) => label_count[5] += 1,
+                    (Direction::X, Sign::Positive) => label_count[0] += 1,
+                    (Direction::X, Sign::Negative) => label_count[1] += 1,
+                    (Direction::Y, Sign::Positive) => label_count[2] += 1,
+                    (Direction::Y, Sign::Negative) => label_count[3] += 1,
+                    (Direction::Z, Sign::Positive) => label_count[4] += 1,
+                    (Direction::Z, Sign::Negative) => label_count[5] += 1,
                 }
             }
             if label_count.iter().any(|&x| x > 1) {

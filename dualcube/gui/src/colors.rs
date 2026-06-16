@@ -374,25 +374,22 @@ pub fn map(value: f32, colors: &[Color]) -> Color {
 }
 
 pub const fn from_direction(
-    direction: PrincipalDirection,
+    direction: Direction,
     perspective: Option<Perspective>,
-    orientation: Option<Orientation>,
+    orientation: Option<Sign>,
 ) -> Color {
     #[cfg(feature = "snoep6")]
     {
         return match (direction, perspective, orientation) {
             // Primal
-            (PrincipalDirection::X, Some(Perspective::Primal), _)
-            | (PrincipalDirection::X, None, _) => SNOEP_RED,
-            (PrincipalDirection::Y, Some(Perspective::Primal), _)
-            | (PrincipalDirection::Y, None, _) => SNOEP_YELLOW,
-            (PrincipalDirection::Z, Some(Perspective::Primal), _)
-            | (PrincipalDirection::Z, None, _) => SNOEP_BLUE,
+            (Direction::X, Some(Perspective::Primal), _) | (Direction::X, None, _) => SNOEP_RED,
+            (Direction::Y, Some(Perspective::Primal), _) | (Direction::Y, None, _) => SNOEP_YELLOW,
+            (Direction::Z, Some(Perspective::Primal), _) | (Direction::Z, None, _) => SNOEP_BLUE,
 
             // Dual
-            (PrincipalDirection::X, Some(Perspective::Dual), _) => SNOEP_GREEN,
-            (PrincipalDirection::Y, Some(Perspective::Dual), _) => SNOEP_PURPLE,
-            (PrincipalDirection::Z, Some(Perspective::Dual), _) => SNOEP_ORANGE,
+            (Direction::X, Some(Perspective::Dual), _) => SNOEP_GREEN,
+            (Direction::Y, Some(Perspective::Dual), _) => SNOEP_PURPLE,
+            (Direction::Z, Some(Perspective::Dual), _) => SNOEP_ORANGE,
         };
     }
 
@@ -400,9 +397,9 @@ pub const fn from_direction(
     {
         return match (direction, perspective, orientation) {
             // General
-            (PrincipalDirection::X, _, _) => BETTINA_RED,
-            (PrincipalDirection::Y, _, _) => BETTINA_GREEN,
-            (PrincipalDirection::Z, _, _) => BETTINA_BLUE,
+            (Direction::X, _, _) => BETTINA_RED,
+            (Direction::Y, _, _) => BETTINA_GREEN,
+            (Direction::Z, _, _) => BETTINA_BLUE,
         };
     }
 
@@ -410,9 +407,9 @@ pub const fn from_direction(
     {
         return match (direction, perspective, orientation) {
             // General
-            (PrincipalDirection::X, _, _) => [0.43, 0.43, 0.43],
-            (PrincipalDirection::Y, _, _) => [0.4, 0.4, 0.4],
-            (PrincipalDirection::Z, _, _) => [0.37, 0.37, 0.37],
+            (Direction::X, _, _) => [0.43, 0.43, 0.43],
+            (Direction::Y, _, _) => [0.4, 0.4, 0.4],
+            (Direction::Z, _, _) => [0.37, 0.37, 0.37],
         };
     }
 
@@ -420,18 +417,18 @@ pub const fn from_direction(
     {
         return match (direction, perspective, orientation) {
             // General
-            (PrincipalDirection::X, _, _) => LIGHT_RED,
-            (PrincipalDirection::Y, _, _) => ANTIQUE_WHITE,
-            (PrincipalDirection::Z, _, _) => COLUMBIA_BLUE,
+            (Direction::X, _, _) => LIGHT_RED,
+            (Direction::Y, _, _) => ANTIQUE_WHITE,
+            (Direction::Z, _, _) => COLUMBIA_BLUE,
         };
     }
 
     // fallback / default
     match (direction, perspective, orientation) {
         // General
-        (PrincipalDirection::X, _, _) => SNOEP_RED,
-        (PrincipalDirection::Y, _, _) => SNOEP_YELLOW,
-        (PrincipalDirection::Z, _, _) => SNOEP_BLUE,
+        (Direction::X, _, _) => SNOEP_RED,
+        (Direction::Y, _, _) => SNOEP_YELLOW,
+        (Direction::Z, _, _) => SNOEP_BLUE,
         // (PrincipalDirection::X, _, _) => SNOEP_RED,
         // (PrincipalDirection::Y, _, _) => SNOEP_BLUE,
         // (PrincipalDirection::Z, _, _) => SNOEP_YELLOW,
@@ -442,10 +439,10 @@ pub fn to_bevy(color: Color) -> bevy::color::Color {
     bevy::color::Color::srgb(color[0], color[1], color[2])
 }
 
-pub fn bevy_random() -> bevy::color::Color {
-    // random hue between 0.0 and 360.0
-    let hue = rand::random::<f32>() * 360.0;
-    let saturation = rand::random::<f32>() * 0.5 + 0.5;
-    let lightness = rand::random::<f32>() * 0.5 + 0.5;
-    bevy::color::Color::hsl(hue, saturation, lightness)
+pub fn random() -> Color {
+    [
+        rand::random::<f32>(),
+        rand::random::<f32>(),
+        rand::random::<f32>(),
+    ]
 }

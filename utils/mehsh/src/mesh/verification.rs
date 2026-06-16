@@ -121,6 +121,15 @@ impl<M: Tag> Mesh<M> {
     //     hutspot::graph::find_ccs(&self.vert_ids(), self.neighbor_function_primal()).len() == 1
     // }
 
+    pub fn is_triangular(&self) -> Result<(), MeshError<M>> {
+        for face_id in self.face_ids() {
+            if self.vertices(face_id).count() != 3 {
+                return Err(MeshError::FaceNotTriangle(face_id));
+            }
+        }
+        Ok(())
+    }
+
     pub fn is_polygonal(&self) -> Result<(), MeshError<M>> {
         // Make sure the mesh is polygonal
         for face_id in self.face_ids() {

@@ -1,5 +1,4 @@
 use bimap::BiHashMap;
-use dualcube::polycube::POLYCUBE;
 use dualcube::prelude::*;
 use itertools::Itertools;
 use log::info;
@@ -537,8 +536,7 @@ impl Export for NLR {
             let x_edges = edge_per_loop
                 .clone()
                 .filter(|&edge_id| {
-                    to_principal_direction(polycube.structure.vector(edge_id)).0
-                        == PrincipalDirection::X
+                    to_principal_direction(polycube.structure.vector(edge_id)).0 == Direction::X
                 })
                 .map(|edge_id| {
                     edge_to_id
@@ -567,8 +565,7 @@ impl Export for NLR {
             let y_edges = edge_per_loop
                 .clone()
                 .filter(|&edge_id| {
-                    to_principal_direction(polycube.structure.vector(edge_id)).0
-                        == PrincipalDirection::Y
+                    to_principal_direction(polycube.structure.vector(edge_id)).0 == Direction::Y
                 })
                 .map(|edge_id| {
                     edge_to_id
@@ -597,8 +594,7 @@ impl Export for NLR {
             let z_edges = edge_per_loop
                 .clone()
                 .filter(|&edge_id| {
-                    to_principal_direction(polycube.structure.vector(edge_id)).0
-                        == PrincipalDirection::Z
+                    to_principal_direction(polycube.structure.vector(edge_id)).0 == Direction::Z
                 })
                 .map(|edge_id| {
                     edge_to_id
@@ -675,9 +671,9 @@ impl Export for NLR {
             //
 
             for (path, dir) in [
-                (path_xloops, PrincipalDirection::X),
-                (path_yloops, PrincipalDirection::Y),
-                (path_zloops, PrincipalDirection::Z),
+                (path_xloops, Direction::X),
+                (path_yloops, Direction::Y),
+                (path_zloops, Direction::Z),
             ] {
                 info!("Writing SEG file to {path:?} for direction {dir:?}");
 

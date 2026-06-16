@@ -73,13 +73,13 @@ impl Export for APG {
         for edge_id in polycube.structure.edge_ids() {
             let direction_vector = polycube.structure.vector(edge_id).normalize();
             let (direction, orientation) = to_principal_direction(direction_vector);
-            if orientation == Orientation::Backwards {
+            if orientation == Sign::Negative {
                 continue;
             }
             let label = match direction {
-                PrincipalDirection::X => "X",
-                PrincipalDirection::Y => "Y",
-                PrincipalDirection::Z => "Z",
+                Direction::X => "X",
+                Direction::Y => "Y",
+                Direction::Z => "Z",
             };
             let Some([v1, v2]) = polycube.structure.vertices(edge_id).collect_array::<2>() else {
                 panic!()

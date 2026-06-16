@@ -47,7 +47,7 @@ fn main() {
                 })
                 .set(LogPlugin {
                     level: Level::TRACE,
-                    filter: "info,dualcube=trace".to_string(),
+                    filter: "info,dualcube=info".to_string(),
                     ..default()
                 }),
         )
@@ -62,9 +62,9 @@ fn main() {
             bevy_toon::ToonPlugin,
             bevy_axes_gizmo::AxesGizmoPlugin {
                 colors: [
-                    axis_color(PrincipalDirection::X),
-                    axis_color(PrincipalDirection::Y),
-                    axis_color(PrincipalDirection::Z),
+                    axis_color(Direction::X),
+                    axis_color(Direction::Y),
+                    axis_color(Direction::Z),
                 ],
                 width: 3.,
                 ..default()

@@ -1,5 +1,5 @@
 use bitcode::{Decode, Encode};
-use dualcube::{prelude::INPUT, solutions::Loop};
+use dualcube::prelude::*;
 use mehsh::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{io::Write, sync::Arc};
@@ -49,9 +49,9 @@ impl crate::Export for Loops {
         let mut loops = vec![];
         for lewp in solution.loops.values() {
             let d = match lewp.direction {
-                dualcube::prelude::PrincipalDirection::X => 0,
-                dualcube::prelude::PrincipalDirection::Y => 1,
-                dualcube::prelude::PrincipalDirection::Z => 2,
+                dualcube::prelude::Direction::X => 0,
+                dualcube::prelude::Direction::Y => 1,
+                dualcube::prelude::Direction::Z => 2,
             };
             let mut loop_edges = Vec::new();
             for edge_id in lewp.edges.iter().copied() {
@@ -120,9 +120,9 @@ impl crate::Import for Loops {
                 })
                 .collect::<Vec<_>>();
             let direction = match loop_dir {
-                0 => dualcube::prelude::PrincipalDirection::X,
-                1 => dualcube::prelude::PrincipalDirection::Y,
-                2 => dualcube::prelude::PrincipalDirection::Z,
+                0 => dualcube::prelude::Direction::X,
+                1 => dualcube::prelude::Direction::Y,
+                2 => dualcube::prelude::Direction::Z,
                 _ => anyhow::bail!(
                     "reading invalid loop direction {loop_dir} from {}",
                     path.display()
