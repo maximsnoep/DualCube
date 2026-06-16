@@ -13,13 +13,6 @@ new_key_type! {
 
 const EPS: f64 = 1e-12;
 
-const CURVATURE_MIN_CONFIDENCE: f64 = 1e-3;
-const CURVATURE_CONFIDENCE_SENSITIVITY: f64 = 2.0;
-const CURVATURE_ALIGNMENT_MIN_DOT: f64 = 0.65;
-const CURVATURE_ALIGNMENT_SHARPNESS: f64 = 2.0;
-
-const REGULARIZATION: f64 = 1e-8;
-
 const CG_STALL_MIN_ITERATIONS: usize = 8;
 const CG_STALL_PATIENCE: usize = 4;
 const CG_STALL_RELATIVE_IMPROVEMENT: f64 = 1e-3;
@@ -28,7 +21,7 @@ const X_AXIS: Vector3D = Vector3D::new(1.0, 0.0, 0.0);
 const Y_AXIS: Vector3D = Vector3D::new(0.0, 1.0, 0.0);
 const Z_AXIS: Vector3D = Vector3D::new(0.0, 0.0, 1.0);
 const C_ZERO: Complex64 = Complex64::new(0.0, 0.0);
-const C_ONE: Complex64 = Complex64::new(1.0, 0.0);
+const AXES: [Vector3D; 3] = [X_AXIS, Y_AXIS, Z_AXIS];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -37,11 +30,8 @@ pub struct FieldParams {
     pub outer_iterations: usize,
     pub cg_iterations: usize,
     pub cg_tolerance: f64,
-    pub damping_weight: f64,
     pub smooth_weight: f64,
     pub axis_weight: f64,
-    pub axis_length_power: f64,
-    pub curvature_weight: f64,
     pub coupling_weight: f64,
 }
 
@@ -51,11 +41,8 @@ impl Default for FieldParams {
             outer_iterations: 100,
             cg_iterations: 500,
             cg_tolerance: 1e-4,
-            damping_weight: 0.03,
             smooth_weight: 1.0,
             axis_weight: 0.5,
-            axis_length_power: 3.0,
-            curvature_weight: 0.5,
             coupling_weight: 0.01,
         }
     }
@@ -81,17 +68,26 @@ struct TangentBasis {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct CurvatureData {
-    dir_min: Vector3D,
-    dir_max: Vector3D,
-    c_min: f64,
-    c_max: f64,
+struct NeighborConnection {
+    j: usize,
+    map_j_to_i: TangentMap,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct NeighborConnection {
-    j: usize,
-    phase_j_to_i: Complex64,
+struct TangentMap {
+    m11: f64,
+    m12: f64,
+    m21: f64,
+    m22: f64,
+}
+
+impl TangentMap {
+    fn apply(self, z: Complex64) -> Complex64 {
+        Complex64::new(
+            self.m11 * z.re + self.m12 * z.im,
+            self.m21 * z.re + self.m22 * z.im,
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -100,7 +96,6 @@ struct SolverData<T: Tag> {
     normals: Vec<Vector3D>,
     bases: Vec<TangentBasis>,
     adjacency: Vec<Vec<NeighborConnection>>,
-    curvature: Vec<Option<CurvatureData>>,
 }
 
 impl<T: Tag> Field<T> {
@@ -156,9 +151,13 @@ impl<T: Tag> Fields<T> {
     }
 
     fn initialize_around_axes(&mut self, mesh: &Mesh<T>) {
-        initialize_field_around_axis(mesh, &mut self.field_x, X_AXIS);
-        initialize_field_around_axis(mesh, &mut self.field_y, Y_AXIS);
-        initialize_field_around_axis(mesh, &mut self.field_z, Z_AXIS);
+        for (field, axis) in [
+            (&mut self.field_x, X_AXIS),
+            (&mut self.field_y, Y_AXIS),
+            (&mut self.field_z, Z_AXIS),
+        ] {
+            initialize_field_around_axis(mesh, field, axis);
+        }
     }
 
     fn optimize_global_connection(&mut self, data: &SolverData<T>, params: &FieldParams) {
@@ -174,9 +173,12 @@ impl<T: Tag> Fields<T> {
             apply_complex_angle_coupling(x, y, z_, params.coupling_weight);
         }
 
-        finish_field(&z[0], &mut self.field_x, X_AXIS, data, params);
-        finish_field(&z[1], &mut self.field_y, Y_AXIS, data, params);
-        finish_field(&z[2], &mut self.field_z, Z_AXIS, data, params);
+        for (field, z) in [&mut self.field_x, &mut self.field_y, &mut self.field_z]
+            .into_iter()
+            .zip(&z)
+        {
+            complex_to_field(z, field, data);
+        }
     }
 }
 
@@ -189,22 +191,11 @@ fn solve_fields_parallel<T: Tag>(
         .par()
         .map(|i| {
             let mut work = CgWorkspace::new(data.normals.len());
-            solve_one_field(data, &z[i], [X_AXIS, Y_AXIS, Z_AXIS][i], params, &mut work)
+            solve_one_field(data, &z[i], AXES[i], params, &mut work)
         })
         .collect();
 
     [solved.remove(0), solved.remove(0), solved.remove(0)]
-}
-
-fn finish_field<T: Tag>(
-    z: &[Complex64],
-    field: &mut Field<T>,
-    axis: Vector3D,
-    data: &SolverData<T>,
-    params: &FieldParams,
-) {
-    complex_to_field(z, field, data);
-    apply_axis_alignment_lengths(field, axis, data, params);
 }
 
 fn build_solver_data<T: Tag>(mesh: &Mesh<T>) -> SolverData<T> {
@@ -230,27 +221,21 @@ fn build_solver_data<T: Tag>(mesh: &Mesh<T>) -> SolverData<T> {
                 continue;
             }
 
-            let phase_j_to_i = connection_phase_j_to_i(&bases, &normals, i, j);
-            let phase_i_to_j = connection_phase_j_to_i(&bases, &normals, j, i);
-            adjacency[i].push(NeighborConnection { j, phase_j_to_i });
+            let map_j_to_i = extrinsic_tangent_map_j_to_i(&bases, i, j);
+            let map_i_to_j = extrinsic_tangent_map_j_to_i(&bases, j, i);
+            adjacency[i].push(NeighborConnection { j, map_j_to_i });
             adjacency[j].push(NeighborConnection {
                 j: i,
-                phase_j_to_i: phase_i_to_j,
+                map_j_to_i: map_i_to_j,
             });
         }
     }
-
-    let curvature: Vec<_> = ids
-        .par()
-        .map(|id| estimate_curvature_data(mesh, *id))
-        .collect();
 
     SolverData {
         ids,
         normals,
         bases,
         adjacency,
-        curvature,
     }
 }
 
@@ -262,39 +247,19 @@ fn solve_one_field<T: Tag>(
     work: &mut CgWorkspace,
 ) -> Vec<Complex64> {
     let n = data.normals.len();
-    let mut diag = vec![REGULARIZATION; n];
+    let mut diag = vec![0.0; n];
     let mut rhs = vec![C_ZERO; n];
-    let damping_weight = params.damping_weight.max(0.0);
-    for i in 0..n {
-        if damping_weight > 0.0 {
-            diag[i] += damping_weight;
-            rhs[i] += current[i] * damping_weight;
-        }
-
-        if params.axis_weight > 0.0 {
-            if let Some(target) = axis_target_complex(data, i, axis) {
-                let w = params.axis_weight * target.confidence * target.confidence;
+    if params.axis_weight > 0.0 {
+        for i in 0..n {
+            if let Some((z, confidence)) = axis_target_complex(data, i, axis) {
+                let w = params.axis_weight * confidence * confidence;
                 diag[i] += w;
-                rhs[i] += target.z * w;
-            }
-        }
-
-        if params.curvature_weight > 0.0 {
-            if let Some(target) = curvature_target_complex(data, i, current[i]) {
-                let w = params.curvature_weight * target.confidence;
-                diag[i] += w;
-                rhs[i] += target.z * w;
+                rhs[i] += z * w;
             }
         }
     }
 
-    let mut solved = conjugate_gradient(data, &diag, &rhs, current, params, work);
-
-    for z in &mut solved {
-        *z = normalize_complex_unit(*z);
-    }
-
-    solved
+    conjugate_gradient(data, &diag, &rhs, current, params, work)
 }
 
 #[derive(Debug)]
@@ -443,13 +408,17 @@ fn apply_system_operator<T: Tag>(
     smooth_weight: f64,
     out: &mut [Complex64],
 ) {
+    if smooth_weight <= 0.0 {
+        for i in 0..out.len() {
+            out[i] = x[i] * diag[i];
+        }
+        return;
+    }
+
     for i in 0..out.len() {
         out[i] = x[i] * diag[i];
-
-        if smooth_weight > 0.0 {
-            for nb in &data.adjacency[i] {
-                out[i] += (x[i] - nb.phase_j_to_i * x[nb.j]) * smooth_weight;
-            }
+        for nb in &data.adjacency[i] {
+            out[i] += (x[i] - nb.map_j_to_i.apply(x[nb.j])) * smooth_weight;
         }
     }
 }
@@ -492,34 +461,13 @@ fn sin2_delta(a: Complex64, b: Complex64) -> f64 {
     2.0 * d.re * d.im
 }
 
-#[derive(Debug, Clone, Copy)]
-struct ComplexTarget {
-    z: Complex64,
-    confidence: f64,
-}
-
 fn axis_target_complex<T: Tag>(
     data: &SolverData<T>,
     i: usize,
     axis: Vector3D,
-) -> Option<ComplexTarget> {
-    around_axis_target(data.normals[i], axis).map(|t| ComplexTarget {
-        z: vector_to_complex(t.direction, data.bases[i]),
-        confidence: t.confidence,
-    })
-}
-
-fn curvature_target_complex<T: Tag>(
-    data: &SolverData<T>,
-    i: usize,
-    current: Complex64,
-) -> Option<ComplexTarget> {
-    curvature_target(data.curvature[i], complex_to_vector(current, data.bases[i])).map(|t| {
-        ComplexTarget {
-            z: vector_to_complex(t.direction, data.bases[i]),
-            confidence: t.confidence,
-        }
-    })
+) -> Option<(Complex64, f64)> {
+    around_axis_target(data.normals[i], axis)
+        .map(|(direction, confidence)| (vector_to_complex(direction, data.bases[i]), confidence))
 }
 
 fn field_to_complex<T: Tag>(field: &Field<T>, data: &SolverData<T>) -> Vec<Complex64> {
@@ -527,8 +475,10 @@ fn field_to_complex<T: Tag>(field: &Field<T>, data: &SolverData<T>) -> Vec<Compl
         .par()
         .map(|i| {
             let key = field.map[&data.ids[i]];
-            let v = project_to_tangent(field.vectors[key], data.normals[i]).normalize();
-            vector_to_complex(v, data.bases[i])
+            vector_to_complex(
+                project_to_tangent(field.vectors[key], data.normals[i]),
+                data.bases[i],
+            )
         })
         .collect()
 }
@@ -544,81 +494,28 @@ fn complex_to_field<T: Tag>(z: &[Complex64], field: &mut Field<T>, data: &Solver
     }
 }
 
-fn apply_axis_alignment_lengths<T: Tag>(
-    field: &mut Field<T>,
-    axis: Vector3D,
-    data: &SolverData<T>,
-    params: &FieldParams,
-) {
-    if params.axis_weight <= 0.0 {
-        return;
-    }
-
-    let power = params.axis_length_power.max(EPS);
-    let lengths: Vec<_> = (0..data.ids.len())
-        .par()
-        .map(|i| {
-            let Some(target) = axis_target_complex(data, i, axis) else {
-                return 0.1;
-            };
-
-            let z = vector_to_complex(field.vectors[field.map[&data.ids[i]]], data.bases[i]);
-            let dot = (z.conj() * target.z).re.clamp(-1.0, 1.0);
-            let angle = dot.acos();
-            let tight_angle = std::f64::consts::PI / 12.0;
-            let bad_angle = std::f64::consts::FRAC_PI_4;
-
-            if angle <= tight_angle {
-                let quality = 1.0 - angle / tight_angle;
-                0.5 + 0.5 * quality.powf(power)
-            } else {
-                let quality =
-                    1.0 - ((angle - tight_angle) / (bad_angle - tight_angle)).clamp(0.0, 1.0);
-                0.1 + 0.4 * quality.powf(power)
-            }
-        })
-        .collect();
-
-    for (i, id) in data.ids.iter().enumerate() {
-        field.vectors[field.map[id]] *= lengths[i];
-    }
-}
-
 fn vector_to_complex(v: Vector3D, basis: TangentBasis) -> Complex64 {
-    normalize_complex_unit(Complex64::new(v.dot(&basis.e1), v.dot(&basis.e2)))
+    Complex64::new(v.dot(&basis.e1), v.dot(&basis.e2))
 }
 
 fn complex_to_vector(z: Complex64, basis: TangentBasis) -> Vector3D {
     basis.e1 * z.re + basis.e2 * z.im
 }
 
-fn normalize_complex_unit(z: Complex64) -> Complex64 {
-    let norm_sqr = z.norm_sqr();
-    if norm_sqr > EPS {
-        z / norm_sqr.sqrt()
-    } else {
-        C_ONE
-    }
-}
-
 fn complex_from_angle(theta: f64) -> Complex64 {
     Complex64::new(theta.cos(), theta.sin())
 }
 
-fn connection_phase_j_to_i(
-    bases: &[TangentBasis],
-    normals: &[Vector3D],
-    i: usize,
-    j: usize,
-) -> Complex64 {
-    let n_i = normals[i];
+fn extrinsic_tangent_map_j_to_i(bases: &[TangentBasis], i: usize, j: usize) -> TangentMap {
     let b_i = bases[i];
     let b_j = bases[j];
 
-    let v = project_to_tangent(b_j.e1, n_i).normalize();
-    let phi = v.dot(&b_i.e2).atan2(v.dot(&b_i.e1));
-
-    complex_from_angle(phi)
+    TangentMap {
+        m11: b_i.e1.dot(&b_j.e1),
+        m12: b_i.e1.dot(&b_j.e2),
+        m21: b_i.e2.dot(&b_j.e1),
+        m22: b_i.e2.dot(&b_j.e2),
+    }
 }
 
 fn initialize_field_around_axis<T: Tag>(mesh: &Mesh<T>, field: &mut Field<T>, axis: Vector3D) {
@@ -626,153 +523,17 @@ fn initialize_field_around_axis<T: Tag>(mesh: &Mesh<T>, field: &mut Field<T>, ax
         let n = mesh.normal(*id).normalize();
 
         let v = around_axis_target(n, axis)
-            .map(|t| t.direction)
+            .map(|(direction, _)| direction)
             .unwrap_or_else(|| tangent_fallback(n));
 
         field.vectors[*key] = v;
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct Target {
-    direction: Vector3D,
-    confidence: f64,
-}
-
-fn around_axis_target(normal: Vector3D, axis: Vector3D) -> Option<Target> {
+fn around_axis_target(normal: Vector3D, axis: Vector3D) -> Option<(Vector3D, f64)> {
     let tangent_axis = project_to_tangent(axis, normal);
     let confidence = tangent_axis.norm();
-    (confidence >= EPS).then(|| Target {
-        direction: normal.cross(&tangent_axis).normalize(),
-        confidence,
-    })
-}
-
-fn estimate_curvature_data<T: Tag>(mesh: &Mesh<T>, id: ids::Key<VERT, T>) -> Option<CurvatureData> {
-    let p = mesh.position(id);
-    let (t_raw, _, n_raw) = mesh.tangent_frame(id);
-    let n = n_raw.normalize();
-    let t1 = project_to_tangent(t_raw, n).normalize();
-    let t2 = n.cross(&t1).normalize();
-
-    let (mut a, mut b, mut d) = (0.0, 0.0, 0.0);
-    let (mut bx0, mut bx1, mut by0, mut by1) = (0.0, 0.0, 0.0, 0.0);
-    let (mut edge_sum, mut edge_count) = (0.0, 0);
-
-    for nb in mesh.neighbors(id) {
-        let edge = mesh.position(nb) - p;
-        edge_sum += edge.norm();
-        edge_count += 1;
-
-        let e = project_to_tangent(edge, n);
-        let len2 = e.dot(&e);
-        if len2 < EPS {
-            continue;
-        }
-
-        let dn = project_to_tangent(mesh.normal(nb).normalize() - n, n);
-        let (ux, uy) = (t1.dot(&e), t2.dot(&e));
-        let (nx, ny) = (-t1.dot(&dn), -t2.dot(&dn));
-        let w = (1.0 / len2).min(1e6);
-
-        a += w * ux * ux;
-        b += w * ux * uy;
-        d += w * uy * uy;
-        bx0 += w * nx * ux;
-        bx1 += w * nx * uy;
-        by0 += w * ny * ux;
-        by1 += w * ny * uy;
-    }
-
-    let det = a * d - b * b;
-    if det.abs() < EPS || edge_count == 0 {
-        return None;
-    }
-
-    let inv_det = 1.0 / det;
-    let s00 = (d * bx0 - b * bx1) * inv_det;
-    let s11 = (-b * by0 + a * by1) * inv_det;
-    let s01 = 0.5 * ((-b * bx0 + a * bx1) + (d * by0 - b * by1)) * inv_det;
-    let trace = 0.5 * (s00 + s11);
-    let radius = ((0.5 * (s00 - s11)).powi(2) + s01 * s01).sqrt();
-    let h = (edge_sum / edge_count as f64).max(EPS);
-    let (c_min, c_max) = ((trace - radius).abs() * h, (trace + radius).abs() * h);
-
-    if c_min.max(c_max) < CURVATURE_MIN_CONFIDENCE
-        || (c_max - c_min).abs() < CURVATURE_MIN_CONFIDENCE
-    {
-        return None;
-    }
-
-    let dir_min = principal_direction(s00, s01, s11, trace - radius, t1, t2);
-    Some(CurvatureData {
-        dir_min,
-        dir_max: n.cross(&dir_min).normalize(),
-        c_min,
-        c_max,
-    })
-}
-
-fn curvature_target(curvature: Option<CurvatureData>, current: Vector3D) -> Option<Target> {
-    let curvature = curvature?;
-
-    let (best_direction, best_strength, best_dot) = [
-        (curvature.dir_min, curvature.c_min),
-        (-curvature.dir_min, curvature.c_min),
-        (curvature.dir_max, curvature.c_max),
-        (-curvature.dir_max, curvature.c_max),
-    ]
-    .into_iter()
-    .map(|(direction, strength)| (direction, strength, current.dot(&direction)))
-    .fold(
-        (
-            curvature.dir_min,
-            curvature.c_min,
-            current.dot(&curvature.dir_min),
-        ),
-        |best, candidate| {
-            if candidate.2 > best.2 {
-                candidate
-            } else {
-                best
-            }
-        },
-    );
-
-    if best_dot < CURVATURE_ALIGNMENT_MIN_DOT || best_strength < CURVATURE_MIN_CONFIDENCE {
-        return None;
-    }
-
-    let curvature_confidence = (CURVATURE_CONFIDENCE_SENSITIVITY * best_strength).tanh();
-
-    let alignment_t = ((best_dot - CURVATURE_ALIGNMENT_MIN_DOT)
-        / (1.0 - CURVATURE_ALIGNMENT_MIN_DOT))
-        .clamp(0.0, 1.0);
-
-    let alignment_confidence = alignment_t.powf(CURVATURE_ALIGNMENT_SHARPNESS);
-    let confidence = curvature_confidence * alignment_confidence;
-
-    (confidence >= CURVATURE_MIN_CONFIDENCE).then_some(Target {
-        direction: best_direction,
-        confidence,
-    })
-}
-
-fn principal_direction(
-    s00: f64,
-    s01: f64,
-    s11: f64,
-    k: f64,
-    t1: Vector3D,
-    t2: Vector3D,
-) -> Vector3D {
-    if s01.abs() > EPS {
-        (t1 * s01 + t2 * (k - s00)).normalize()
-    } else if s00 <= s11 {
-        t1
-    } else {
-        t2
-    }
+    (confidence >= EPS).then(|| (normal.cross(&tangent_axis).normalize(), confidence))
 }
 
 fn project_to_tangent(v: Vector3D, n: Vector3D) -> Vector3D {

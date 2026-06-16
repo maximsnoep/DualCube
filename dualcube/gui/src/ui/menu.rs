@@ -376,12 +376,13 @@ fn pipeline_bar(
         |ui| {
             let params = &mut conf.fields_params;
 
-            slider(ui, "outer_iterations", &mut params.outer_iterations, 0..=50);
+            slider(ui, "iterations", &mut params.outer_iterations, 0..=100);
             slider(ui, "cg_iterations", &mut params.cg_iterations, 10..=500);
-            log_slider(ui, "smooth_weight", &mut params.smooth_weight, 10.0);
-            log_slider(ui, "axis_weight", &mut params.axis_weight, 100.0);
-            log_slider(ui, "axis_length_power", &mut params.axis_length_power, 10.0);
-            log_slider(ui, "curvature_weight", &mut params.curvature_weight, 10.);
+
+            space(ui);
+
+            slider(ui, "smooth_weight", &mut params.smooth_weight, 0.0..=1.0);
+            slider(ui, "axis_weight", &mut params.axis_weight, 0.0..=1.0);
             slider(ui, "coupling", &mut params.coupling_weight, 0.0..=0.2);
 
             space(ui);
