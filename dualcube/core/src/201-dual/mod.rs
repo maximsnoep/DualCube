@@ -1,7 +1,7 @@
 use crate::prelude::*;
 use grapff::Grapff;
 use itertools::Itertools;
-use log::{error, info};
+use log::{debug, error};
 use mehsh::prelude::*;
 use serde::{Deserialize, Serialize};
 use slotmap::SlotMap;
@@ -118,23 +118,18 @@ impl Dual {
         };
 
         // Find all intersections and loop regions induced by the loops, and compute the loop structure
-        info!("Assigning loop structure");
         dual.assign_loop_structure()?;
 
         // For each loop region, find its actual subsurface (on the mesh)
-        info!("Assigning subsurfaces");
         dual.assign_subsurfaces()?;
 
         // Find the zones and construct the level graphs
-        info!("Assigning level graphs");
         dual.assign_level_graphs();
 
         // Verify properties
-        info!("Verifying properties");
         dual.verify_properties()?;
 
         // Assign levels to the loop structure
-        info!("Assigning levels");
         dual.assign_levels();
 
         Ok(dual)
@@ -304,7 +299,7 @@ impl Dual {
         // Intersections are edges that are occupied exactly twice. It is not possible for an edge to be occupied more than twice.
         // NOTE: An intersection exists on two half-edges, we only store the intersection at the lower ID half-edge
         if occupied.values().any(|x| x.len() >= 3) {
-            error!("Invalid intersection: an edge is occupied by more than two loops.");
+            debug!("Invalid intersection: an edge is occupied by more than two loops.");
             return Err(PropertyViolationError::UnknownError);
         }
 
@@ -393,7 +388,7 @@ impl Dual {
                     .len()
                     != 4)
             {
-                error!(
+                debug!(
                     "Invalid intersection: ordered adjacent intersections are not unique or not 4. {:?} ({:?})",
                     ordered_adjacent_intersections, quad
                 );

@@ -1,6 +1,6 @@
 use super::shared::CacheResource;
 use crate::colors;
-use crate::jobs::{Job, JobRequest};
+use crate::jobs::Job;
 use crate::render::gizmos::{vector3d_to_vec3, world_to_view, PerpetualGizmos};
 use crate::resources::{Configuration, InputResource, SolutionResource};
 use bevy::prelude::*;
@@ -16,7 +16,7 @@ pub fn segmentation_modification_system(
     _cache: ResMut<CacheResource>,
     mut gizmos: Gizmos<PerpetualGizmos>,
     configuration: ResMut<Configuration>,
-    mut jobs: MessageWriter<JobRequest>,
+    mut jobs: MessageWriter<Job>,
     position: Vector3D,
     _nearest_face: FaceID,
 ) -> Result<(), BevyError> {
@@ -141,12 +141,12 @@ pub fn segmentation_modification_system(
             // Action2:
             (true, false, false) => {
                 if let Some(corner_poly) = solution.selected_corner {
-                    jobs.write(JobRequest::Run(Job::move_corner(
+                    jobs.write(Job::move_corner(
                         solution.current_solution.clone(),
                         configuration.clone(),
                         corner_poly,
                         nearest_granulated_vert,
-                    )));
+                    ));
                     solution.selected_corner = None;
                 }
             }

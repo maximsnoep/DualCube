@@ -2,13 +2,14 @@ use crate::prelude::*;
 use bimap::BiHashMap;
 use grapff::Grapff;
 use itertools::Itertools;
-use log::warn;
+use log::{info, warn};
 use mehsh::prelude::*;
 use ordered_float::OrderedFloat;
 use orx_parallel::{IterIntoParIter, ParIter};
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::time::Instant;
 use thiserror::Error;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Copy)]
@@ -71,6 +72,7 @@ impl Layout {
 
     /// Takes a dual representation, and a primal representation (polycube) and embeds it onto the input mesh.
     pub fn embed(dual_ref: &Dual, polycube_ref: &Polycube) -> Result<Self, LayoutError> {
+        let timer = Instant::now();
         let mut layout = Self {
             polycube_ref: polycube_ref.clone(),
             dual_ref: dual_ref.clone(),
@@ -83,9 +85,27 @@ impl Layout {
             orthogonality_per_vert: ids::SecMap::new(),
             orthogonality: None,
         };
+        let corners_timer = Instant::now();
         layout.place_all_corners();
+        let corners_ms = corners_timer.elapsed();
+
+        let paths_timer = Instant::now();
         layout.place_all_paths()?;
+        let paths_ms = paths_timer.elapsed();
+
+        let patches_timer = Instant::now();
         layout.assign_all_patches()?;
+        let patches_ms = patches_timer.elapsed();
+
+        info!(
+            "Layout::embed: loops={} polycube_faces={} corners={:?} paths={:?} patches_quality={:?} total={:?}",
+            dual_ref.loops_ref.len(),
+            polycube_ref.structure.nr_faces(),
+            corners_ms,
+            paths_ms,
+            patches_ms,
+            timer.elapsed()
+        );
         Ok(layout)
     }
 
@@ -280,7 +300,7 @@ impl Layout {
         &mut self,
         edge_id: EdgeKey<POLYCUBE>,
         occupied_vertices: &HashSet<VertID>,
-        occupied_edges: &HashSet<(VertID, VertID)>,
+        blocked_face_neighbors: &HashSet<(FaceID, FaceID)>,
         occupied_faces: &HashSet<FaceID>,
     ) -> Result<Vec<VertID>, LayoutError> {
         let polycube = &self.polycube_ref.structure;
@@ -299,46 +319,32 @@ impl Layout {
         // Neighborhood function
         let n_function = |node: NodeType| match node {
             NodeType::Face(f_id) => {
-                let f_neighbors: Vec<NodeType> = {
-                    // Disallow occupied faces
-                    if occupied_faces.contains(&f_id) {
-                        return vec![];
+                // Disallow occupied faces
+                if occupied_faces.contains(&f_id) {
+                    return Vec::new();
+                }
+
+                let mut neighbors = Vec::with_capacity(6);
+                neighbors.extend(granulated_mesh.vertices(f_id).map(NodeType::Vertex));
+
+                for n_id in granulated_mesh.neighbors(f_id) {
+                    if !blocked_face_neighbors.contains(&(f_id, n_id)) {
+                        neighbors.push(NodeType::Face(n_id));
                     }
-                    // Only allowed if the edge between the two faces is not occupied.
-                    let blocked = |f1: FaceID, f2: FaceID| {
-                        let (edge_id, _) = granulated_mesh.edge_between_faces(f1, f2).unwrap();
-                        let Some([u, v]) = granulated_mesh.vertices(edge_id).collect_array::<2>()
-                        else {
-                            panic!("Expected edge {edge_id:?} to have exactly two vertices");
-                        };
-                        occupied_edges.contains(&(u, v))
-                    };
-                    granulated_mesh
-                        .neighbors(f_id)
-                        .filter(|&n_id| !blocked(f_id, n_id))
-                        .map(NodeType::Face)
-                        .collect_vec()
-                };
-                let v_neighbors = granulated_mesh
-                    .vertices(f_id)
-                    .map(NodeType::Vertex)
-                    .collect_vec();
-                [v_neighbors, f_neighbors].concat()
+                }
+
+                neighbors
             }
             NodeType::Vertex(v_id) => {
                 // Only allowed if the vertex is not occupied
                 if occupied_vertices.contains(&v_id) && v_id != u && v_id != v {
-                    return vec![];
+                    return Vec::new();
                 }
-                let v_neighbors = granulated_mesh
-                    .neighbors(v_id)
-                    .map(NodeType::Vertex)
-                    .collect_vec();
-                let f_neighbors = granulated_mesh
-                    .faces(v_id)
-                    .map(NodeType::Face)
-                    .collect_vec();
-                [v_neighbors, f_neighbors].concat()
+
+                let mut neighbors = Vec::with_capacity(12);
+                neighbors.extend(granulated_mesh.neighbors(v_id).map(NodeType::Vertex));
+                neighbors.extend(granulated_mesh.faces(v_id).map(NodeType::Face));
+                neighbors
             }
         };
 
@@ -394,10 +400,25 @@ impl Layout {
                 ridge_function(a, b) * nodetype_to_pos(a).metric_distance(&nodetype_to_pos(b)),
             )
         };
+        let heuristic_scale = if normal_on_left == normal_on_right {
+            1.0
+        } else {
+            0.5
+        };
+        let h_function = |(a, b)| {
+            // Edge weights are at least `heuristic_scale * Euclidean distance`:
+            // flat paths use scale 1.0, ridge-favored paths use scale 0.5.
+            OrderedFloat(heuristic_scale * nodetype_to_pos(a).metric_distance(&nodetype_to_pos(b)))
+        };
 
         let result = {
             let nn = grapff::fluid::FluidGraph::new(n_function);
-            nn.shortest_path(NodeType::Vertex(u), NodeType::Vertex(v), w_function)
+            nn.shortest_path_heuristic(
+                NodeType::Vertex(u),
+                NodeType::Vertex(v),
+                w_function,
+                h_function,
+            )
         };
 
         if result.is_none() {
@@ -453,12 +474,22 @@ impl Layout {
 
     pub fn place_path(&mut self, edge_id: EdgeKey<POLYCUBE>) -> Result<(), LayoutError> {
         let (occupied_vertices, occupied_edges) = self.compute_occupied();
+        let blocked_face_neighbors = occupied_edges
+            .iter()
+            .filter_map(|&(a, b)| {
+                let (edge, _) = self.granulated_mesh.edge_between_verts(a, b)?;
+                Some((
+                    self.granulated_mesh.face(edge),
+                    self.granulated_mesh.face(self.granulated_mesh.twin(edge)),
+                ))
+            })
+            .collect::<HashSet<_>>();
 
         // Compute the path
         let path = self.compute_path(
             edge_id,
             &occupied_vertices,
-            &occupied_edges,
+            &blocked_face_neighbors,
             &HashSet::new(),
         )?;
         let path_reversed = path.iter().cloned().rev().collect_vec();
@@ -472,12 +503,13 @@ impl Layout {
 
     // TODO: Make this robust
     pub fn place_all_paths(&mut self) -> Result<(), LayoutError> {
+        let timer = Instant::now();
         self.edge_to_path.clear();
 
         let primal = self.polycube_ref.structure.clone();
 
         let mut occupied_vertices = HashSet::new();
-        let mut occupied_edges = HashSet::new();
+        let mut blocked_face_neighbors = HashSet::new();
 
         let mut edges = primal.edge_ids();
         edges.shuffle(&mut rand::rng());
@@ -495,24 +527,26 @@ impl Layout {
             }
 
             if counter > 1000 {
-                warn!("Stuck in path placement loop...");
+                warn!(
+                    "Stuck in path placement loop after {:?}; placed_paths={} queue_len={} polycube_edges={}",
+                    timer.elapsed(),
+                    self.edge_to_path.len(),
+                    edge_queue.len(),
+                    primal.nr_edges()
+                );
                 return Err(LayoutError::InvalidPath);
             }
             counter += 1;
 
             // check if edge is separating (in combination with the edges already done)
-            let covered_edges = self
-                .edge_to_path
-                .keys()
-                .chain([&edge_id])
-                .collect::<HashSet<_>>();
             let ccs = grapff::fluid::FluidGraph::new(
                 |face_id: FaceKey<POLYCUBE>| -> Vec<FaceKey<POLYCUBE>> {
                     primal
                         .neighbors(face_id)
                         .filter(|&n_id| {
-                            !covered_edges
-                                .contains(&primal.edge_between_faces(face_id, n_id).unwrap().0)
+                            let edge_between = primal.edge_between_faces(face_id, n_id).unwrap().0;
+                            edge_between != edge_id
+                                && !self.edge_to_path.contains_key(&edge_between)
                         })
                         .collect::<Vec<FaceKey<POLYCUBE>>>()
                 },
@@ -562,25 +596,35 @@ impl Layout {
                     (edge_id_position + edges_done_in_u_new.len() - 1) % edges_done_in_u_new.len();
                 // find above edge in the granulated mesh
                 let above_edge_id = edges_done_in_u_new[above];
-                let above_edge_obj = self.edge_to_path.get(&above_edge_id).unwrap();
+                let above_edge_obj = self
+                    .edge_to_path
+                    .get(&above_edge_id)
+                    .ok_or(LayoutError::InvalidPath)?;
                 let above_edge_start = above_edge_obj[0];
-                assert!(above_edge_start == u);
+                if above_edge_start != u {
+                    return Err(LayoutError::InvalidPath);
+                }
                 let above_edge_start_plus_one = above_edge_obj[1];
                 let above_edge_real_edge = self
                     .granulated_mesh
                     .edge_between_verts(above_edge_start, above_edge_start_plus_one)
-                    .unwrap()
+                    .ok_or(LayoutError::InvalidPath)?
                     .0;
                 // find below edge in the granulated mesh
                 let below_edge_id = edges_done_in_u_new[below];
-                let below_edge_obj = self.edge_to_path.get(&below_edge_id).unwrap();
+                let below_edge_obj = self
+                    .edge_to_path
+                    .get(&below_edge_id)
+                    .ok_or(LayoutError::InvalidPath)?;
                 let below_edge_start = below_edge_obj[0];
-                assert!(below_edge_start == u);
+                if below_edge_start != u {
+                    return Err(LayoutError::InvalidPath);
+                }
                 let below_edge_start_plus_one = below_edge_obj[1];
                 let below_edge_real_edge = self
                     .granulated_mesh
                     .edge_between_verts(below_edge_start, below_edge_start_plus_one)
-                    .unwrap()
+                    .ok_or(LayoutError::InvalidPath)?
                     .0;
                 // so starting from below edge, we insert all faces up until the above edge
                 let allowed_edges = self
@@ -596,7 +640,9 @@ impl Layout {
                 let allowed_faces = allowed_edges
                     .map(|e| self.granulated_mesh.face(e))
                     .collect_vec();
-                assert!(!allowed_faces.is_empty());
+                if allowed_faces.is_empty() {
+                    return Err(LayoutError::InvalidPath);
+                }
                 for face_id in self.granulated_mesh.faces(u) {
                     if !allowed_faces.contains(&face_id) {
                         occupied_faces.insert(face_id);
@@ -623,25 +669,35 @@ impl Layout {
                     (edge_id_position + edges_done_in_v_new.len() - 1) % edges_done_in_v_new.len();
                 // find above edge in the granulated mesh
                 let above_edge_id = edges_done_in_v_new[above];
-                let above_edge_obj = self.edge_to_path.get(&above_edge_id).unwrap();
+                let above_edge_obj = self
+                    .edge_to_path
+                    .get(&above_edge_id)
+                    .ok_or(LayoutError::InvalidPath)?;
                 let above_edge_start = above_edge_obj[0];
-                assert!(above_edge_start == v);
+                if above_edge_start != v {
+                    return Err(LayoutError::InvalidPath);
+                }
                 let above_edge_start_plus_one = above_edge_obj[1];
                 let above_edge_real_edge = self
                     .granulated_mesh
                     .edge_between_verts(above_edge_start, above_edge_start_plus_one)
-                    .unwrap()
+                    .ok_or(LayoutError::InvalidPath)?
                     .0;
                 // find below edge in the granulated mesh
                 let below_edge_id = edges_done_in_v_new[below];
-                let below_edge_obj = self.edge_to_path.get(&below_edge_id).unwrap();
+                let below_edge_obj = self
+                    .edge_to_path
+                    .get(&below_edge_id)
+                    .ok_or(LayoutError::InvalidPath)?;
                 let below_edge_start = below_edge_obj[0];
-                assert!(below_edge_start == v);
+                if below_edge_start != v {
+                    return Err(LayoutError::InvalidPath);
+                }
                 let below_edge_start_plus_one = below_edge_obj[1];
                 let below_edge_real_edge = self
                     .granulated_mesh
                     .edge_between_verts(below_edge_start, below_edge_start_plus_one)
-                    .unwrap()
+                    .ok_or(LayoutError::InvalidPath)?
                     .0;
                 // so starting from below edge, we insert all faces up until the above edge
                 let allowed_edges = self
@@ -658,7 +714,9 @@ impl Layout {
                     .into_iter()
                     .map(|e| self.granulated_mesh.face(e))
                     .collect_vec();
-                assert!(!allowed_faces.is_empty());
+                if allowed_faces.is_empty() {
+                    return Err(LayoutError::InvalidPath);
+                }
                 for face_id in self.granulated_mesh.faces(v) {
                     if !allowed_faces.contains(&face_id) {
                         occupied_faces.insert(face_id);
@@ -673,7 +731,7 @@ impl Layout {
             let path = self.compute_path(
                 edge_id,
                 &local_copy_occupied_vertices,
-                &occupied_edges,
+                &blocked_face_neighbors,
                 &occupied_faces,
             )?;
             let path_reversed = path.clone().into_iter().rev().collect_vec();
@@ -681,8 +739,12 @@ impl Layout {
             // Update occupied vertices and edges
             for window in path.windows(2) {
                 let (a, b) = (window[0], window[1]);
-                occupied_edges.insert((a, b));
-                occupied_edges.insert((b, a));
+                if let Some((edge, _)) = self.granulated_mesh.edge_between_verts(a, b) {
+                    let face_a = self.granulated_mesh.face(edge);
+                    let face_b = self.granulated_mesh.face(self.granulated_mesh.twin(edge));
+                    blocked_face_neighbors.insert((face_a, face_b));
+                    blocked_face_neighbors.insert((face_b, face_a));
+                }
                 occupied_vertices.insert(a);
                 occupied_vertices.insert(b);
             }
@@ -695,6 +757,12 @@ impl Layout {
 
             counter = 0;
         }
+        info!(
+            "Layout::place_all_paths: polycube_edges={} stored_paths={} elapsed={:?}",
+            primal.nr_edges(),
+            self.edge_to_path.len(),
+            timer.elapsed()
+        );
         Ok(())
     }
 
@@ -713,10 +781,14 @@ impl Layout {
     // }
 
     pub fn assign_all_patches(&mut self) -> Result<(), LayoutError> {
+        let timer = Instant::now();
         // Verify the paths
+        let verify_timer = Instant::now();
         self.verify_paths()?;
+        let verify_ms = verify_timer.elapsed();
 
         // Get all blocked edges (ALL PATHS)
+        let blocked_timer = Instant::now();
         let blocked = self
             .edge_to_path
             .values()
@@ -733,8 +805,10 @@ impl Layout {
                 ]
             })
             .collect::<HashSet<_>>();
+        let blocked_ms = blocked_timer.elapsed();
 
         // Get all face neighbors, but filter out neighbors blocked by the blocked edges
+        let neighbors_timer = Instant::now();
         let face_to_neighbors = self
             .granulated_mesh
             .face_ids()
@@ -750,16 +824,20 @@ impl Layout {
                 )
             })
             .collect::<HashMap<_, _>>();
+        let neighbors_ms = neighbors_timer.elapsed();
 
         // Find all patches (should be equal to the number of faces in the polycube)
+        let components_timer = Instant::now();
         let patches =
             grapff::fluid::FluidGraph::new(|face_id: FaceID| face_to_neighbors[&face_id].clone())
                 .connected_components(&self.granulated_mesh.face_ids());
+        let components_ms = components_timer.elapsed();
 
         if patches.len() != self.polycube_ref.structure.face_ids().len() {
             return Err(LayoutError::InvalidPatches);
         }
 
+        let assign_timer = Instant::now();
         // Every path should be part of exactly TWO patches (on both sides)
         let mut path_to_ccs: HashMap<EdgeKey<POLYCUBE>, [usize; 2]> = HashMap::new();
         for (path_id, path) in &self.edge_to_path {
@@ -814,7 +892,25 @@ impl Layout {
             self.face_to_patch.insert(face_id, Patch { faces });
         }
 
+        let assign_ms = assign_timer.elapsed();
+
+        let quality_timer = Instant::now();
         self.compute_quality();
+        let quality_ms = quality_timer.elapsed();
+
+        info!(
+            "Layout::assign_all_patches: paths={} blocked_edges={} patches={} verify={:?} blocked={:?} neighbors={:?} components={:?} assign={:?} quality={:?} total={:?}",
+            self.edge_to_path.len(),
+            blocked.len(),
+            patches.len(),
+            verify_ms,
+            blocked_ms,
+            neighbors_ms,
+            components_ms,
+            assign_ms,
+            quality_ms,
+            timer.elapsed()
+        );
 
         Ok(())
     }

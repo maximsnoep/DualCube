@@ -14,21 +14,15 @@ use std::sync::Arc;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Phase {
     None,
-    Input,
-    Field,
-    Graph,
     Loops,
     Dual,
     Layout,
     Polycube,
-    #[allow(dead_code)]
-    Quad,
 }
 
 #[derive(Resource, Debug, Clone)]
 pub struct Configuration {
     pub direction: Direction,
-    pub alpha: f64,
 
     pub unit: bool,
     pub omega: usize,
@@ -71,7 +65,6 @@ impl Default for Configuration {
     fn default() -> Self {
         Self {
             direction: Direction::X,
-            alpha: 0.5,
 
             unit: true,
             omega: 5,
@@ -102,7 +95,7 @@ impl Default for Configuration {
 
             fields_params: FieldParams::default(),
             graph_params: GraphParams::default(),
-            flow_graph_top_percent: 100.0,
+            flow_graph_top_percent: 20.0,
         }
     }
 }

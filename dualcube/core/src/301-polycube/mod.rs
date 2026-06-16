@@ -69,11 +69,6 @@ impl Polycube {
 
         polycube.resize(dual, None);
 
-        log::info!(
-            "Constructed a polycube with {} faces.",
-            polycube.structure.nr_faces()
-        );
-
         polycube
     }
 

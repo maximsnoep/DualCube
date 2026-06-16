@@ -21,7 +21,6 @@ impl crate::Export for HEX {
         let path_hex = path.with_extension("hex.mesh");
         let path_obj = path.with_extension("obj");
         let path_flag = path.with_extension("flag");
-        let wsl_path_hex = PathBuf::from(DATA).join(path_hex.file_name().unwrap());
         let wsl_path_obj = PathBuf::from(DATA).join(path_obj.file_name().unwrap());
         let wsl_path_flag = PathBuf::from(DATA).join(path_flag.file_name().unwrap());
 

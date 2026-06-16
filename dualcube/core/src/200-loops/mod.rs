@@ -9,7 +9,7 @@
 use crate::prelude::*;
 use grapff::Grapff;
 use itertools::Itertools;
-use log::info;
+
 use mehsh::prelude::*;
 use ordered_float::OrderedFloat;
 use orx_parallel::*;
@@ -687,9 +687,20 @@ impl Solution {
 
     pub fn construct_loop(
         &self,
+        edges: [EdgeID; 2],
+        domain: &grapff::fixed::FixedGraph<EdgeID, f64>,
+        measure: &impl Fn(f64) -> OrderedFloat<f64>,
+    ) -> Option<(Vec<EdgeID>, f64)> {
+        let heuristic_scale = self.flow_graph_heuristic_scale(domain, measure);
+        self.construct_loop_with_heuristic_scale(edges, domain, measure, heuristic_scale)
+    }
+
+    fn construct_loop_with_heuristic_scale(
+        &self,
         [e1, e2]: [EdgeID; 2],
         domain: &grapff::fixed::FixedGraph<EdgeID, f64>,
         measure: &impl Fn(f64) -> OrderedFloat<f64>,
+        heuristic_scale: f64,
     ) -> Option<(Vec<EdgeID>, f64)> {
         let timer = Instant::now();
         if !domain.node_exists(e1) || !domain.node_exists(e2) {
@@ -726,10 +737,6 @@ impl Solution {
             };
             let orientation_ms = elapsed_ms(orientation_timer);
 
-            let heuristic_timer = Instant::now();
-            let heuristic_scale = self.flow_graph_heuristic_scale(domain, measure);
-            let heuristic_ms = elapsed_ms(heuristic_timer);
-
             let shortest_path_timer = Instant::now();
             let Some((solution, path_cost)) =
                 domain.shortest_path_heuristic(n2, n1, measure, |(node, goal)| {
@@ -737,12 +744,11 @@ impl Solution {
                 })
             else {
                 log::debug!(
-                    "b_loops::construct_loop: rejected reason=no_return_path e1={e1:?} e2={e2:?} n1={n1:?} n2={n2:?} edge_cost={:.6} heuristic_scale={:.6} orientation_ms={:.3} heuristic_ms={:.3} shortest_path_ms={:.3} elapsed_ms={:.3}",
-                    edge_cost,
-                    heuristic_scale,
-                    orientation_ms,
-                    heuristic_ms,
-                    elapsed_ms(shortest_path_timer),
+                    "b_loops::construct_loop: rejected reason=no_return_path e1={e1:?} e2={e2:?} n1={n1:?} n2={n2:?} edge_cost={:.6} heuristic_scale={:.6} orientation_ms={:.3} shortest_path_ms={:.3} elapsed_ms={:.3}",
+                edge_cost,
+                heuristic_scale,
+                orientation_ms,
+                elapsed_ms(shortest_path_timer),
                     elapsed_ms(timer)
                 );
                 return None;
@@ -759,12 +765,11 @@ impl Solution {
             let check_timer = Instant::now();
             if self.check_loop(&short).is_err() {
                 log::debug!(
-                    "b_loops::construct_loop: rejected reason=invalid_loop e1={e1:?} e2={e2:?} n1={n1:?} n2={n2:?} original_edges={} simplified_edges={} cost={:.6} orientation_ms={:.3} heuristic_ms={:.3} shortest_path_ms={:.3} simplify_ms={:.3} check_ms={:.3} elapsed_ms={:.3}",
+                    "b_loops::construct_loop: rejected reason=invalid_loop e1={e1:?} e2={e2:?} n1={n1:?} n2={n2:?} original_edges={} simplified_edges={} cost={:.6} orientation_ms={:.3} shortest_path_ms={:.3} simplify_ms={:.3} check_ms={:.3} elapsed_ms={:.3}",
                     original_edges,
                     short.len(),
                     cost,
                     orientation_ms,
-                    heuristic_ms,
                     shortest_path_ms,
                     simplify_ms,
                     elapsed_ms(check_timer),
@@ -775,7 +780,7 @@ impl Solution {
             let check_ms = elapsed_ms(check_timer);
 
             log::debug!(
-                "b_loops::construct_loop: ok e1={e1:?} e2={e2:?} n1={n1:?} n2={n2:?} original_edges={} simplified_edges={} edge_cost={:.6} path_cost={:.6} cost={:.6} heuristic_scale={:.6} orientation_ms={:.3} heuristic_ms={:.3} shortest_path_ms={:.3} simplify_ms={:.3} check_ms={:.3} elapsed_ms={:.3}",
+                "b_loops::construct_loop: ok e1={e1:?} e2={e2:?} n1={n1:?} n2={n2:?} original_edges={} simplified_edges={} edge_cost={:.6} path_cost={:.6} cost={:.6} heuristic_scale={:.6} orientation_ms={:.3} shortest_path_ms={:.3} simplify_ms={:.3} check_ms={:.3} elapsed_ms={:.3}",
                 original_edges,
                 short.len(),
                 edge_cost,
@@ -783,7 +788,6 @@ impl Solution {
                 cost,
                 heuristic_scale,
                 orientation_ms,
-                heuristic_ms,
                 shortest_path_ms,
                 simplify_ms,
                 check_ms,
@@ -944,19 +948,7 @@ impl Solution {
             return None;
         }
 
-        let dijkstra_timer = Instant::now();
-        let result = self.best_loop_from_start_dijkstra(start, g, &measure);
-        let dijkstra_ms = elapsed_ms(dijkstra_timer);
-        info!(
-            "b_loops::construct_loop_from_start: direction={direction:?} start={start:?} found={} path_edges={:?} cost={:?} available_ms={:.3} dijkstra_ms={:.3} elapsed_ms={:.3}",
-            result.is_some(),
-            result.as_ref().map(|(path, _)| path.len()),
-            result.as_ref().map(|(_, cost)| *cost),
-            available_ms,
-            dijkstra_ms,
-            elapsed_ms(timer)
-        );
-        result
+        self.best_loop_from_start_dijkstra(start, g, &measure)
     }
 
     /// Compute a simple closed loop through all graph-node anchors in the given order.
@@ -980,22 +972,8 @@ impl Solution {
             );
             return None;
         };
-        let available_ms = elapsed_ms(available_timer);
         let g = &*available;
-        let construct_timer = Instant::now();
-        let result = self.construct_loop_through_anchor_nodes_in_graph(anchors, g, &measure);
-        let construct_ms = elapsed_ms(construct_timer);
-        info!(
-            "b_loops::construct_loop_through_anchor_nodes: direction={direction:?} anchors={} found={} path_edges={:?} cost={:?} available_ms={:.3} construct_ms={:.3} elapsed_ms={:.3}",
-            anchors.len(),
-            result.is_some(),
-            result.as_ref().map(|(path, _)| path.len()),
-            result.as_ref().map(|(_, cost)| *cost),
-            available_ms,
-            construct_ms,
-            elapsed_ms(timer)
-        );
-        result
+        self.construct_loop_through_anchor_nodes_in_graph(anchors, g, &measure)
     }
 
     fn construct_loop_through_anchor_nodes_in_graph(
@@ -1202,33 +1180,15 @@ impl Solution {
             );
             return None;
         };
-        let available_ms = elapsed_ms(available_timer);
         let g = &*available;
 
-        let orient_timer = Instant::now();
         let anchor_nodes = anchors
             .iter()
             .filter_map(|&[e1, e2]| self.orient_anchor_pair([e1, e2], flow_graph, &measure))
             .flatten()
             .collect_vec();
-        let orient_ms = elapsed_ms(orient_timer);
 
-        let construct_timer = Instant::now();
-        let result = self.construct_loop_through_anchor_nodes_in_graph(&anchor_nodes, g, &measure);
-        let construct_ms = elapsed_ms(construct_timer);
-        info!(
-            "b_loops::construct_loop_with_anchors: direction={direction:?} anchor_pairs={} anchor_nodes={} found={} path_edges={:?} cost={:?} available_ms={:.3} orient_ms={:.3} construct_ms={:.3} elapsed_ms={:.3}",
-            anchors.len(),
-            anchor_nodes.len(),
-            result.is_some(),
-            result.as_ref().map(|(path, _)| path.len()),
-            result.as_ref().map(|(_, cost)| *cost),
-            available_ms,
-            orient_ms,
-            construct_ms,
-            elapsed_ms(timer)
-        );
-        result
+        self.construct_loop_through_anchor_nodes_in_graph(&anchor_nodes, g, &measure)
     }
 
     pub fn construct_loop_with_anchors_and_locked_segments(
@@ -1260,40 +1220,20 @@ impl Solution {
             );
             return None;
         };
-        let available_ms = elapsed_ms(available_timer);
         let graph = &*available;
 
-        let orient_timer = Instant::now();
         let anchor_nodes = anchors
             .iter()
             .filter_map(|&[e1, e2]| self.orient_anchor_pair([e1, e2], flow_graph, &measure))
             .flatten()
             .collect_vec();
-        let orient_ms = elapsed_ms(orient_timer);
 
-        let construct_timer = Instant::now();
-        let result = self.construct_loop_through_anchor_nodes_with_locked_segments_in_graph(
+        self.construct_loop_through_anchor_nodes_with_locked_segments_in_graph(
             &anchor_nodes,
             graph,
             locked_segments,
             &measure,
-        );
-        let construct_ms = elapsed_ms(construct_timer);
-        info!(
-            "b_loops::construct_loop_with_anchors_and_locked_segments: direction={direction:?} anchor_pairs={} anchor_nodes={} locked_segments={} found={} path_edges={:?} segments={:?} cost={:?} available_ms={:.3} orient_ms={:.3} construct_ms={:.3} elapsed_ms={:.3}",
-            anchors.len(),
-            anchor_nodes.len(),
-            locked_segments.len(),
-            result.is_some(),
-            result.as_ref().map(|(path, _, _)| path.len()),
-            result.as_ref().map(|(_, _, segments)| segments.len()),
-            result.as_ref().map(|(_, cost, _)| *cost),
-            available_ms,
-            orient_ms,
-            construct_ms,
-            elapsed_ms(timer)
-        );
-        result
+        )
     }
 
     fn construct_loop_through_anchor_nodes_with_locked_segments_in_graph(
@@ -1513,37 +1453,15 @@ impl Solution {
         &self,
         [e1, e2]: [EdgeID; 2],
         direction: Direction,
-        _flow_graph: &grapff::fixed::FixedGraph<EdgeID, f64>,
+        flow_graph: &grapff::fixed::FixedGraph<EdgeID, f64>,
         measure: impl Fn(f64) -> OrderedFloat<f64>,
+        heuristic_scale: f64,
     ) -> Option<(Vec<EdgeID>, f64)> {
-        let timer = Instant::now();
-        let available_timer = Instant::now();
-        let Some(available) = self.available_flow_graph(direction) else {
-            log::debug!(
-                "b_loops::construct_unbounded_loop: rejected reason=no_available_graph direction={direction:?} e1={e1:?} e2={e2:?} available_ms={:.3} elapsed_ms={:.3}",
-                elapsed_ms(available_timer),
-                elapsed_ms(timer)
-            );
-            return None;
-        };
-        let available_ms = elapsed_ms(available_timer);
-        let g = &*available;
-
-        // `construct_loop` validates the result via `check_loop`, so invalid or
-        // self-intersecting candidates are rejected.
-        let construct_timer = Instant::now();
-        let result = self.construct_loop([e1, e2], g, &measure);
-        let construct_ms = elapsed_ms(construct_timer);
-        log::debug!(
-            "b_loops::construct_unbounded_loop: direction={direction:?} e1={e1:?} e2={e2:?} found={} path_edges={:?} cost={:?} available_ms={:.3} construct_ms={:.3} elapsed_ms={:.3}",
-            result.is_some(),
-            result.as_ref().map(|(path, _)| path.len()),
-            result.as_ref().map(|(_, cost)| *cost),
-            available_ms,
-            construct_ms,
-            elapsed_ms(timer)
-        );
-        result
+        // Use the shared base flow graph directly. Filtering/cloning the graph per
+        // sampled candidate is expensive; `check_loop` and the final reconstruction
+        // reject candidates that collide with existing loops.
+        let _ = direction;
+        self.construct_loop_with_heuristic_scale([e1, e2], flow_graph, &measure, heuristic_scale)
     }
 
     pub fn sample_loops(
@@ -1554,6 +1472,10 @@ impl Solution {
         score: impl Fn((&[EdgeID], f64)) -> f64 + std::marker::Sync + std::marker::Send,
     ) -> Vec<Vec<EdgeID>> {
         let timer = Instant::now();
+        if n == 0 {
+            return Vec::new();
+        }
+
         let Some(flow_graphs) = &self.flow_graphs else {
             log::debug!(
                 "b_loops::sample_loops: rejected reason=no_flow_graphs axis={axis:?} requested={} elapsed_ms={:.3}",
@@ -1597,11 +1519,19 @@ impl Solution {
         let selected_count = selected.len();
 
         let construct_timer = Instant::now();
+        let heuristic_scale =
+            self.flow_graph_heuristic_scale(&flow_graphs[axis as usize], &measure);
         let constructed = selected
             .into_iter()
             .iter_into_par()
             .filter_map(|es| {
-                self.construct_unbounded_loop(es, axis, &flow_graphs[axis as usize], &measure)
+                self.construct_unbounded_loop(
+                    es,
+                    axis,
+                    &flow_graphs[axis as usize],
+                    &measure,
+                    heuristic_scale,
+                )
             })
             .collect::<Vec<_>>();
         let construct_ms = elapsed_ms(construct_timer);
@@ -1616,18 +1546,15 @@ impl Solution {
             .collect::<Vec<_>>();
         let score_ms = elapsed_ms(score_timer);
 
-        info!(
-            "b_loops::sample_loops: axis={axis:?} requested={} candidate_pool={} selected={} constructed={} returned={} generation_ms={:.3} sort_ms={:.3} construct_ms={:.3} score_ms={:.3} elapsed_ms={:.3}",
-            n,
+        let _ = (
             candidate_pool,
             selected_count,
             constructed_count,
-            result.len(),
             generation_ms,
             sort_ms,
             construct_ms,
             score_ms,
-            elapsed_ms(timer)
+            timer,
         );
 
         result

@@ -23,7 +23,9 @@ use orx_parallel::*;
 use rand::seq::IteratorRandom;
 use serde::{Deserialize, Serialize};
 use slotmap::SlotMap;
+use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Instant;
 use thiserror::Error;
 
 #[derive(Error, Debug, Clone, Serialize, Deserialize)]
@@ -69,7 +71,7 @@ pub struct Solution {
     pub quad: Option<Quad>,
 
     #[serde(skip)]
-    pub flow_graphs: Option<[grapff::fixed::FixedGraph<EdgeID, f64>; 3]>,
+    pub flow_graphs: Option<Arc<[grapff::fixed::FixedGraph<EdgeID, f64>; 3]>>,
 
     #[serde(skip)]
     pub fields: Option<Fields<INPUT>>,
@@ -128,6 +130,7 @@ impl Solution {
         self.dual = Err(PropertyViolationError::default());
         self.polycube = None;
         self.layout = None;
+        self.quad = None;
     }
 
     // ***
@@ -226,62 +229,89 @@ impl Solution {
 
     /// Evolve the loop structure with a simple population-based search.
     pub fn evolve(&self, iterations: usize, pool1_size: usize, pool2_size: usize) -> Option<Self> {
-        let mut pool1 = vec![(self.clone(), self.get_quality().unwrap()); pool1_size];
-        for _ in 0..iterations {
-            let pool2 = (0..pool2_size)
+        let initial_quality = self.get_quality()?;
+        if pool1_size == 0 {
+            log::warn!("evolve: pool1_size is 0; cannot evolve");
+            return None;
+        }
+
+        let started_at = Instant::now();
+        let survivor_count = pool1_size.min(5);
+        let mut seed = self.clone();
+        seed.prepare_flow();
+        let mut pool1 = vec![(seed, initial_quality); pool1_size];
+
+        log::info!(
+            "evolve: starting with iterations={iterations}, pool1_size={pool1_size}, pool2_size={pool2_size}, initial_quality={initial_quality}"
+        );
+
+        for iteration in 0..iterations {
+            let iteration_started_at = Instant::now();
+
+            let raw_mutations = (0..pool2_size)
                 .into_par()
-                .map(|_| {
-                    // Grab a random solution from pool1
+                .filter_map(|_| {
                     let index = rand::random_range(0..pool1.len());
-                    pool1[index].clone()
+                    let (sol, _) = &pool1[index];
+                    sol.mutation()
                 })
-                .filter_map(|(sol, _)| {
-                    // Mutate the solution
-                    sol.mutation().map_or_else(
-                        || None,
-                        |mutation| {
-                            let quality = mutation.get_quality().unwrap_or(0.0);
-                            // Compute quality
-                            Some((mutation, quality))
-                        },
-                    )
+                .collect::<Vec<_>>();
+
+            let raw_generated = raw_mutations.len();
+            let dedup_timer = Instant::now();
+            let mut seen = HashSet::new();
+            let unique_mutations = raw_mutations
+                .into_iter()
+                .filter(|solution| seen.insert(solution.loop_signature()))
+                .collect::<Vec<_>>();
+            let unique_generated = unique_mutations.len();
+            let dedup_ms = dedup_timer.elapsed();
+
+            let mut pool2 = unique_mutations
+                .into_par()
+                .filter_map(|mut mutation| {
+                    if mutation.reconstruct_solution_inner(true, 1, false).is_err() {
+                        return None;
+                    }
+                    let quality = mutation.get_quality().unwrap_or(0.0);
+                    Some((mutation, quality))
                 })
-                .collect::<Vec<_>>()
-                .into_iter()
-                .sorted_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-                .rev();
+                .collect::<Vec<_>>();
 
-            for (_, quality) in pool2.clone() {
-                log::debug!("evolve: mutated candidate with quality {quality}");
-            }
+            let generated = pool2.len();
+            let best_mutation = pool2.iter().map(|(_, q)| *q).reduce(f64::max);
+            let avg_mutation = if generated == 0 {
+                None
+            } else {
+                Some(pool2.iter().map(|(_, q)| *q).sum::<f64>() / generated as f64)
+            };
 
-            // overwrite pool1 with top 5 solutions of pool1 and top 5 solutions of pool2
-            pool1 = pool1
-                .into_iter()
-                .take(5)
-                .chain(pool2.take(5))
-                .sorted_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-                .rev()
-                .collect();
+            pool1.append(&mut pool2);
+            pool1.sort_unstable_by(|(_, a), (_, b)| b.total_cmp(a));
+            pool1.truncate(survivor_count);
 
-            let best_in_pool = pool1.iter().map(|(_, q)| *q).fold(f64::MIN, f64::max);
+            let best_in_pool = pool1.first().map(|(_, q)| *q).unwrap_or(f64::MIN);
+            let worst_in_pool = pool1.last().map(|(_, q)| *q).unwrap_or(f64::MIN);
+
             log::info!(
-                "evolve: pool of {} solutions, best quality so far {best_in_pool}",
+                "evolve: iteration {}/{} raw={} unique={} valid={}/{} dedup={:?} elapsed={:?}; best_mutation={best_mutation:?}, avg_mutation={avg_mutation:?}, pool_len={}, best={best_in_pool}, worst={worst_in_pool}",
+                iteration + 1,
+                iterations,
+                raw_generated,
+                unique_generated,
+                generated,
+                pool2_size,
+                dedup_ms,
+                iteration_started_at.elapsed(),
                 pool1.len()
             );
         }
 
-        if pool1.is_empty() {
-            log::warn!("evolve: no valid solutions generated");
-            return None;
-        }
-
-        // Grab the best solution
-        let (sol, quality) = pool1
-            .into_iter()
-            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-            .unwrap();
-        log::info!("evolve: picked best solution with quality {quality}");
+        let (sol, quality) = pool1.into_iter().next()?;
+        log::info!(
+            "evolve: picked best solution with quality {quality} after {:?}",
+            started_at.elapsed()
+        );
         Some(sol)
     }
 
@@ -411,21 +441,29 @@ impl Solution {
 
     /// Rebuild the full chain (dual, polycube, layout, quad) from the loops.
     pub fn reconstruct_solution(&mut self, unit: bool, omega: usize) -> Result<(), SolutionError> {
+        self.reconstruct_solution_inner(unit, omega, true)
+    }
+
+    fn reconstruct_solution_inner(
+        &mut self,
+        unit: bool,
+        omega: usize,
+        construct_quad: bool,
+    ) -> Result<(), SolutionError> {
+        let started_at = Instant::now();
         self.clear();
 
         if self.loops.len() < 3 {
             return Ok(());
         }
 
-        log::info!(
-            "Reconstructing solution ({} loops) with unit: {}, omega: {}.",
-            self.loops.len(),
-            unit,
-            omega
-        );
-
+        let dual_timer = Instant::now();
         let dual = Dual::from(self.mesh_ref.clone(), &self.loops)?;
+        let dual_ms = dual_timer.elapsed();
+
+        let polycube_timer = Instant::now();
         let polycube = Polycube::from_dual(&dual);
+        let polycube_ms = polycube_timer.elapsed();
 
         // check all faces of the polycube have a normal
         for face in polycube.structure.face_ids() {
@@ -435,13 +473,24 @@ impl Solution {
             }
         }
 
+        let layout_timer = Instant::now();
+        let mut layout_attempts = 0;
         'outer: for _ in 0..10 {
+            layout_attempts += 1;
+            let attempt_timer = Instant::now();
             let layout = Layout::embed(&dual, &polycube);
+            if layout.is_err() {
+                log::info!(
+                    "reconstruct_solution: layout attempt {layout_attempts} failed elapsed={:?}",
+                    attempt_timer.elapsed()
+                );
+            }
             if let Ok(ok_layout) = layout {
                 self.layout = Some(ok_layout);
                 break 'outer;
             }
         }
+        let layout_ms = layout_timer.elapsed();
 
         if self.layout.is_none() {
             return Err(SolutionError::NoPrimal);
@@ -449,14 +498,31 @@ impl Solution {
         self.polycube = Some(polycube);
         self.dual = Ok(dual);
 
+        let resize_timer = Instant::now();
         self.resize_polycube(unit)?;
+        let resize_ms = resize_timer.elapsed();
 
         log::info!(
-            "The constructed solution has quality: {:?}",
-            self.get_quality()
+            "reconstruct_solution: quality={:?} loops={} dual={:?} polycube={:?} layout={:?} layout_attempts={} resize={:?} total_before_quad={:?}",
+            self.get_quality(),
+            self.loops.len(),
+            dual_ms,
+            polycube_ms,
+            layout_ms,
+            layout_attempts,
+            resize_ms,
+            started_at.elapsed()
         );
 
-        self.quad = Quad::from_layout(self.layout.as_ref().unwrap(), omega);
+        if construct_quad {
+            let quad_timer = Instant::now();
+            self.quad = Quad::from_layout(self.layout.as_ref().unwrap(), omega);
+            log::info!(
+                "reconstruct_solution: constructed quad={} in {:?}",
+                self.quad.is_some(),
+                quad_timer.elapsed()
+            );
+        }
 
         Ok(())
     }
@@ -494,7 +560,34 @@ impl Solution {
         }
     }
 
-    /// Produce a mutated copy of this solution by adding or removing loops.
+    fn clone_loop_state(&self) -> Self {
+        // Evolution mutates only loop bookkeeping. Avoid cloning any derived
+        // representations; they are rebuilt once the candidate needs scoring.
+        // `flow_graphs` is Arc-backed, so this only bumps a refcount and lets
+        // evolved candidates keep sampling loops in later iterations.
+        Self {
+            mesh_ref: self.mesh_ref.clone(),
+            loops: self.loops.clone(),
+            occupied: self.occupied.clone(),
+            last_loop: self.last_loop,
+            dual: Err(PropertyViolationError::default()),
+            polycube: None,
+            layout: None,
+            quad: None,
+            flow_graphs: self.flow_graphs.clone(),
+            fields: None,
+        }
+    }
+
+    fn loop_signature(&self) -> Vec<(usize, Vec<EdgeID>)> {
+        self.loops
+            .values()
+            .map(|loop_| (loop_.direction as usize, loop_.edges.clone()))
+            .sorted_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.len().cmp(&b.1.len())))
+            .collect_vec()
+    }
+
+    /// Produce a mutated loop-state copy of this solution by adding or removing loops.
     pub fn mutation(&self) -> Option<Self> {
         // Two types of mutation:
         // 1. Add loop(s)
@@ -503,9 +596,13 @@ impl Solution {
         let m = |b: f64| OrderedFloat(b.powi(10));
         let s = |(_, s): (&[EdgeID], f64)| s;
 
-        let mut mutated = false;
-        let mut mutated_solution = self.clone();
+        let timer = Instant::now();
+        let mut mutated_solution = self.clone_loop_state();
+        let clone_ms = timer.elapsed();
         let mut case = (rand::random::<u8>() % 2) + 1;
+        let mut operation = "remove";
+        let mut sampled_loops = 0usize;
+        let mut sample_ms = std::time::Duration::ZERO;
 
         if self.loops.is_empty() {
             return None;
@@ -517,66 +614,56 @@ impl Solution {
 
         match case {
             1 => {
-                // Add loop(s)
-                let x = rand::random::<u8>() % 3;
-                let y = rand::random::<u8>() % 3;
-                let z = rand::random::<u8>() % 3;
-                if x + y + z == 0 {
-                    return None;
-                }
+                // Add a small batch before validating. Most mutations stay cheap,
+                // but some explore coupled loops that only become valid/useful together.
+                let add_count = match rand::random_range(0..10) {
+                    0 => 3,
+                    1..=3 => 2,
+                    _ => 1,
+                };
 
-                let x_loops = self
-                    .sample_loops(x as usize, Direction::X, m, s)
-                    .into_iter()
-                    .map(|x| (x, Direction::X))
-                    .collect_vec();
-                let y_loops = self
-                    .sample_loops(y as usize, Direction::Y, m, s)
-                    .into_iter()
-                    .map(|y| (y, Direction::Y))
-                    .collect_vec();
-                let z_loops = self
-                    .sample_loops(z as usize, Direction::Z, m, s)
-                    .into_iter()
-                    .map(|z| (z, Direction::Z))
-                    .collect_vec();
+                operation = "add";
+                let max_attempts = add_count * 4;
+                let mut attempts = 0;
+                while sampled_loops < add_count && attempts < max_attempts {
+                    attempts += 1;
+                    let axis = DIRECTIONS[rand::random_range(0..DIRECTIONS.len())];
+                    let sample_timer = Instant::now();
+                    let maybe_loop = self.sample_loops(1, axis, m, s).into_iter().next();
+                    sample_ms += sample_timer.elapsed();
 
-                // Iteratively add the loops, save result if result is valid.
-                for (lewp, axis) in x_loops.into_iter().chain(y_loops).chain(z_loops) {
-                    let mut candidate_solution = mutated_solution.clone();
-                    candidate_solution.add_loop(Loop {
+                    let Some(lewp) = maybe_loop else {
+                        continue;
+                    };
+
+                    sampled_loops += 1;
+                    mutated_solution.add_loop(Loop {
                         edges: lewp,
                         direction: axis,
                     });
-                    // Check solution
-                    if candidate_solution.dual_is_ok() {
-                        mutated_solution = candidate_solution;
-                        mutated = true;
-                    }
+                }
+
+                if sampled_loops == 0 {
+                    return None;
                 }
             }
             2 => {
                 // Remove loop(s)
                 let loop_id = self.loops.keys().choose(&mut rand::rng()).unwrap();
-                let mut candidate_solution = mutated_solution.clone();
-                candidate_solution.del_loop(loop_id);
-
-                // Check solution
-                if candidate_solution.dual_is_ok() {
-                    mutated_solution = candidate_solution;
-                    mutated = true;
-                }
+                mutated_solution.del_loop(loop_id);
             }
             _ => unreachable!(),
         };
 
-        if !mutated {
-            return None;
-        }
-
-        if mutated_solution.reconstruct_solution(true, 1).is_err() {
-            return None;
-        }
+        log::info!(
+            "mutation: operation={operation} parent_loops={} child_loops={} sampled_loops={} clone={:?} sample={:?} total={:?}",
+            self.loops.len(),
+            mutated_solution.loops.len(),
+            sampled_loops,
+            clone_ms,
+            sample_ms,
+            timer.elapsed()
+        );
 
         Some(mutated_solution)
     }

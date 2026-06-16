@@ -2,6 +2,7 @@
 //!
 use crate::prelude::*;
 use mehsh::prelude::*;
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct GraphParams {
@@ -63,7 +64,7 @@ impl Solution {
             flow_graphs[axis as usize] = grapff::fixed::FixedGraph::from(nodes.clone(), edges);
         }
 
-        self.flow_graphs = Some(flow_graphs);
+        self.flow_graphs = Some(Arc::new(flow_graphs));
 
         log::info!("flow graphs set");
     }

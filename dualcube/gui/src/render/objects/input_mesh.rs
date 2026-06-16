@@ -143,9 +143,9 @@ pub(in crate::render) fn build(
             .gizmo(field_gizmos.x, 1., -0.0010, "x-field")
             .gizmo(field_gizmos.y, 1., -0.0011, "y-field")
             .gizmo(field_gizmos.z, 1., -0.0012, "z-field")
-            .gizmo(flow_graph_dir.x, 1., -0.0001, "x-flow-graph")
-            .gizmo(flow_graph_dir.y, 1., -0.00011, "y-flow-graph")
-            .gizmo(flow_graph_dir.z, 1., -0.000111, "z-flow-graph")
+            .gizmo(flow_graph_dir.x, 1., -0.0001, "x-graph")
+            .gizmo(flow_graph_dir.y, 1., -0.00011, "y-graph")
+            .gizmo(flow_graph_dir.z, 1., -0.000111, "z-graph")
             .to_owned(),
     )
 }

@@ -2,7 +2,7 @@ use super::loop_modification::loop_modification_system;
 use super::segmentation_modification::segmentation_modification_system;
 use super::shared::{CacheResource, InteractiveMode};
 use crate::colors;
-use crate::jobs::JobRequest;
+use crate::jobs::Job;
 use crate::render::gizmos::{vector3d_to_vec3, view_to_world, PerpetualGizmos};
 use crate::render::store::MainMesh;
 use crate::resources::{Configuration, InputResource, SolutionResource};
@@ -22,7 +22,7 @@ pub fn control_system(
     cache: ResMut<CacheResource>,
     mut gizmos: Gizmos<PerpetualGizmos>,
     mut configuration: ResMut<Configuration>,
-    jobs: MessageWriter<JobRequest>,
+    jobs: MessageWriter<Job>,
 ) -> Result<(), BevyError> {
     configuration.raycasted = None;
     configuration.selected = None;

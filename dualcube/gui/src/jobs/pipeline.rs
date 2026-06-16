@@ -31,15 +31,12 @@ impl Stage {
     /// the renders) when the configured stop phase has been reached.
     pub(super) fn next_job(self, solution: Solution, configuration: Configuration) -> Job {
         let stop_phase = match self {
-            Self::Field => Some(Phase::Field),
-            Self::Graph => Some(Phase::Graph),
             Self::Loops => Some(Phase::Loops),
             Self::Dual => Some(Phase::Dual),
             Self::Layout => Some(Phase::Layout),
             Self::Polycube => Some(Phase::Polycube),
-            Self::Quad => Some(Phase::Quad),
             // These stages never stop the pipeline themselves.
-            Self::Corners | Self::Hex => None,
+            Self::Field | Self::Graph | Self::Quad | Self::Corners | Self::Hex => None,
         };
         if stop_phase == Some(configuration.stop.clone()) {
             return Job::refresh(solution, configuration);
@@ -49,7 +46,7 @@ impl Stage {
             Self::Field => Job::compute_graph(solution, configuration),
             Self::Graph => Job::refresh(solution, configuration),
             Self::Loops => Job::compute_dual(solution, configuration),
-            Self::Dual => Job::refresh(solution, configuration),
+            Self::Dual => Job::place_corners(solution, configuration),
             Self::Corners => Job::place_paths(solution, configuration),
             Self::Layout => Job::compute_polycube(solution, configuration),
             Self::Polycube => Job::compute_quad(solution, configuration),

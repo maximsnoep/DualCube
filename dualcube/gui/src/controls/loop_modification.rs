@@ -1,6 +1,6 @@
 use super::shared::{draw_edgepair_arrow, draw_loop_gradient, CacheResource, LoopPreviewKey};
 use crate::colors;
-use crate::jobs::{Job, JobRequest};
+use crate::jobs::Job;
 use crate::render::gizmos::PerpetualGizmos;
 use crate::resources::{Configuration, InputResource, SolutionResource};
 use bevy::prelude::*;
@@ -16,7 +16,7 @@ pub fn loop_modification_system(
     mut cache: ResMut<CacheResource>,
     mut gizmos: Gizmos<PerpetualGizmos>,
     mut configuration: ResMut<Configuration>,
-    mut jobs: MessageWriter<JobRequest>,
+    mut jobs: MessageWriter<Job>,
     position: Vector3D,
     nearest_face: FaceID,
 ) -> Result<(), BevyError> {
@@ -151,12 +151,12 @@ pub fn loop_modification_system(
             let edges = solution.current_solution.get_pairs_of_loop(loop_id);
             edges.contains(&option_a) || edges.contains(&option_b)
         }) {
-            jobs.write(JobRequest::Run(Job::remove_loop(
+            jobs.write(Job::remove_loop(
                 solution.current_solution.clone(),
                 loop_id,
                 force,
                 configuration.clone(),
-            )));
+            ));
         }
     }
 

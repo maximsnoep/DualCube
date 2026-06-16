@@ -42,7 +42,7 @@ pub fn run(args: anyhow::Result<Args>) -> anyhow::Result<()> {
                 solution.reconstruct_solution(unit, omega)?;
             }
 
-            let output = output.unwrap_or_else(|| default_output(&input, "dsol"));
+            let output = output.unwrap_or_else(|| default_output(&input, "dc"));
             export_solution(&solution, &output)?;
             println!("Wrote `{}`", output.display());
             print_solution_summary("initialize", &input, &output, &solution);
@@ -67,7 +67,7 @@ pub fn run(args: anyhow::Result<Args>) -> anyhow::Result<()> {
                 evolved.reconstruct_solution(unit, omega)?;
             }
 
-            let output = output.unwrap_or_else(|| default_output(&input, "dsol"));
+            let output = output.unwrap_or_else(|| default_output(&input, "dc"));
             export_solution(&evolved, &output)?;
             println!("Wrote `{}`", output.display());
             print_solution_summary("evolve", &input, &output, &evolved);
@@ -81,7 +81,7 @@ pub fn run(args: anyhow::Result<Args>) -> anyhow::Result<()> {
             let mut solution = io::import_solution(input.clone());
             solution.reconstruct_solution(unit, omega)?;
 
-            let output = output.unwrap_or_else(|| default_output(&input, "dsol"));
+            let output = output.unwrap_or_else(|| default_output(&input, "dc"));
             export_solution(&solution, &output)?;
             println!("Wrote `{}`", output.display());
             print_solution_summary("reconstruct", &input, &output, &solution);
@@ -116,7 +116,7 @@ fn export_solution(solution: &Solution, output: &Path) -> anyhow::Result<()> {
 
 fn export_solution_as(solution: &Solution, output: &Path, format: &str) -> anyhow::Result<()> {
     match format {
-        "dc" => io::Dc::export(solution, output),
+        "dc" | "dsol" => io::Dc::export(solution, output),
         "obj" => io::OBJ::export(solution, output),
         "flag" => io::Flag::export(solution, output),
         "apg" => io::APG::export(solution, output),
@@ -160,7 +160,7 @@ Commands:
 
   initialize --input <path> [--output <path>] [--samples <n>] [--reconstruct] [--unit|--no-unit] [--omega <n>]
       Initialize loop structure from an input mesh or solution.
-      Writes the result to --output, or defaults to changing the extension to .dsol.
+      Writes the result to --output, or defaults to changing the extension to .dc.
 
   evolve --input <path> [--output <path>] [--iterations <n>] [--pool1 <n>] [--pool2 <n>] [--reconstruct] [--unit|--no-unit] [--omega <n>]
       Evolve an existing solution.
@@ -168,15 +168,15 @@ Commands:
   reconstruct --input <path> [--output <path>] [--unit|--no-unit] [--omega <n>]
       Reconstruct dual/layout/polyclube/quad state from the current loops.
 
-  export --input <path> --format <dsol|obj|flag|apg|loops|nlr|hex> [--output <path>]
+  export --input <path> --format <dc|dsol|obj|flag|apg|loops|nlr|hex> [--output <path>]
       Export a solution in the requested format.
 
 Examples:
   cli import bunny.obj
-  cli initialize --input bunny.obj --output bunny.dsol --reconstruct --omega 5
-  cli evolve --input bunny.dsol --iterations 10 --pool1 10 --pool2 30 --output evolved.dsol
-  cli reconstruct --input loops.loops --output result.dsol --unit --omega 5
-  cli export --input result.dsol --format obj --output result.obj
+  cli initialize --input bunny.obj --output bunny.dc --reconstruct --omega 5
+  cli evolve --input bunny.dc --iterations 10 --pool1 10 --pool2 30 --output evolved.dc
+  cli reconstruct --input loops.loops --output result.dc --unit --omega 5
+  cli export --input result.dc --format obj --output result.obj
 "
     );
 }

@@ -36,7 +36,7 @@ pub struct JobPlugin;
 impl Plugin for JobPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<JobState>()
-            .add_message::<JobRequest>()
+            .add_message::<Job>()
             .add_systems(
                 Update,
                 (
@@ -47,14 +47,6 @@ impl Plugin for JobPlugin {
                 ),
             );
     }
-}
-
-#[derive(Message)]
-pub enum JobRequest {
-    Run(Job),
-    /// Reserved for cancelling the running job (not emitted anywhere yet).
-    #[allow(dead_code)]
-    Cancel,
 }
 
 /// Singleton job state. At most one job runs at a time; `request` holds the
@@ -70,7 +62,7 @@ pub struct JobState {
 ///
 /// Jobs are created through the constructors in the submodules, e.g.
 /// [`Job::import`], [`Job::compute_dual`], [`Job::add_loop`].
-#[derive(Clone)]
+#[derive(Clone, Message)]
 pub struct Job {
     description: &'static str,
     run: Arc<dyn Fn() -> Option<JobResult> + Send + Sync>,
@@ -115,24 +107,16 @@ enum JobResult {
 }
 
 /// Submits jobs to the worker thread (only if idle).
-fn submit_jobs(mut ev_reader: MessageReader<JobRequest>, mut job_state: ResMut<JobState>) {
+fn submit_jobs(mut ev_reader: MessageReader<Job>, mut job_state: ResMut<JobState>) {
     for ev in ev_reader.read() {
         match (ev, job_state.request) {
-            (JobRequest::Run(job), None) => {
+            (job, None) => {
                 info!("Starting job: {}", job.description);
 
                 job_state.request = Some(job.description);
                 let job = job.clone();
                 let task = AsyncComputeTaskPool::get().spawn(async move { (job.run)() });
                 job_state.current = Some(task);
-            }
-            (JobRequest::Cancel, Some(job)) => {
-                info!("Cancelling job: {}", job);
-                job_state.request = None;
-                // Cancel the thread
-                if let Some(task) = job_state.current.take() {
-                    let future = task.cancel();
-                }
             }
             _ => {}
         }
@@ -142,7 +126,7 @@ fn submit_jobs(mut ev_reader: MessageReader<JobRequest>, mut job_state: ResMut<J
 /// Polls the current job for completion and applies its result.
 fn poll_jobs(
     mut job_state: ResMut<JobState>,
-    mut jobs: MessageWriter<JobRequest>,
+    mut jobs: MessageWriter<Job>,
     mut input_resource: ResMut<InputResource>,
     mut solution_resource: ResMut<SolutionResource>,
     mut render_object_store: ResMut<RenderObjectStore>,
@@ -176,7 +160,7 @@ fn poll_jobs(
             configuration,
         } => {
             solution_resource.current_solution = solution.clone();
-            jobs.write(JobRequest::Run(stage.next_job(solution, configuration)));
+            jobs.write(stage.next_job(solution, configuration));
         }
 
         JobResult::Imported { solution } => {
@@ -185,10 +169,10 @@ fn poll_jobs(
             for next in &mut solution_resource.next {
                 next.clear();
             }
-            jobs.write(JobRequest::Run(Job::refresh(
+            jobs.write(Job::refresh(
                 solution_resource.current_solution.clone(),
                 configuration.clone(),
-            )));
+            ));
         }
 
         JobResult::AddedLoop {
@@ -209,10 +193,10 @@ fn poll_jobs(
             for next in &mut solution_resource.next {
                 next.clear();
             }
-            jobs.write(JobRequest::Run(Job::compute_dual(
+            jobs.write(Job::compute_dual(
                 solution_resource.current_solution.clone(),
                 configuration,
-            )));
+            ));
         }
 
         JobResult::Refreshed(new_render_object_store) => {

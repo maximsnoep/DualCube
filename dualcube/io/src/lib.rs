@@ -43,7 +43,7 @@ pub fn import_solution(path: PathBuf) -> Solution {
             };
             Solution::new(mesh.clone())
         }
-        Some("dc") => {
+        Some("dc") | Some("dsol") => {
             if let Ok(sol) = Dc::import(&path) {
                 sol
             } else {
@@ -54,7 +54,7 @@ pub fn import_solution(path: PathBuf) -> Solution {
             if let Ok(sol) = Loops::import(&path) {
                 sol
             } else {
-                panic!("Error while parsing Dsol file {path:?}");
+                panic!("Error while parsing loops file {path:?}");
             }
         }
         _ => {
