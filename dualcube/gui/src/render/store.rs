@@ -7,9 +7,8 @@ use crate::resources::Configuration;
 use bevy::prelude::*;
 use bevy_toon::ToonMaterial;
 use dualcube::prelude::Direction;
-use itertools::Itertools;
 use mehsh::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Default, Debug, Clone)]
 pub struct MeshProperties {
@@ -20,7 +19,9 @@ pub struct MeshProperties {
 
 /// Marks an entity as spawned by [`respawn_renders`] (despawned on respawn).
 #[derive(Component)]
-pub struct Rendered;
+pub struct Rendered {
+    pub object: Objects,
+}
 
 /// Marks the input mesh, the target for raycasting in the interactive modes.
 #[derive(Component)]
@@ -111,6 +112,7 @@ pub struct RenderObjectSetting {
 #[derive(Default, Resource)]
 pub struct RenderObjectSettingStore {
     pub objects: HashMap<Objects, RenderObjectSetting>,
+    last_applied_objects: HashMap<Objects, RenderObjectSetting>,
 }
 
 /// Syncs the settings store with the object store: every feature gets a
@@ -151,14 +153,16 @@ pub fn update_render_settings(
                         visible: default(object, feature_label),
                     });
             }
-            render_settings_store
-                .objects
-                .insert(object.to_owned(), RenderObjectSetting { labels, settings });
+
+            let new_setting = RenderObjectSetting { labels, settings };
+            if render_settings_store.objects.get(object) != Some(&new_setting) {
+                render_settings_store.objects.insert(*object, new_setting);
+            }
         }
     }
 }
 
-/// Despawns and respawns all rendered entities whenever the settings change.
+/// Despawns and respawns rendered entities for objects whose settings changed.
 pub fn respawn_renders(
     mut commands: Commands,
     mut meshes: ResMut<Assets<bevy::mesh::Mesh>>,
@@ -167,22 +171,36 @@ pub fn respawn_renders(
     mut custom_materials: ResMut<Assets<ToonMaterial>>,
     configuration: Res<Configuration>,
     render_object_store: Res<RenderObjectStore>,
-    render_settings_store: Res<RenderObjectSettingStore>,
-    rendered_mesh_query: Query<Entity, With<Rendered>>,
+    mut render_settings_store: ResMut<RenderObjectSettingStore>,
+    rendered_mesh_query: Query<(Entity, &Rendered)>,
 ) {
-    if !render_settings_store.is_changed() {
+    let mut changed_objects = HashSet::new();
+    if render_object_store.is_changed() {
+        changed_objects.extend(render_object_store.objects.keys().copied());
+    }
+    for (&object, settings) in &render_settings_store.objects {
+        if render_settings_store.last_applied_objects.get(&object) != Some(settings) {
+            changed_objects.insert(object);
+        }
+    }
+    for object in render_settings_store.last_applied_objects.keys() {
+        if !render_settings_store.objects.contains_key(object) {
+            changed_objects.insert(*object);
+        }
+    }
+
+    if changed_objects.is_empty() {
         return;
     }
-    debug!("Render settings changed; respawning all render objects");
+    info!(
+        ?changed_objects,
+        "Render settings changed; respawning render objects"
+    );
 
-    for entity in rendered_mesh_query.iter() {
-        commands.entity(entity).despawn();
-    }
-    for material in custom_materials.iter().map(|x| x.0).collect_vec() {
-        custom_materials.remove(material);
-    }
-    for material in materials.iter().map(|x| x.0).collect_vec() {
-        materials.remove(material);
+    for (entity, rendered) in rendered_mesh_query.iter() {
+        if changed_objects.contains(&rendered.object) {
+            commands.entity(entity).despawn();
+        }
     }
 
     let flat_material = materials.add(StandardMaterial {
@@ -198,9 +216,18 @@ pub fn respawn_renders(
         ..default()
     });
 
-    // Go through render_object_store and spawn all objects (if they are visible).
+    // Go through changed render objects and spawn their visible features.
     for (&object, render_object) in &render_object_store.objects {
-        let settings = &render_settings_store.objects.get(&object).unwrap().settings;
+        if !changed_objects.contains(&object) {
+            continue;
+        }
+        let Some(settings) = render_settings_store
+            .objects
+            .get(&object)
+            .map(|s| &s.settings)
+        else {
+            continue;
+        };
         let translation = Vec3::from(object);
 
         for (label, asset) in &render_object.features {
@@ -212,7 +239,7 @@ pub fn respawn_renders(
                     let mut entity = commands.spawn((
                         Mesh3d(meshes.add(mesh.clone())),
                         Transform::from_translation(translation),
-                        Rendered,
+                        Rendered { object },
                     ));
                     // The polycube-like objects are unlit; the surface meshes
                     // are toon-shaded, except for the pre-shaded input mesh.
@@ -243,7 +270,7 @@ pub fn respawn_renders(
                             depth_bias: *depth_bias,
                         },
                         Transform::from_translation(translation),
-                        Rendered,
+                        Rendered { object },
                     ));
 
                     let direction = match (object, label.as_str()) {
@@ -264,7 +291,9 @@ pub fn respawn_renders(
             Mesh3d(meshes.add(Sphere::new(400.))),
             MeshMaterial3d(background_material.clone()),
             Transform::from_translation(translation),
-            Rendered,
+            Rendered { object },
         ));
     }
+
+    render_settings_store.last_applied_objects = render_settings_store.objects.clone();
 }

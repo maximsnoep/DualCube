@@ -4,14 +4,17 @@ use super::super::gizmos::{
     lambert_color_map, layout_path_gizmos, segmentation_color_map, uniform_color_map,
 };
 use super::super::store::RenderObject;
-use crate::colors;
+use crate::{colors, resources::Configuration};
 use dualcube::prelude::*;
 
 /// The POLYCUBE-MAP render object, it has:
 /// - meshes with black / gray / colored / lambert-shaded faces
 /// - quads and triangles mapped on the polycube
 /// - the layout paths mapped on the polycube (flat and non-flat)
-pub(in crate::render) fn build(solution: &Solution) -> Option<RenderObject> {
+pub(in crate::render) fn build(
+    solution: &Solution,
+    _configuration: &Configuration,
+) -> Option<RenderObject> {
     let (quad, layout, polycube) = (
         solution.quad.as_ref()?,
         solution.layout.as_ref()?,

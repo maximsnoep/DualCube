@@ -382,7 +382,7 @@ fn pipeline_bar(
             log_slider(ui, "axis_weight", &mut params.axis_weight, 100.0);
             log_slider(ui, "axis_length_power", &mut params.axis_length_power, 10.0);
             log_slider(ui, "curvature_weight", &mut params.curvature_weight, 10.);
-            log_slider(ui, "coupling_weight", &mut params.coupling_weight, 0.5);
+            slider(ui, "coupling", &mut params.coupling_weight, 0.0..=0.2);
 
             space(ui);
 

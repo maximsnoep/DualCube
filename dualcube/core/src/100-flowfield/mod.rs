@@ -56,7 +56,7 @@ impl Default for FieldParams {
             axis_weight: 0.5,
             axis_length_power: 3.0,
             curvature_weight: 0.5,
-            coupling_weight: 0.2,
+            coupling_weight: 0.01,
         }
     }
 }
@@ -473,13 +473,17 @@ fn apply_complex_angle_coupling(
         .zip(z_z.iter_mut())
         .iter_into_par()
         .for_each(|((x, y), z)| {
-            let xy = sin2_delta(*x, *y);
-            let xz = sin2_delta(*x, *z);
-            let yz = sin2_delta(*y, *z);
+            let x_old = *x;
+            let y_old = *y;
+            let z_old = *z;
 
-            *x *= complex_from_angle(weight * (xy + xz));
-            *y *= complex_from_angle(weight * (yz - xy));
-            *z *= complex_from_angle(-weight * (xz + yz));
+            let update_x = 2.0 * weight * (sin2_delta(x_old, y_old) + sin2_delta(x_old, z_old));
+            let update_y = 2.0 * weight * (sin2_delta(y_old, x_old) + sin2_delta(y_old, z_old));
+            let update_z = 2.0 * weight * (sin2_delta(z_old, x_old) + sin2_delta(z_old, y_old));
+
+            *x = x_old * complex_from_angle(update_x);
+            *y = y_old * complex_from_angle(update_y);
+            *z = z_old * complex_from_angle(update_z);
         });
 }
 

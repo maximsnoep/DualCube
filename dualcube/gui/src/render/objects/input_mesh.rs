@@ -5,7 +5,7 @@ use super::super::gizmos::{
     uniform_color_map, world_to_view, DirectionalGizmos,
 };
 use super::super::store::RenderObject;
-use crate::colors;
+use crate::{colors, resources::Configuration};
 use bevy::prelude::*;
 use dualcube::prelude::*;
 use mehsh::prelude::*;
@@ -18,7 +18,10 @@ const PRINCIPAL_DIRECTIONS: [Direction; 3] = DIRECTIONS;
 /// - segmentation and alignment colorings (if a layout exists)
 /// - wireframes (input and granulated mesh)
 /// - the dual loops, layout paths, and vector fields
-pub(in crate::render) fn build(solution: &Solution) -> Option<RenderObject> {
+pub(in crate::render) fn build(
+    solution: &Solution,
+    configuration: &Configuration,
+) -> Option<RenderObject> {
     let input = solution.mesh_ref.as_ref();
     let (scale, translation) = input.scale_translation();
 
@@ -112,8 +115,14 @@ pub(in crate::render) fn build(solution: &Solution) -> Option<RenderObject> {
     if let Some(flow_graphs) = &solution.flow_graphs {
         for (graph, dir) in flow_graphs.iter().zip(PRINCIPAL_DIRECTIONS) {
             let color = colors::from_direction(dir, None, None);
-            *flow_graph_dir.get_mut(dir) =
-                flow_graph_gizmos(&graph.edges(), input, color, translation, scale, 100.0);
+            *flow_graph_dir.get_mut(dir) = flow_graph_gizmos(
+                &graph.edges(),
+                input,
+                color,
+                translation,
+                scale,
+                configuration.flow_graph_top_percent,
+            );
         }
     }
 

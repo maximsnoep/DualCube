@@ -10,13 +10,14 @@ pub mod objects {
 }
 pub mod store;
 
-use crate::resources::Configuration;
+use crate::{
+    colors,
+    resources::{Configuration, SolutionResource},
+};
 use bevy::prelude::*;
-use bevy::time::common_conditions::on_timer;
 use dualcube::prelude::*;
 use enum_iterator::{all, Sequence};
-use std::time::Duration;
-use store::{RenderObject, RenderObjectStore};
+use store::{FlowGraphGizmo, RenderObject, RenderObjectStore};
 
 /// Registers the render resources, the cameras, and the (re)spawn systems.
 pub struct RenderPlugin;
@@ -33,12 +34,10 @@ impl Plugin for RenderPlugin {
                 (
                     camera::update,
                     camera::update_camera_settings,
+                    update_flow_graph_top_percent,
                     store::update_render_settings,
+                    store::respawn_renders,
                 ),
-            )
-            .add_systems(
-                FixedUpdate,
-                store::respawn_renders.run_if(on_timer(Duration::from_millis(1000))),
             );
     }
 }
@@ -58,7 +57,12 @@ pub enum Objects {
 
 impl Objects {
     /// The display name and scene builder of each object.
-    fn spec(self) -> (&'static str, fn(&Solution) -> Option<RenderObject>) {
+    fn spec(
+        self,
+    ) -> (
+        &'static str,
+        fn(&Solution, &Configuration) -> Option<RenderObject>,
+    ) {
         match self {
             Self::InputMesh => ("input mesh", objects::input_mesh::build),
             Self::Polycube => ("polycube", objects::polycube::build),
@@ -84,15 +88,58 @@ impl From<Objects> for Vec3 {
 
 /// Builds the complete [`RenderObjectStore`] for the given solution.
 #[must_use]
-pub fn refresh(solution: &Solution) -> RenderObjectStore {
+pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObjectStore {
     let mut store = RenderObjectStore::default();
     for object in all::<Objects>() {
         let (_, build) = object.spec();
-        if let Some(render_object) = build(solution) {
+        if let Some(render_object) = build(solution, configuration) {
             store.add_object(object, render_object);
         }
     }
     store
+}
+
+/// The configured background color as a Bevy color.
+fn update_flow_graph_top_percent(
+    configuration: Res<Configuration>,
+    solution: Res<SolutionResource>,
+    mut gizmo_assets: ResMut<Assets<GizmoAsset>>,
+    flow_graph_gizmos: Query<(&FlowGraphGizmo, &Gizmo)>,
+    added_flow_graph_gizmos: Query<(), Added<FlowGraphGizmo>>,
+    mut previous_top_percent: Local<Option<f32>>,
+) {
+    let top_percent_changed = !previous_top_percent.is_some_and(|previous| {
+        (previous - configuration.flow_graph_top_percent).abs() <= f32::EPSILON
+    });
+    let flow_graph_gizmos_spawned = !added_flow_graph_gizmos.is_empty();
+
+    if !top_percent_changed && !flow_graph_gizmos_spawned {
+        return;
+    }
+
+    *previous_top_percent = Some(configuration.flow_graph_top_percent);
+
+    let Some(flow_graphs) = &solution.current_solution.flow_graphs else {
+        return;
+    };
+
+    let input = solution.current_solution.mesh_ref.as_ref();
+    let (scale, translation) = input.scale_translation();
+
+    for (flow_graph_gizmo, gizmo) in &flow_graph_gizmos {
+        let graph = &flow_graphs[flow_graph_gizmo.direction as usize];
+        let color = colors::from_direction(flow_graph_gizmo.direction, None, None);
+        if let Some(asset) = gizmo_assets.get_mut(&gizmo.handle) {
+            *asset = gizmos::flow_graph_gizmos(
+                &graph.edges(),
+                input,
+                color,
+                translation,
+                scale,
+                configuration.flow_graph_top_percent,
+            );
+        }
+    }
 }
 
 /// The configured background color as a Bevy color.

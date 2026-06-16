@@ -42,19 +42,19 @@ impl Stage {
             Self::Corners | Self::Hex => None,
         };
         if stop_phase == Some(configuration.stop.clone()) {
-            return Job::refresh(solution);
+            return Job::refresh(solution, configuration);
         }
 
         match self {
             Self::Field => Job::compute_graph(solution, configuration),
-            Self::Graph => Job::refresh(solution),
+            Self::Graph => Job::refresh(solution, configuration),
             Self::Loops => Job::compute_dual(solution, configuration),
-            Self::Dual => Job::refresh(solution),
+            Self::Dual => Job::refresh(solution, configuration),
             Self::Corners => Job::place_paths(solution, configuration),
             Self::Layout => Job::compute_polycube(solution, configuration),
             Self::Polycube => Job::compute_quad(solution, configuration),
-            Self::Quad => Job::refresh(solution),
-            Self::Hex => Job::refresh(solution),
+            Self::Quad => Job::refresh(solution, configuration),
+            Self::Hex => Job::refresh(solution, configuration),
         }
     }
 }
@@ -133,7 +133,10 @@ impl Job {
             }) {
                 Some(modified) => completed(Stage::Dual, modified, &configuration),
                 // On failure still refresh, so the user sees the (unchanged) solution.
-                None => Some(JobResult::Refreshed(render::refresh(&solution))),
+                None => Some(JobResult::Refreshed(render::refresh(
+                    &solution,
+                    &configuration,
+                ))),
             }
         })
     }
@@ -191,9 +194,12 @@ impl Job {
         })
     }
 
-    pub fn refresh(solution: Solution) -> Self {
+    pub fn refresh(solution: Solution, configuration: Configuration) -> Self {
         Self::new("refreshing", move || {
-            Some(JobResult::Refreshed(render::refresh(&solution)))
+            Some(JobResult::Refreshed(render::refresh(
+                &solution,
+                &configuration,
+            )))
         })
     }
 }

@@ -4,7 +4,7 @@ use super::super::gizmos::{
     edge_endpoints_view, uniform_color_map, world_to_view, DirectionalGizmos,
 };
 use super::super::store::RenderObject;
-use crate::colors;
+use crate::{colors, resources::Configuration};
 use bevy::prelude::*;
 use dualcube::prelude::*;
 use itertools::Itertools;
@@ -15,7 +15,10 @@ use std::collections::HashMap;
 /// - meshes with black / gray / colored faces
 /// - the dual loops per principal direction
 /// - the polycube edges (flat and non-flat)
-pub(in crate::render) fn build(solution: &Solution) -> Option<RenderObject> {
+pub(in crate::render) fn build(
+    solution: &Solution,
+    _configuration: &Configuration,
+) -> Option<RenderObject> {
     let polycube = solution.polycube.as_ref()?;
 
     let structure = &polycube.structure;

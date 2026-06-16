@@ -146,6 +146,7 @@ fn poll_jobs(
     mut input_resource: ResMut<InputResource>,
     mut solution_resource: ResMut<SolutionResource>,
     mut render_object_store: ResMut<RenderObjectStore>,
+    configuration: Res<Configuration>,
 ) {
     let (Some(request), Some(mut task)) = (job_state.request.take(), job_state.current.take())
     else {
@@ -186,6 +187,7 @@ fn poll_jobs(
             }
             jobs.write(JobRequest::Run(Job::refresh(
                 solution_resource.current_solution.clone(),
+                configuration.clone(),
             )));
         }
 
