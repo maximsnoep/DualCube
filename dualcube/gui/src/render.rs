@@ -10,14 +10,11 @@ pub mod objects {
 }
 pub mod store;
 
-use crate::{
-    colors,
-    resources::{Configuration, SolutionResource},
-};
+use crate::resources::Configuration;
 use bevy::prelude::*;
 use dualcube::prelude::*;
 use enum_iterator::{all, Sequence};
-use store::{FlowGraphGizmo, RenderObject, RenderObjectStore};
+use store::{RenderObject, RenderObjectStore};
 
 /// Registers the render resources, the cameras, and the (re)spawn systems.
 pub struct RenderPlugin;

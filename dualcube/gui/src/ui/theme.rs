@@ -19,6 +19,9 @@ pub const BLUE: Color32 = Color32::from_rgb(
     (colors::SNOEP_BLUE[2] * 255.) as u8,
 );
 
+pub const REGULAR_TEXT_SIZE: f32 = 12.;
+pub const SMALL_TEXT_SIZE: f32 = 10.;
+
 #[cfg(not(feature = "light_mode"))]
 pub const TEXT_COLOR: Color32 = Color32::from_gray(255);
 #[cfg(feature = "light_mode")]
@@ -78,10 +81,19 @@ pub fn setup(ui: &mut bevy_egui::EguiContexts) -> Result<(), BevyError> {
 
         style.text_styles = [
             (TextStyle::Heading, FontId::new(30.0, Proportional)),
-            (TextStyle::Body, FontId::new(12.0, Proportional)),
-            (TextStyle::Monospace, FontId::new(12.0, Proportional)),
-            (TextStyle::Button, FontId::new(12.0, Proportional)),
-            (TextStyle::Small, FontId::new(10.0, Proportional)),
+            (
+                TextStyle::Body,
+                FontId::new(REGULAR_TEXT_SIZE, Proportional),
+            ),
+            (
+                TextStyle::Monospace,
+                FontId::new(REGULAR_TEXT_SIZE, Proportional),
+            ),
+            (
+                TextStyle::Button,
+                FontId::new(REGULAR_TEXT_SIZE, Proportional),
+            ),
+            (TextStyle::Small, FontId::new(SMALL_TEXT_SIZE, Proportional)),
         ]
         .into();
 

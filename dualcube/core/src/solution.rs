@@ -228,11 +228,18 @@ impl Solution {
     }
 
     /// Evolve the loop structure with a simple population-based search.
-    pub fn evolve(&self, iterations: usize, pool1_size: usize, pool2_size: usize) -> Option<Self> {
-        let initial_quality = self.get_quality()?;
+    pub fn evolve(
+        &self,
+        iterations: usize,
+        pool1_size: usize,
+        pool2_size: usize,
+    ) -> Result<Self, SolutionError> {
+        let Some(initial_quality) = self.get_quality() else {
+            return Err(SolutionError::NoPrimal);
+        };
         if pool1_size == 0 {
             log::warn!("evolve: pool1_size is 0; cannot evolve");
-            return None;
+            return Ok(self.clone());
         }
 
         let started_at = Instant::now();
@@ -307,12 +314,19 @@ impl Solution {
             );
         }
 
-        let (sol, quality) = pool1.into_iter().next()?;
+        let Some((sol, quality)) = pool1.into_iter().next() else {
+            return Ok(self.clone());
+        };
         log::info!(
             "evolve: picked best solution with quality {quality} after {:?}",
             started_at.elapsed()
         );
-        Some(sol)
+
+        let mut combined = self.clone();
+        combined.loops = sol.loops.clone();
+        combined.occupied = sol.occupied.clone();
+        combined.reconstruct_solution(false, 0)?;
+        Ok(combined)
     }
 
     /// Construct the dual structure and the polycube from the current loops.
@@ -441,7 +455,7 @@ impl Solution {
 
     /// Rebuild the full chain (dual, polycube, layout, quad) from the loops.
     pub fn reconstruct_solution(&mut self, unit: bool, omega: usize) -> Result<(), SolutionError> {
-        self.reconstruct_solution_inner(unit, omega, true)
+        self.reconstruct_solution_inner(unit, omega, false)
     }
 
     fn reconstruct_solution_inner(

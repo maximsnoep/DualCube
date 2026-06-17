@@ -16,14 +16,11 @@ impl Job {
                 .and_then(|(edges, _)| {
                     let mut candidate = solution.clone();
                     candidate.add_loop(Loop { edges, direction });
-                    // Once enough loops are present, the dual must be reconstructable.
-                    if candidate.loops.len() >= 14 {
-                        if let Err(err) = candidate.construct_dual_and_polycube() {
-                            warn!("Failed to reconstruct solution: {err:?}");
-                            return None;
-                        }
+                    if candidate.reconstruct_solution(true, 0).is_ok() {
+                        Some(candidate)
+                    } else {
+                        None
                     }
-                    Some(candidate)
                 });
 
             Some(JobResult::AddedLoop {

@@ -92,15 +92,17 @@ impl Job {
 
     pub fn evolve(solution: Solution, configuration: Configuration) -> Self {
         Self::new("evolving", move || {
-            let Some(evolved) = solution.evolve(
+            match solution.evolve(
                 configuration.iterations,
                 configuration.pool1,
                 configuration.pool2,
-            ) else {
-                warn!("Failed to evolve solution.");
-                return None;
+            ) {
+                Ok(evolved) => return completed(Stage::Loops, evolved, &configuration),
+                Err(e) => {
+                    warn!("Failed to evolve solution. {e}");
+                    return None;
+                }
             };
-            completed(Stage::Loops, evolved, &configuration)
         })
     }
 

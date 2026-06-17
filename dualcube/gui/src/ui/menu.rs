@@ -1,6 +1,6 @@
 //! The top panel: the main menu bar and the pipeline stage bar.
 
-use super::theme::{colored_text, to_color32, BLUE, RED, TEXT_COLOR, TEXT_COLOR2};
+use super::theme::*;
 use super::widgets::{
     label, log_slider, menu_button, radio, sep, sleek_button, sleek_button_unfocused,
     sleek_button_warn, slider, space,
@@ -17,38 +17,36 @@ use bevy_orbit_camera::automatic::AutomaticRotation;
 use dualcube::prelude::*;
 use std::path::PathBuf;
 
-const TEXT_SIZE: f32 = 12.;
-
 /// Visibility presets: which features of each object should be visible.
 const PRESETS: [(&str, fn(Objects) -> &'static [&'static str]); 6] = [
-    ("> Black", |object| match object {
+    ("Black", |object| match object {
         Objects::InputMesh | Objects::QuadMesh => &["black", "wireframe"],
         Objects::Polycube => &["black", "paths", "flat paths"],
         Objects::PolycubeMap => &["colored", "triangles"],
     }),
-    ("> Grayscale", |object| match object {
+    ("Grayscale", |object| match object {
         Objects::InputMesh | Objects::QuadMesh => &["gray", "wireframe"],
         Objects::Polycube => &["gray", "paths", "flat paths"],
         Objects::PolycubeMap => &["colored", "triangles"],
     }),
-    ("> Dual", |object| match object {
+    ("Dual", |object| match object {
         Objects::InputMesh | Objects::Polycube => &["black", "x-loops", "y-loops", "z-loops"],
         Objects::PolycubeMap => &["colored", "triangles"],
         Objects::QuadMesh => &["gray", "paths", "flat paths"],
     }),
-    ("> Primal", |object| match object {
+    ("Primal", |object| match object {
         Objects::InputMesh => &["segmentation", "paths", "flat paths", "wireframe"],
         Objects::Polycube => &["colored", "paths", "flat paths"],
         Objects::PolycubeMap => &["colored", "triangles"],
         Objects::QuadMesh => &["colored", "wireframe", "paths", "flat paths"],
     }),
-    ("> Flow fields", |object| match object {
+    ("Flow fields", |object| match object {
         Objects::InputMesh => &["black", "x-field", "y-field", "z-field"],
         Objects::Polycube => &[],
         Objects::PolycubeMap => &[],
         Objects::QuadMesh => &[],
     }),
-    ("> Flow graphs", |object| match object {
+    ("Flow graphs", |object| match object {
         Objects::InputMesh => &["black", "x-graph", "y-graph", "z-graph"],
         Objects::Polycube => &[],
         Objects::PolycubeMap => &[],
@@ -75,16 +73,28 @@ fn stage(
     stopped: bool,
     name: &str,
     available: bool,
-    status: Option<String>,
+    status: Result<String>,
     menu: impl FnOnce(&mut Ui),
 ) {
     if available && !stopped {
         menu_button(ui, name, menu);
-        if let Some(status) = status {
-            label(ui, &status, TEXT_SIZE, TEXT_COLOR2);
+
+        match status {
+            Ok(status) => label(
+                ui,
+                &format!("{}", status),
+                SMALL_TEXT_SIZE,
+                to_color32(colors::SNOEP_GREEN),
+            ),
+            Err(err) => label(
+                ui,
+                &format!("{}", err.to_string()),
+                SMALL_TEXT_SIZE,
+                to_color32(colors::SNOEP_ORANGE),
+            ),
         }
     } else {
-        label(ui, name, TEXT_SIZE, TEXT_COLOR2);
+        label(ui, name, REGULAR_TEXT_SIZE, TEXT_COLOR2);
     }
 }
 
@@ -95,7 +105,7 @@ fn stop_toggle(ui: &mut Ui, conf: &mut Configuration, stopped: &mut bool, phase:
         if sleek_button_warn(ui, "   🚫   ") {
             conf.stop = Phase::None;
         }
-    } else if sleek_button_unfocused(ui, "─────") {
+    } else if sleek_button_unfocused(ui, "────") {
         conf.stop = phase;
     }
 }
@@ -214,7 +224,7 @@ fn menu_bar(
 
     menu_button(ui, "Rendering", |ui| {
         space(ui);
-        label(ui, "Presets", TEXT_SIZE, TEXT_COLOR);
+        label(ui, "Presets", REGULAR_TEXT_SIZE, TEXT_COLOR);
         for (name, preset) in PRESETS {
             space(ui);
             if sleek_button(ui, name) {
@@ -227,7 +237,12 @@ fn menu_bar(
 
     menu_button(ui, "Camera", |ui| {
         space(ui);
-        label(ui, "Automatic camera rotation", TEXT_SIZE, TEXT_COLOR);
+        label(
+            ui,
+            "Automatic camera rotation",
+            REGULAR_TEXT_SIZE,
+            TEXT_COLOR,
+        );
         space(ui);
 
         ui.checkbox(&mut automatic_rotation.enabled, "enabled");
@@ -242,7 +257,7 @@ fn menu_bar(
         label(
             ui,
             "Manual camera control sensitivity",
-            TEXT_SIZE,
+            REGULAR_TEXT_SIZE,
             TEXT_COLOR,
         );
         space(ui);
@@ -356,12 +371,12 @@ fn pipeline_bar(
     let mut stopped = false;
 
     // Input
-    label(ui, "Input", TEXT_SIZE, TEXT_COLOR);
+    label(ui, "Input", REGULAR_TEXT_SIZE, TEXT_COLOR);
     label(
         ui,
-        &format!("({})", current.mesh_ref.nr_verts()),
-        TEXT_SIZE,
-        TEXT_COLOR2,
+        &format!("{}", current.mesh_ref.nr_verts()),
+        SMALL_TEXT_SIZE,
+        to_color32(colors::SNOEP_GREEN),
     );
 
     space(ui);
@@ -378,11 +393,10 @@ fn pipeline_bar(
         stopped,
         "Field",
         current.mesh_ref.nr_verts() != 0,
-        Some(if current.fields.is_some() {
-            format!("({})", current.loops.len())
-        } else {
-            "".to_string()
-        }),
+        match current.fields {
+            Some(_) => Ok(format!("{}", current.loops.len())),
+            None => Err(BevyError::from("missing")),
+        },
         |ui| {
             let params = &mut conf.fields_params;
 
@@ -420,14 +434,10 @@ fn pipeline_bar(
         stopped,
         "Graph",
         current.fields.is_some(),
-        Some(
-            if current.flow_graphs.is_some() {
-                "(Ok)"
-            } else {
-                ""
-            }
-            .to_string(),
-        ),
+        match current.flow_graphs {
+            Some(_) => Ok("Ok".to_string()),
+            None => Err(BevyError::from("missing")),
+        },
         |ui| {
             slider(
                 ui,
@@ -464,7 +474,7 @@ fn pipeline_bar(
         stopped,
         "Loops",
         current.flow_graphs.is_some(),
-        Some(format!("({})", current.loops.len())),
+        Ok(format!("{}", current.loops.len())),
         |ui| {
             if sleek_button(ui, "initialize") {
                 jobs.write(Job::initialize_loops(current.clone(), conf.clone()));
@@ -487,14 +497,10 @@ fn pipeline_bar(
         stopped,
         "Dual",
         !current.loops.is_empty(),
-        Some(
-            if current.dual.is_ok() {
-                "(Ok)"
-            } else {
-                "(err)"
-            }
-            .to_string(),
-        ),
+        match &current.dual {
+            Ok(_) => Ok("Ok".to_string()),
+            Err(err) => Err(BevyError::from(err.to_string())),
+        },
         |ui| {
             if sleek_button(ui, "(re)compute") {
                 jobs.write(Job::compute_dual(current.clone(), conf.clone()));
@@ -505,21 +511,21 @@ fn pipeline_bar(
     stop_toggle(ui, conf, &mut stopped, Phase::Dual);
 
     // Layout
-    let layout_status = match &current.layout {
-        Some(layout) => match (layout.alignment, layout.orthogonality) {
-            (Some(alignment), Some(orthogonality)) => {
-                format!("({alignment:.3}, {orthogonality:.3})")
-            }
-            _ => "(Quality missing(?))".to_string(),
-        },
-        None => "(None)".to_string(),
-    };
+
     stage(
         ui,
         stopped,
         "Layout",
         current.dual.is_ok(),
-        Some(layout_status),
+        match &current.layout {
+            Some(layout) => match (layout.alignment, layout.orthogonality) {
+                (Some(alignment), Some(orthogonality)) => {
+                    Ok(format!("{alignment:.3}, {orthogonality:.3}"))
+                }
+                _ => Err(BevyError::from("missing")),
+            },
+            None => Err(BevyError::from("missing")),
+        },
         |ui| {
             if sleek_button(ui, "(re)compute corners") {
                 jobs.write(Job::place_corners(current.clone(), conf.clone()));
@@ -548,7 +554,10 @@ fn pipeline_bar(
         stopped,
         "Polycube",
         current.layout.is_some(),
-        None,
+        match current.polycube {
+            Some(_) => Ok("Ok".to_string()),
+            None => Err(BevyError::from("missing")),
+        },
         |ui| {
             ui.checkbox(&mut conf.unit, "unit");
             if sleek_button(ui, "(re)compute") {
@@ -565,7 +574,10 @@ fn pipeline_bar(
         stopped,
         "Quad",
         current.polycube.is_some(),
-        Some(if current.quad.is_some() { "(Ok)" } else { "" }.to_string()),
+        match current.quad {
+            Some(_) => Ok("Ok".to_string()),
+            None => Err(BevyError::from("missing")),
+        },
         |ui| {
             if sleek_button(ui, "(re)compute") {
                 jobs.write(Job::compute_quad(current.clone(), conf.clone()));
@@ -584,12 +596,19 @@ fn pipeline_bar(
     space(ui);
 
     // Hex
-    stage(ui, stopped, "Hex", current.quad.is_some(), None, |ui| {
-        if sleek_button(ui, "Hex") {
-            jobs.write(Job::export_hex(
-                current.clone(),
-                PathBuf::from("./out/temp2319701278924168937120"),
-            ));
-        }
-    });
+    stage(
+        ui,
+        stopped,
+        "Hex",
+        current.quad.is_some(),
+        Ok("".to_string()),
+        |ui| {
+            if sleek_button(ui, "Hex") {
+                jobs.write(Job::export_hex(
+                    current.clone(),
+                    PathBuf::from("./out/temp2319701278924168937120"),
+                ));
+            }
+        },
+    );
 }

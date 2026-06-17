@@ -59,7 +59,7 @@ pub fn run(args: anyhow::Result<Args>) -> anyhow::Result<()> {
         } => {
             let solution = io::import_solution(input.clone());
 
-            let Some(mut evolved) = solution.evolve(iterations, pool1, pool2) else {
+            let Ok(mut evolved) = solution.evolve(iterations, pool1, pool2) else {
                 anyhow::bail!("evolution produced no valid solution");
             };
 
