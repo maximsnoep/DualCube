@@ -1,19 +1,19 @@
 [workspace]
 resolver = "3"
 members = [
-    "dualcube/crates/dualcube",
-    "dualcube/crates/dualcube-dual",
-    "dualcube/crates/dualcube-flow",
-    "dualcube/crates/dualcube-hex",
-    "dualcube/crates/dualcube-io",
-    "dualcube/crates/dualcube-primal",
-    "dualcube/crates/dualcube-quad",
-    "dualcube/crates/dualcube-types",
-    "dualcube/crates/grapff",
-    "dualcube/crates/mehsh",
-    "dualcube/crates/mehsh-tetgen",
-    "dualcube/apps/cli",
-    "dualcube/apps/gui",
+    "crates/dualcube",
+    "crates/dualcube-dual",
+    "crates/dualcube-flow",
+    "crates/dualcube-hex",
+    "crates/dualcube-io",
+    "crates/dualcube-primal",
+    "crates/dualcube-quad",
+    "crates/dualcube-types",
+    "crates/grapff",
+    "crates/mehsh",
+    "crates/mehsh-tetgen",
+    "apps/cli",
+    "apps/gui",
 ]
 
 [profile.release]
