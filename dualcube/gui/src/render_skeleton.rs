@@ -9,7 +9,7 @@ use dualcube::skeleton::orthogonalize::{AxisSign, LabeledCurveSkeleton};
 use itertools::Itertools;
 use mehsh::integrations::bevy::MeshBuilder;
 use mehsh::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Builds a vertex-to-region map for the input mesh from a CurveSkeleton.
 fn build_vertex_to_region_map(curve_skeleton: &CurveSkeleton) -> HashMap<VertKey<INPUT>, usize> {
@@ -93,6 +93,67 @@ pub fn create_labeled_skeleton_gizmos(
     );
 
     gizmos
+}
+
+/// Like [`create_skeleton_gizmos`], but for the failed-surgery diagnostic: edges that are
+/// a side of one of the remaining (stuck) faces are drawn white instead of grey, so the
+/// user can immediately read off which skeleton 1-cells are still bound to leftover faces.
+pub fn create_failed_surgery_skeleton_gizmos(
+    curve_skeleton: &CurveSkeleton,
+    remaining_faces: &[[Vector3D; 3]],
+    translation: Vector3D,
+    scale: f64,
+) -> GizmoAsset {
+    let (mut gizmos, skel_color, node_radius) = setup_skeleton_gizmos();
+    let face_color = colors::to_bevy(colors::WHITE);
+
+    // The skeleton node positions and the remaining-face corners are produced by the
+    // exact same arithmetic on the surgery context's positions, so face-adjacent edges
+    // can be matched by exact (bit-level) position equality.
+    let mut face_edges: HashSet<[PosKey; 2]> = HashSet::new();
+    for &[a, b, c] in remaining_faces {
+        face_edges.insert(edge_key(a, b));
+        face_edges.insert(edge_key(b, c));
+        face_edges.insert(edge_key(c, a));
+    }
+
+    for edge in curve_skeleton.edge_indices() {
+        let (a, b) = curve_skeleton.edge_endpoints(edge).unwrap();
+        let pos_a = curve_skeleton[a].position;
+        let pos_b = curve_skeleton[b].position;
+        let color = if face_edges.contains(&edge_key(pos_a, pos_b)) {
+            face_color
+        } else {
+            skel_color
+        };
+        let a_view = world_to_view(pos_a, translation, scale);
+        let b_view = world_to_view(pos_b, translation, scale);
+        gizmos.line(a_view, b_view, color);
+    }
+
+    create_skeleton_node_gizmos(
+        curve_skeleton,
+        translation,
+        scale,
+        &mut gizmos,
+        skel_color,
+        node_radius,
+    );
+
+    gizmos
+}
+
+/// Bit-level key for a single position, for exact-match lookups.
+type PosKey = [u64; 3];
+
+fn pos_key(p: Vector3D) -> PosKey {
+    [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()]
+}
+
+/// Order-independent key for an edge between two positions.
+fn edge_key(a: Vector3D, b: Vector3D) -> [PosKey; 2] {
+    let (ka, kb) = (pos_key(a), pos_key(b));
+    if ka <= kb { [ka, kb] } else { [kb, ka] }
 }
 
 fn setup_skeleton_gizmos() -> (GizmoAsset, Color, f32) {

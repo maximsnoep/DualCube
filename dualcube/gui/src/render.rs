@@ -1,6 +1,7 @@
 use crate::render_skeleton::{
     create_crossing_point_gizmos, create_failed_surgery_face_mesh,
-    create_labeled_skeleton_gizmos, create_patch_boundary_gizmos, create_patch_convexity_mesh,
+    create_failed_surgery_skeleton_gizmos, create_labeled_skeleton_gizmos,
+    create_patch_boundary_gizmos, create_patch_convexity_mesh,
     create_patch_mesh, create_polycube_patch_boundary_gizmos, create_polycube_patch_mesh,
     create_invalid_region_gizmos, create_routing_diagnostics_gizmos, create_skeleton_gizmos,
 };
@@ -1165,8 +1166,12 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                     // remaining face triangles in red so the user can see
                     // exactly what got stuck.
                     if let Some(failed) = skeleton_data.failed_surgery() {
-                        gizmos_failed_surgery_skeleton =
-                            create_skeleton_gizmos(&failed.skeleton, translation, scale);
+                        gizmos_failed_surgery_skeleton = create_failed_surgery_skeleton_gizmos(
+                            &failed.skeleton,
+                            &failed.remaining_face_positions,
+                            translation,
+                            scale,
+                        );
                         failed_surgery_patch_mesh = Some(create_patch_mesh(
                             &failed.skeleton,
                             input,
