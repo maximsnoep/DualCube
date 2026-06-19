@@ -69,7 +69,7 @@ fn main() {
                 width: 3.,
                 ..default()
             },
-            bevy_wicon::WindowIconPlugin::with_path("dualcube/apps/gui/assets/logo-32.png"),
+            bevy_wicon::WindowIconPlugin::with_path("apps/gui/assets/logo-32.png"),
         ))
         // The application itself: jobs, rendering, UI, and controls.
         .add_plugins((
