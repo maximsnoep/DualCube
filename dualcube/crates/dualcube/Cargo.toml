@@ -1,0 +1,22 @@
+[package]
+name = "dualcube"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+dualcube-dual = { path = "../dualcube-dual" }
+dualcube-flow = { path = "../dualcube-flow" }
+dualcube-primal = { path = "../dualcube-primal" }
+dualcube-types = { path = "../dualcube-types" }
+grapff = { path = "../grapff" }
+slotmap = "1.0.7"
+bimap = "0.6.3"
+rand = "0.10.1"
+
+serde = { version = "1.0.188", features = ["rc"] }
+thiserror = "2.0.17"
+orx-parallel = "3.4.0"
+num-complex = "0.4"
+
+[lints]
+workspace = true

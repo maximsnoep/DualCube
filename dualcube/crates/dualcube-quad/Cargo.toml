@@ -1,0 +1,16 @@
+[package]
+name = "dualcube-quad"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "dualcube_quad"
+
+[dependencies]
+dualcube = { path = "../dualcube" }
+bimap = "0.6.3"
+faer = "0.24.0"
+faer_gmres = "0.5.0"
+
+[lints]
+workspace = true

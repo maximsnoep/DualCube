@@ -1,0 +1,14 @@
+[package]
+name = "dualcube-hex"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "dualcube_hex"
+
+[dependencies]
+dualcube = { path = "../dualcube" }
+mehsh-tetgen = { path = "../mehsh-tetgen" }
+
+[lints]
+workspace = true

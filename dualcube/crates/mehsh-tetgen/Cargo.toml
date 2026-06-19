@@ -1,0 +1,13 @@
+[package]
+name = "mehsh-tetgen"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "mehsh_tetgen"
+
+[dependencies]
+mehsh = { path = "../mehsh" }
+
+[lints]
+workspace = true

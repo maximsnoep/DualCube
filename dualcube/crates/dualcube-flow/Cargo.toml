@@ -1,0 +1,19 @@
+[package]
+name = "dualcube-flow"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "dualcube_flow"
+
+[dependencies]
+dualcube-types = { path = "../dualcube-types" }
+grapff = { path = "../grapff" }
+mehsh = { path = "../mehsh" }
+num-complex = "0.4"
+orx-parallel = "3.4.0"
+rand = "0.10.1"
+slotmap = "1.0.7"
+
+[lints]
+workspace = true

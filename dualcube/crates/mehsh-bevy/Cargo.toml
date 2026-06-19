@@ -1,0 +1,15 @@
+[package]
+name = "mehsh-bevy"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "mehsh_bevy"
+
+[dependencies]
+mehsh = { path = "../mehsh" }
+orx-parallel = { version = "3.4.0" }
+bevy = { version = "0.18.0" , default-features = false }
+
+[lints]
+workspace = true

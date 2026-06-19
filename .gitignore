@@ -1,5 +1,6 @@
 /target
+
+.cargo/
 .target/
 .profiles/
-.cargo/
 .diskscissors_jobs/
