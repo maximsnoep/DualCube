@@ -13,7 +13,6 @@ pub mod store;
 use crate::resources::Configuration;
 use bevy::prelude::*;
 use dualcube::prelude::*;
-use enum_iterator::{all, Sequence};
 use store::{RenderObject, RenderObjectStore};
 
 /// Registers the render resources, the cameras, and the (re)spawn systems.
@@ -42,7 +41,7 @@ impl Plugin for RenderPlugin {
 ///
 /// To add a new scene: add a variant, one line in [`Objects::spec`], and a
 /// module with a `build` function that constructs its [`RenderObject`].
-#[derive(PartialEq, Eq, Hash, Debug, Copy, Clone, Default, Sequence)]
+#[derive(PartialEq, Eq, Hash, Debug, Copy, Clone, Default)]
 pub enum Objects {
     InputMesh,
     #[default]
@@ -52,6 +51,13 @@ pub enum Objects {
 }
 
 impl Objects {
+    pub const ALL: [Self; 4] = [
+        Self::InputMesh,
+        Self::Polycube,
+        Self::PolycubeMap,
+        Self::QuadMesh,
+    ];
+
     /// The display name and scene builder of each object.
     fn spec(
         self,
@@ -86,7 +92,7 @@ impl From<Objects> for Vec3 {
 #[must_use]
 pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObjectStore {
     let mut store = RenderObjectStore::default();
-    for object in all::<Objects>() {
+    for object in Objects::ALL {
         let (_, build) = object.spec();
         if let Some(render_object) = build(solution, configuration) {
             store.add_object(object, render_object);

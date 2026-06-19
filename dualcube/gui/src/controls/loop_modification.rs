@@ -124,7 +124,7 @@ pub fn loop_modification_system(
     }
 
     if enter {
-        if let Some(_) = cache.loop_preview {
+        if let Some((edges, _)) = cache.loop_preview.clone() {
             configuration.loop_anchors.clear();
             solution.next[0].clear();
             solution.next[1].clear();
@@ -139,8 +139,8 @@ pub fn loop_modification_system(
             cache.locked_loop_direction = None;
             jobs.write(Job::add_loop(
                 solution.current_solution.clone(),
-                configuration.loop_anchors.clone(),
-                direction,
+                Loop { edges, direction },
+                configuration.clone(),
             ));
         }
     }

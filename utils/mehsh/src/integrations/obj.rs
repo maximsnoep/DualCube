@@ -12,7 +12,9 @@ impl<M: Tag> Mesh<M>
 where
     M: std::default::Default + std::cmp::Eq + std::hash::Hash + Copy + Clone,
 {
-    pub fn from_obj(path: &PathBuf) -> Result<(Self, ids::IdMap<VERT, M>, ids::IdMap<FACE, M>), MeshError<M>> {
+    pub fn from_obj(
+        path: &PathBuf,
+    ) -> Result<(Self, ids::IdMap<VERT, M>, ids::IdMap<FACE, M>), MeshError<M>> {
         match OpenOptions::new().read(true).open(path) {
             Ok(file) => match path.extension().unwrap().to_str() {
                 Some("obj") => match Self::obj_to_elements(BufReader::new(file)) {
@@ -21,9 +23,13 @@ where
                         "Something went wrong while reading the OBJ file: {path:?}\nErr: {e}"
                     ))),
                 },
-                _ => Err(MeshError::Unknown(format!("Unknown file extension: {path:?}",))),
+                _ => Err(MeshError::Unknown(format!(
+                    "Unknown file extension: {path:?}",
+                ))),
             },
-            Err(e) => Err(MeshError::Unknown(format!("Cannot read file: {path:?}\nErr: {e}"))),
+            Err(e) => Err(MeshError::Unknown(format!(
+                "Cannot read file: {path:?}\nErr: {e}"
+            ))),
         }
     }
 
@@ -73,7 +79,9 @@ where
                 .map(|face_id| {
                     format!(
                         "f {}",
-                        self.vertices(face_id).map(|vert_id| format!("{}", vert_ids.id(&vert_id).unwrap())).join(" ")
+                        self.vertices(face_id)
+                            .map(|vert_id| format!("{}", vert_ids.id(&vert_id).unwrap()))
+                            .join(" ")
                     )
                 })
                 .join("\n")
@@ -82,9 +90,15 @@ where
         Ok(vert_ids)
     }
 
-    fn obj_to_elements(reader: impl BufRead) -> Result<(Vec<Vector3D>, Vec<Vec<usize>>), obj::ObjError> {
+    fn obj_to_elements(
+        reader: impl BufRead,
+    ) -> Result<(Vec<Vector3D>, Vec<Vec<usize>>), obj::ObjError> {
         let obj = obj::ObjData::load_buf(reader)?;
-        let verts = obj.position.iter().map(|v| Vector3D::new(v[0].into(), v[1].into(), v[2].into())).collect_vec();
+        let verts = obj
+            .position
+            .iter()
+            .map(|v| Vector3D::new(v[0].into(), v[1].into(), v[2].into()))
+            .collect_vec();
         let faces = obj.objects[0].groups[0]
             .polys
             .iter()

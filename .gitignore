@@ -1,6 +1,5 @@
 /target
-/out/*
-!/out/examples
-
-.cargo/config.toml
-profile.json.gz
+.target/
+.profiles/
+.cargo/
+.diskscissors_jobs/

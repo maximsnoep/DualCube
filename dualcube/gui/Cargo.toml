@@ -1,7 +1,7 @@
 [package]
 name = "gui"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [features]
 snoep6 = []
@@ -13,30 +13,83 @@ light_mode = []
 [dependencies]
 dualcube = { path = "../core" }
 io = {path = "../io" }
-mehsh = { path = "../../utils/mehsh", features = ["bevy", "obj", "stl", "petgraph"] }
+mehsh = { path = "../../utils/mehsh", features = ["bevy"] }
 grapff = { path = "../../utils/grapff" }
 
-bevy = "0.18.0"
+bevy = { version = "0.18.0", default-features = false, features = [
+
+	# FOR DYNAMIC LINKING, REMOVE FOR RELEASES ETC
+	"dynamic_linking",
+
+	# Core
+    "std",
+    "multi_threaded",
+
+    # App/window/input basics
+    "bevy_log",
+    "bevy_window",
+    "bevy_winit",
+    "bevy_input_focus",
+    "keyboard",
+    "mouse",
+
+    # Assets/rendering
+    "bevy_asset",
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_camera",
+    "bevy_image",
+    "bevy_mesh",
+    "bevy_light",
+    "bevy_pbr",
+    "bevy_shader",
+
+    # Your app uses Gizmos and MeshRayCast
+    "bevy_gizmos",
+    "bevy_gizmos_render",
+    "bevy_picking",
+    "mesh_picking",
+
+    # Needed by Bevy UI / bevy_egui interaction
+    "bevy_ui",
+    "bevy_ui_render",
+    "bevy_text",
+    "default_font",
+
+    # Diagnostics
+    "sysinfo_plugin",
+
+    # Image formats you likely need for the window icon/assets
+    "png",
+
+    # Windows desktop backend
+    "raw_vulkan_init",
+] }
+
+# Egui UI
 bevy_egui = "0.39.1"
 egui_dock = "0.18.0"
-bevy-orbit-camera = "0.3.2"
+# File dialogs
+rfd = { version = "0.17.2", default-features = false }
+
+# Bevy plugins
+bevy-orbit-camera = "0.3.3"
 # bevy-orbit-camera = { path = "../../../bevy-orbit-camera" }
 bevy-axes-gizmo = "0.3.1"
 # bevy-axes-gizmo = { path = "../../../bevy-axes-gizmo" }
 bevy-blossom = "0.2.0"
+# bevy-blossom = { path = "../../../bevy-blossom" }
 bevy-toon = "0.2.0"
+# bevy-toon = { path = "../../../bevy-toon" }
 bevy-wicon = "0.18.1"
+# bevy-wicon = { path = "../../../bevy-wicon" }
 
-rayon = "1.8.1"
-itertools = "0.14.0"
+# Utils
+itertools = "0.15.0"
 ordered-float = "5.0.0"
 rand = "0.10.0"
-rfd = "0.17.2"
-enum-iterator = "2.1.0"
 
-slotmap = "1.0.7"
-nalgebra = "0.32.4"
-wgpu-types = "27.0"
+
 
 [lints]
 workspace = true

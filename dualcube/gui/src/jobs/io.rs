@@ -62,10 +62,15 @@ impl Job {
         })
     }
 
-    pub fn export_hex(solution: Solution, path: PathBuf) -> Self {
-        Self::new("hexing", move || {
-            log_export("HEX", &path, io::HEX::export(&solution, &path));
-            None
-        })
-    }
+    // pub fn export_hex(solution: Solution, path: PathBuf) -> Self {
+    //     Self::new("hexing", move || {
+    //         if solution.mesh_ref.vert_ids().is_empty() {
+    //             warn!("Nothing to export: the mesh is empty");
+    //             return None;
+    //         }
+
+    //         log_export("vtk", &path, solution.mesh_ref.to_tet(&path).map(|_| ()));
+    //         None
+    //     })
+    // }
 }

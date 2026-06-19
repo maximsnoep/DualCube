@@ -47,7 +47,7 @@ fn main() {
                 })
                 .set(LogPlugin {
                     level: Level::TRACE,
-                    filter: "info,dualcube=info".to_string(),
+                    filter: "info,dualcube=debug".to_string(),
                     ..default()
                 }),
         )

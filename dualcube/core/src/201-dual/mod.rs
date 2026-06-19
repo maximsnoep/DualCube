@@ -78,8 +78,9 @@ pub struct Dual {
     loop_regions: HashMap<LoopRegionID, LoopRegion>,
 }
 
-#[derive(Error, Debug, Clone, Serialize, Deserialize)]
+#[derive(Error, Default, Debug, Clone, Serialize, Deserialize)]
 pub enum PropertyViolationError {
+    #[default]
     #[error("Unknown error")]
     UnknownError,
     #[error("Face has degree less than three")]
@@ -94,12 +95,6 @@ pub enum PropertyViolationError {
     PathEmpty,
     #[error("Loop has too few intersections")]
     LoopHasTooFewIntersections,
-}
-
-impl Default for PropertyViolationError {
-    fn default() -> Self {
-        PropertyViolationError::UnknownError
-    }
 }
 
 impl Dual {

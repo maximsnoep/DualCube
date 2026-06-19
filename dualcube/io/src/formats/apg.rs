@@ -25,8 +25,8 @@ impl Export for APG {
 
         let mut file = std::fs::File::create(path)?;
 
-        let mut polycube = Polycube::from_dual(&dual);
-        polycube.resize(&dual, Some(layout));
+        let mut polycube = Polycube::from_dual(dual);
+        polycube.resize(dual, Some(layout));
 
         let mut vert_ids = ids::IdMap::<VERT, POLYCUBE>::new();
         for (i, vert_id) in polycube.structure.vert_ids().into_iter().enumerate() {

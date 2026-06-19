@@ -8,14 +8,13 @@ use super::widgets::{
 use crate::colors;
 use crate::controls::InteractiveMode;
 use crate::jobs::{Job, JobState};
-use crate::render::store::RenderObjectSettingStore;
 use crate::render::Objects;
+use crate::render::store::RenderObjectSettingStore;
 use crate::resources::{Configuration, Phase, SolutionResource};
 use bevy::prelude::*;
 use bevy_egui::egui::{Align, CursorIcon, Frame, Layout, MenuBar, TopBottomPanel, Ui};
 use bevy_orbit_camera::automatic::AutomaticRotation;
 use dualcube::prelude::*;
-use std::path::PathBuf;
 
 /// Visibility presets: which features of each object should be visible.
 const PRESETS: [(&str, fn(Objects) -> &'static [&'static str]); 6] = [
@@ -82,13 +81,13 @@ fn stage(
         match status {
             Ok(status) => label(
                 ui,
-                &format!("{}", status),
+                status.as_str(),
                 SMALL_TEXT_SIZE,
                 to_color32(colors::SNOEP_GREEN),
             ),
             Err(err) => label(
                 ui,
-                &format!("{}", err.to_string()),
+                err.to_string().as_str(),
                 SMALL_TEXT_SIZE,
                 to_color32(colors::SNOEP_ORANGE),
             ),
@@ -185,7 +184,7 @@ fn menu_bar(
             if let Some(path) = rfd::FileDialog::new()
                 .add_filter(
                     "obj, SAVE FILE for loops, or SAVE FILE for dualcube",
-                    &["obj", "loops", "dc"],
+                    &["obj", "stl", "loops", "dc"],
                 )
                 .pick_file()
             {
@@ -419,7 +418,6 @@ fn pipeline_bar(
 
             if sleek_button(ui, "compute") {
                 jobs.write(Job::fields(solution.current_solution.clone(), conf.clone()));
-                ui.close();
             }
         },
     );
@@ -455,7 +453,6 @@ fn pipeline_bar(
                     solution.current_solution.clone(),
                     conf.clone(),
                 ));
-                ui.close();
             }
         },
     );
@@ -478,11 +475,9 @@ fn pipeline_bar(
         |ui| {
             if sleek_button(ui, "initialize") {
                 jobs.write(Job::initialize_loops(current.clone(), conf.clone()));
-                ui.close();
             }
             if sleek_button(ui, "evolve") {
                 jobs.write(Job::evolve(current.clone(), conf.clone()));
-                ui.close();
             }
             slider(ui, "iterations", &mut conf.iterations, 1..=20);
             slider(ui, "pool1", &mut conf.pool1, 1..=20);
@@ -504,7 +499,6 @@ fn pipeline_bar(
         |ui| {
             if sleek_button(ui, "(re)compute") {
                 jobs.write(Job::compute_dual(current.clone(), conf.clone()));
-                ui.close();
             }
         },
     );
@@ -529,20 +523,16 @@ fn pipeline_bar(
         |ui| {
             if sleek_button(ui, "(re)compute corners") {
                 jobs.write(Job::place_corners(current.clone(), conf.clone()));
-                ui.close();
             }
             if sleek_button(ui, "optimize corners") {
                 jobs.write(Job::smoothen_layout(current.clone(), conf.clone()));
-                ui.close();
             }
             space(ui);
             if sleek_button(ui, "(re)compute paths") {
                 jobs.write(Job::place_paths(current.clone(), conf.clone()));
-                ui.close();
             }
             if sleek_button(ui, "optimize paths") {
                 jobs.write(Job::path_straightening(current.clone(), conf.clone()));
-                ui.close();
             }
         },
     );
@@ -562,7 +552,6 @@ fn pipeline_bar(
             ui.checkbox(&mut conf.unit, "unit");
             if sleek_button(ui, "(re)compute") {
                 jobs.write(Job::compute_polycube(current.clone(), conf.clone()));
-                ui.close();
             }
         },
     );
@@ -581,7 +570,6 @@ fn pipeline_bar(
         |ui| {
             if sleek_button(ui, "(re)compute") {
                 jobs.write(Job::compute_quad(current.clone(), conf.clone()));
-                ui.close();
             }
             slider(ui, "omega", &mut conf.omega, 1..=20);
         },
@@ -604,10 +592,7 @@ fn pipeline_bar(
         Ok("".to_string()),
         |ui| {
             if sleek_button(ui, "Hex") {
-                jobs.write(Job::export_hex(
-                    current.clone(),
-                    PathBuf::from("./out/temp2319701278924168937120"),
-                ));
+                jobs.write(Job::compute_hex(current.clone(), conf.clone()));
             }
         },
     );

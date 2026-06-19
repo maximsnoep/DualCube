@@ -1,14 +1,13 @@
 [package]
 name = "dualcube"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
-mehsh = { path = "../../utils/mehsh", features = ["obj", "stl", "petgraph", "serde"] }
+mehsh = { path = "../../utils/mehsh", features = ["tetgen"] }
 grapff = { path = "../../utils/grapff" }
 log = "0.4.27"
-nalgebra = "0.32.4"
-itertools = "0.14.0"
+itertools = "0.15.0"
 slotmap = "1.0.7"
 ordered-float = "5.0.0"
 bimap = "0.6.3"
@@ -18,7 +17,6 @@ faer_gmres = "0.5.0"
 serde = { version = "1.0.188", features = ["rc"] }
 thiserror = "2.0.17"
 orx-parallel = "3.4.0"
-petgraph = "0.8.2"
 num-complex = "0.4"
 
 [lints]

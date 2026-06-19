@@ -29,7 +29,11 @@ where
         let sorted_edges = self
             .edges
             .ids()
-            .filter(|&id| !filter_edges.contains(&id) && !filter_verts.contains(&self.root(id)) && !filter_verts.contains(&self.root(self.twin(id))))
+            .filter(|&id| {
+                !filter_edges.contains(&id)
+                    && !filter_verts.contains(&self.root(id))
+                    && !filter_verts.contains(&self.root(self.twin(id)))
+            })
             .flat_map(|id| {
                 let [u, v] = self.vertices(id).collect_array::<2>()?;
                 Some((
@@ -45,7 +49,10 @@ where
         (Csr::from_sorted_edges(&sorted_edges).unwrap(), key_to_int)
     }
 
-    pub fn to_petgraph_with_weights<W, T>(&self, weight_function: W) -> (Graph<T>, ids::IdMap<VERT, M>)
+    pub fn to_petgraph_with_weights<W, T>(
+        &self,
+        weight_function: W,
+    ) -> (Graph<T>, ids::IdMap<VERT, M>)
     where
         W: Fn(EdgeKey<M>) -> T,
         T: Clone,

@@ -12,7 +12,10 @@ pub struct FaceLocation<M: Tag>((Bvh<f64, 3>, Vec<TriangleBvhShape<M>>));
 impl<M: Tag> FaceLocation<M> {
     #[must_use]
     pub fn nearest(&self, point: &[f64; 3]) -> FaceKey<M> {
-        let neighbor = self.0.0.nearest_to(nalgebra::Point3::from_slice(point), &self.0.1);
+        let neighbor = self
+            .0
+            .0
+            .nearest_to(nalgebra::Point3::from_slice(point), &self.0.1);
         let (t, _) = neighbor.unwrap();
         t.real_index
     }

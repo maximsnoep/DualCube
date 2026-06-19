@@ -27,6 +27,9 @@ pub mod integrations {
     pub mod petgraph;
     #[cfg(feature = "stl")]
     pub mod stl;
+
+    #[cfg(feature = "tetgen")]
+    pub mod tetgen;
 }
 
 pub mod utils {
@@ -40,8 +43,8 @@ pub mod prelude {
     pub use crate::define_tag;
     pub use crate::mesh::algo::location::{face::FaceLocation, vert::VertLocation};
     pub use crate::mesh::connectivity::{
-        EDGE, EdgeKey, FACE, FaceKey, HasEdges, HasFaces, HasNeighbors, HasNormal, HasPosition, HasRing, HasSize, HasVertices, Mesh, MeshError, SetPosition,
-        Tag, VERT, VertKey,
+        EDGE, EdgeKey, FACE, FaceKey, HasEdges, HasFaces, HasNeighbors, HasNormal, HasPosition,
+        HasRing, HasSize, HasVertices, Mesh, MeshError, SetPosition, Tag, VERT, VertKey,
     };
     pub use crate::utils::geom;
     pub use crate::utils::ids;

@@ -21,6 +21,11 @@ impl<M: Tag> Mesh<M> {
         (self.position(b) - self.position(a)).angle(&(self.position(b) - self.position(c)))
     }
 
+    #[must_use]
+    pub fn degree(&self, id: VertKey<M>) -> usize {
+        self.edges(id).count()
+    }
+
     // Angular defect of a vertex is 2*PI - C, where C is the sum of all the angles at the vertex.
     // https://en.wikipedia.org/wiki/Angular_defect
     #[must_use]

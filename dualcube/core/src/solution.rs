@@ -15,6 +15,7 @@
 //! The loop bookkeeping and tracing methods live in [`crate::loops`]; the flow
 //! graph construction lives in [`crate::flow::graph`].
 
+use crate::hex::Hex;
 use crate::prelude::*;
 use itertools::Itertools;
 use mehsh::prelude::*;
@@ -445,6 +446,13 @@ impl Solution {
     /// Construct the quad mesh from the current layout.
     pub fn construct_quad(&mut self, omega: usize) -> Result<(), PropertyViolationError> {
         self.quad = Quad::from_layout(self.layout.as_ref().unwrap(), omega);
+        Ok(())
+    }
+
+    // Construct the hex mesh from the current shizzle.
+    pub fn construct_hex(&mut self) -> Result<(), PropertyViolationError> {
+        let _hex_mesh =
+            Hex::from_solution(self).map_err(|_| PropertyViolationError::UnknownError)?;
         Ok(())
     }
 

@@ -818,7 +818,6 @@ impl Layout {
                     face_id,
                     self.granulated_mesh
                         .neighbors(face_id)
-                        .into_iter()
                         .filter(|&neighbor_id| !blocked.contains(&(face_id, neighbor_id)))
                         .collect_vec(),
                 )

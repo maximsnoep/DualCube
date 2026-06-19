@@ -6,15 +6,15 @@ use bevy::camera::{CameraOutputMode, RenderTarget, ScalingMode, Viewport};
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::prelude::*;
 use bevy::render::render_resource::{
-    Extent3d, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages,
+    BlendState, Extent3d, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages,
 };
+
 use bevy_axes_gizmo::AxesGizmoSyncCamera;
 use bevy_egui::{egui::Rect, EguiGlobalSettings, PrimaryEguiContext};
 use bevy_orbit_camera::*;
 use bevy_toon::ToonMaterial;
 use egui_dock::LeafNode;
 use std::ops::Index;
-use wgpu_types::BlendState;
 
 const DEFAULT_CAMERA_EYE: Vec3 = Vec3::new(25.0, 25.0, 25.0);
 const DEFAULT_CAMERA_TARGET: Vec3 = Vec3::new(0., 0., 0.);

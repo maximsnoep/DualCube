@@ -193,6 +193,13 @@ impl Job {
         })
     }
 
+    pub fn compute_hex(solution: Solution, configuration: Configuration) -> Self {
+        Self::new("computing hex", move || {
+            let modified = try_step(&solution, "construct hex", |s| s.construct_hex())?;
+            completed(Stage::Hex, modified, &configuration)
+        })
+    }
+
     pub fn refresh(solution: Solution, configuration: Configuration) -> Self {
         Self::new("refreshing", move || {
             Some(JobResult::Refreshed(render::refresh(

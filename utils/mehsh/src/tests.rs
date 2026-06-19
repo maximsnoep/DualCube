@@ -1,4 +1,5 @@
 use crate::prelude::*;
+#[cfg(any(feature = "obj", feature = "stl"))]
 use std::path::PathBuf;
 define_tag!(TestMesh);
 
@@ -110,6 +111,94 @@ fn triangulate_hexahedron() {
     assert!(triangulated.nr_edges() == 18 * 2);
     assert!(triangulated.nr_faces() == 12);
     assert!(face_sources.len() == triangulated.nr_faces());
+}
+
+#[test]
+fn cut_and_cap_preserves_original_vertex_ids() {
+    let (mesh, vertex_map, _) =
+        Mesh::<TestMesh>::from(&hexahedron_faces(), &hexahedron_positions()).unwrap();
+
+    let v0 = *vertex_map.key(0).unwrap();
+    let v1 = *vertex_map.key(1).unwrap();
+    let v2 = *vertex_map.key(2).unwrap();
+    let v3 = *vertex_map.key(3).unwrap();
+    let v4 = *vertex_map.key(4).unwrap();
+    let v5 = *vertex_map.key(5).unwrap();
+    let v6 = *vertex_map.key(6).unwrap();
+    let v7 = *vertex_map.key(7).unwrap();
+
+    let cut_loop = vec![v4, v5, v6, v7, v4];
+    let cap_triangles = vec![[v4, v5, v6], [v4, v6, v7]];
+
+    let (mesh_a, mesh_b) = mesh.cut_and_cap(&cut_loop, &cap_triangles).unwrap();
+    let (top, bottom) = if mesh_a.nr_verts() == 4 {
+        (mesh_a, mesh_b)
+    } else {
+        (mesh_b, mesh_a)
+    };
+
+    assert_eq!(top.nr_verts(), 4);
+    assert_eq!(top.nr_faces(), 3);
+    assert_eq!(bottom.nr_verts(), 8);
+    assert_eq!(bottom.nr_faces(), 7);
+
+    for vertex in [v4, v5, v6, v7] {
+        assert!(top.verts.contains(vertex));
+        assert!(bottom.verts.contains(vertex));
+        assert_eq!(top.position(vertex), mesh.position(vertex));
+        assert_eq!(bottom.position(vertex), mesh.position(vertex));
+    }
+
+    for vertex in [v0, v1, v2, v3] {
+        assert!(!top.verts.contains(vertex));
+        assert!(bottom.verts.contains(vertex));
+        assert_eq!(bottom.position(vertex), mesh.position(vertex));
+    }
+}
+
+#[test]
+fn cut_and_cap_from_positions_stitches_boundary_and_adds_interior_vertices() {
+    let (mesh, vertex_map, _) =
+        Mesh::<TestMesh>::from(&hexahedron_faces(), &hexahedron_positions()).unwrap();
+
+    let v4 = *vertex_map.key(4).unwrap();
+    let v5 = *vertex_map.key(5).unwrap();
+    let v6 = *vertex_map.key(6).unwrap();
+    let v7 = *vertex_map.key(7).unwrap();
+    let center = Vector3D::new(0.5, 1.0, 0.5);
+
+    let mut cap_positions = vec![Vector3D::zeros(); 12];
+    cap_positions[2] = mesh.position(v4);
+    cap_positions[5] = mesh.position(v5);
+    cap_positions[7] = mesh.position(v6);
+    cap_positions[11] = mesh.position(v7);
+    cap_positions[9] = center;
+
+    let cut_loop = vec![v4, v5, v6, v7];
+    let cap_triangles = vec![[2, 5, 9], [5, 7, 9], [7, 11, 9], [11, 2, 9]];
+
+    let output = mesh
+        .cut_and_cap_from_positions(&cut_loop, &cap_positions, &cap_triangles)
+        .unwrap();
+
+    assert_eq!(*output.cap_vertices_a.key(2).unwrap(), v4);
+    assert_eq!(*output.cap_vertices_a.key(5).unwrap(), v5);
+    assert_eq!(*output.cap_vertices_a.key(7).unwrap(), v6);
+    assert_eq!(*output.cap_vertices_a.key(11).unwrap(), v7);
+    assert_eq!(*output.cap_vertices_b.key(2).unwrap(), v4);
+    assert_eq!(*output.cap_vertices_b.key(5).unwrap(), v5);
+    assert_eq!(*output.cap_vertices_b.key(7).unwrap(), v6);
+    assert_eq!(*output.cap_vertices_b.key(11).unwrap(), v7);
+
+    let center_a = *output.cap_vertices_a.key(9).unwrap();
+    let center_b = *output.cap_vertices_b.key(9).unwrap();
+    assert!(!mesh.verts.contains(center_a));
+    assert!(!mesh.verts.contains(center_b));
+    assert_eq!(output.mesh_a.position(center_a), center);
+    assert_eq!(output.mesh_b.position(center_b), center);
+
+    assert!(output.mesh_a.verts.contains(v4));
+    assert!(output.mesh_b.verts.contains(v4));
 }
 
 #[test]

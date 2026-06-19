@@ -655,7 +655,7 @@ impl Solution {
             let candidate_cost = edge_cost + path_cost;
             if best
                 .as_ref()
-                .map_or(true, |(_, best_cost)| candidate_cost < *best_cost)
+                .is_none_or(|&(_, best_cost)| candidate_cost < best_cost)
             {
                 best = Some((short, candidate_cost));
             }
@@ -1010,7 +1010,7 @@ impl Solution {
                     valid_count += 1;
                     if best
                         .as_ref()
-                        .map_or(true, |(_, best_cost)| candidate.1 < *best_cost)
+                        .is_none_or(|&(_, best_cost)| candidate.1 < best_cost)
                     {
                         best = Some(candidate);
                     }
@@ -1132,7 +1132,7 @@ impl Solution {
 
             if best
                 .as_ref()
-                .map_or(true, |(_, best_cost)| total_cost < *best_cost)
+                .is_none_or(|&(_, best_cost)| total_cost < best_cost)
             {
                 best = Some((loop_edges, total_cost));
             }
@@ -1275,7 +1275,7 @@ impl Solution {
                     valid_count += 1;
                     if best
                         .as_ref()
-                        .map_or(true, |(_, best_cost)| candidate.1 < *best_cost)
+                        .is_none_or(|&(_, best_cost)| candidate.1 < best_cost)
                     {
                         best = Some(candidate);
                     }

@@ -51,8 +51,15 @@ pub fn calculate_clockwise_angle(a: Vector3D, b: Vector3D, c: Vector3D, n: Vecto
 }
 
 #[must_use]
-pub fn project_point_onto_plane(point: Vector3D, plane: (Vector3D, Vector3D), reference: Vector3D) -> Vector2D {
-    Vector2D::new((point - reference).dot(&plane.0), (point - reference).dot(&plane.1))
+pub fn project_point_onto_plane(
+    point: Vector3D,
+    plane: (Vector3D, Vector3D),
+    reference: Vector3D,
+) -> Vector2D {
+    Vector2D::new(
+        (point - reference).dot(&plane.0),
+        (point - reference).dot(&plane.1),
+    )
 }
 
 #[must_use]
@@ -61,16 +68,28 @@ pub fn is_point_inside_triangle(p: Vector3D, t: (Vector3D, Vector3D, Vector3D)) 
     let s2 = calculate_triangle_area((t.1, t.2, p));
     let s3 = calculate_triangle_area((t.2, t.0, p));
     let st = calculate_triangle_area(t);
-    (s1 + s2 + s3 - st).abs() < EPS && (0.0 - EPS..=st + EPS).contains(&s1) && (0.0 - EPS..=st + EPS).contains(&s2) && (0.0 - EPS..=st + EPS).contains(&s3)
+    (s1 + s2 + s3 - st).abs() < EPS
+        && (0.0 - EPS..=st + EPS).contains(&s1)
+        && (0.0 - EPS..=st + EPS).contains(&s2)
+        && (0.0 - EPS..=st + EPS).contains(&s3)
 }
 
 #[must_use]
 pub fn is_within_inclusive_range(a: f64, b: f64, c: f64) -> bool {
-    if b < c { (b..=c).contains(&a) } else { (c..=b).contains(&a) }
+    if b < c {
+        (b..=c).contains(&a)
+    } else {
+        (c..=b).contains(&a)
+    }
 }
 
 #[must_use]
-pub fn calculate_2d_lineseg_intersection(p_u: Vector2D, p_v: Vector2D, q_u: Vector2D, q_v: Vector2D) -> Option<(Vector2D, IntersectionType)> {
+pub fn calculate_2d_lineseg_intersection(
+    p_u: Vector2D,
+    p_v: Vector2D,
+    q_u: Vector2D,
+    q_v: Vector2D,
+) -> Option<(Vector2D, IntersectionType)> {
     let (x1, x2, x3, x4, y1, y2, y3, y4) = (p_u.x, p_v.x, q_u.x, q_v.x, p_u.y, p_v.y, q_u.y, q_v.y);
 
     let t_numerator = (x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4);
@@ -84,7 +103,9 @@ pub fn calculate_2d_lineseg_intersection(p_u: Vector2D, p_v: Vector2D, q_u: Vect
 
     let t = t_numerator / denominator;
     let u = u_numerator / denominator;
-    if !(-INTERSECTION_EPS..=1.0 + INTERSECTION_EPS).contains(&t) || !(-INTERSECTION_EPS..=1.0 + INTERSECTION_EPS).contains(&u) {
+    if !(-INTERSECTION_EPS..=1.0 + INTERSECTION_EPS).contains(&t)
+        || !(-INTERSECTION_EPS..=1.0 + INTERSECTION_EPS).contains(&u)
+    {
         return None;
     }
 
@@ -103,7 +124,12 @@ pub fn calculate_2d_lineseg_intersection(p_u: Vector2D, p_v: Vector2D, q_u: Vect
 }
 
 #[must_use]
-pub fn calculate_3d_lineseg_intersection(p_u: Vector3D, p_v: Vector3D, q_u: Vector3D, q_v: Vector3D) -> Option<(Vector3D, IntersectionType)> {
+pub fn calculate_3d_lineseg_intersection(
+    p_u: Vector3D,
+    p_v: Vector3D,
+    q_u: Vector3D,
+    q_v: Vector3D,
+) -> Option<(Vector3D, IntersectionType)> {
     if !are_points_coplanar(p_u, p_v, q_u, q_v) {
         return None;
     }
@@ -189,7 +215,10 @@ fn distance_to_segment(p: Vector3D, a: Vector3D, b: Vector3D) -> f64 {
 // Calculate the barycentric coordinates of point `p` with respect to triangle `t`.
 #[must_use]
 #[inline]
-pub fn calculate_barycentric_coordinates(p: Vector3D, t: (Vector3D, Vector3D, Vector3D)) -> (f64, f64, f64) {
+pub fn calculate_barycentric_coordinates(
+    p: Vector3D,
+    t: (Vector3D, Vector3D, Vector3D),
+) -> (f64, f64, f64) {
     let (a, b, c) = t;
     let ab = b - a;
     let ac = c - a;
@@ -236,7 +265,12 @@ pub fn calculate_barycentric_coordinates(p: Vector3D, t: (Vector3D, Vector3D, Ve
 // Inverse barycentric coordinates: given barycentric coordinates (u, v, w), find the point p in triangle t.
 #[must_use]
 #[inline]
-pub fn inverse_barycentric_coordinates(u: f64, v: f64, w: f64, t: (Vector3D, Vector3D, Vector3D)) -> Vector3D {
+pub fn inverse_barycentric_coordinates(
+    u: f64,
+    v: f64,
+    w: f64,
+    t: (Vector3D, Vector3D, Vector3D),
+) -> Vector3D {
     let p1 = t.0 * u;
     let p2 = t.1 * v;
     let p3 = t.2 * w;
@@ -264,7 +298,10 @@ pub fn fit_plane(points: &[Vector3D]) -> (Vector3D, f64) {
     let eigenvector = eigen.eigenvectors.column(idx);
     let rms = eigen.eigenvalues[idx].sqrt();
     let diameter = diameter(points);
-    (Vector3D::new(eigenvector[0], eigenvector[1], eigenvector[2]), rms / diameter)
+    (
+        Vector3D::new(eigenvector[0], eigenvector[1], eigenvector[2]),
+        rms / diameter,
+    )
 }
 
 // Diameter of a set of points (max distance between two points)
@@ -283,7 +320,11 @@ pub fn diameter(points: &[Vector3D]) -> f64 {
 
 /// Project a 3D triangle into its local 2D coordinates
 /// Returns a tuple (q0, q1, q2) in 2D
-pub fn triangle_to_2d(p0: Vector3D, p1: Vector3D, p2: Vector3D) -> Option<(Vector2D, Vector2D, Vector2D)> {
+pub fn triangle_to_2d(
+    p0: Vector3D,
+    p1: Vector3D,
+    p2: Vector3D,
+) -> Option<(Vector2D, Vector2D, Vector2D)> {
     // 1. Compute edges
     let v1 = p1 - p0;
     let v2 = p2 - p0;

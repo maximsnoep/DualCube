@@ -92,12 +92,10 @@ enum JobResult {
     },
     /// New render objects are ready to be displayed.
     Refreshed(RenderObjectStore),
-    /// A candidate loop was computed (or failed: `solution` is `None`).
-    #[allow(dead_code)]
+    /// A loop was added.
     AddedLoop {
-        anchors: Vec<[EdgeID; 2]>,
-        direction: Direction,
-        solution: Option<Solution>,
+        solution: Solution,
+        configuration: Configuration,
     },
     /// A loop was removed.
     RemovedLoop {
@@ -176,13 +174,14 @@ fn poll_jobs(
         }
 
         JobResult::AddedLoop {
-            anchors,
-            direction,
             solution,
+            configuration,
         } => {
-            for seed in anchors {
-                solution_resource.next[direction as usize].insert(seed, solution.clone());
-            }
+            solution_resource.current_solution = solution;
+            jobs.write(Job::compute_dual(
+                solution_resource.current_solution.clone(),
+                configuration,
+            ));
         }
 
         JobResult::RemovedLoop {

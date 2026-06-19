@@ -1,7 +1,7 @@
 use super::shared::CacheResource;
 use crate::colors;
 use crate::jobs::Job;
-use crate::render::gizmos::{vector3d_to_vec3, world_to_view, PerpetualGizmos};
+use crate::render::gizmos::{PerpetualGizmos, vector3d_to_vec3, world_to_view};
 use crate::resources::{Configuration, InputResource, SolutionResource};
 use bevy::prelude::*;
 use dualcube::prelude::*;
@@ -34,8 +34,8 @@ pub fn segmentation_modification_system(
                 layout
                     .vert_to_corner
                     .iter()
-                    .min_by_key(|(_, &corner)| {
-                        OrderedFloat(layout.granulated_mesh.position(corner).metric_distance(
+                    .min_by_key(|&(_, corner)| {
+                        OrderedFloat(layout.granulated_mesh.position(*corner).metric_distance(
                             &layout.granulated_mesh.position(nearest_granulated_vert),
                         ))
                     })
