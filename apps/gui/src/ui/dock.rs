@@ -22,24 +22,7 @@ pub struct UiResource {
 impl Default for UiResource {
     fn default() -> Self {
         UiResource {
-            tree: {
-                let mut tree = DockState::new(vec![Objects::InputMesh]);
-
-                // You can modify the tree before constructing the dock
-                let right1 = tree.main_surface_mut().split_right(
-                    NodeIndex::root(),
-                    0.7,
-                    vec![Objects::Polycube],
-                )[1];
-                let _right3 =
-                    tree.main_surface_mut()
-                        .split_right(right1, 0.5, vec![Objects::PolycubeMap])[1];
-                let _right2 =
-                    tree.main_surface_mut()
-                        .split_below(right1, 0.4, vec![Objects::QuadMesh])[1];
-
-                tree
-            },
+            tree: { DockState::new(vec![Objects::InputMesh, Objects::Polycube]) },
         }
     }
 }
@@ -117,7 +100,7 @@ impl egui_dock::TabViewer for TabViewer {
                 }
             }
         } else {
-            ui.label("o_O");
+            ui.label("_______________________________");
         }
     }
 
@@ -252,7 +235,7 @@ pub fn show(
                 left: 10,
                 right: 10,
                 top: 5,
-                bottom: 50,
+                bottom: 40,
             });
             dock_area_style.tab_bar.corner_radius = CornerRadius::same(0);
             dock_area_style.tab_bar.bg_fill = BG_COLOR;
