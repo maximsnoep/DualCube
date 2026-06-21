@@ -30,6 +30,7 @@ pub struct LoopPreviewKey {
     pub anchors: Vec<[EdgeID; 2]>,
 }
 
+#[allow(unused_qualifications)]
 pub fn draw_edgepair_arrow(
     mesh_resmut: &InputResource,
     gizmos: &mut Gizmos<'_, '_, PerpetualGizmos>,
@@ -53,6 +54,7 @@ pub fn draw_edgepair_arrow(
     );
 }
 
+#[allow(unused_qualifications)]
 pub fn draw_loop_gradient(
     mesh_resmut: &InputResource,
     gizmos: &mut Gizmos<'_, '_, PerpetualGizmos>,

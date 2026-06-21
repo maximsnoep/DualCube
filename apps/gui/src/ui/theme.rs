@@ -4,20 +4,16 @@ use bevy_egui::egui::FontFamily;
 use bevy_egui::egui::FontFamily::Proportional;
 use bevy_egui::egui::{Color32, CornerRadius, FontId, TextFormat, TextStyle, text};
 
-pub const RED: Color32 = Color32::from_rgb(
-    (colors::SNOEP_RED[0] * 255.) as u8,
-    (colors::SNOEP_RED[1] * 255.) as u8,
-    (colors::SNOEP_RED[2] * 255.) as u8,
+pub const OK_GREEN: Color32 = Color32::from_rgb(
+    (colors::OK_GREEN[0] * 255.) as u8,
+    (colors::OK_GREEN[1] * 255.) as u8,
+    (colors::OK_GREEN[2] * 255.) as u8,
 );
-pub const LIGHT_RED: Color32 = Color32::from_rgb(
-    (colors::RED_LIGHT[0] * 255.) as u8,
-    (colors::RED_LIGHT[1] * 255.) as u8,
-    (colors::RED_LIGHT[2] * 255.) as u8,
-);
-pub const BLUE: Color32 = Color32::from_rgb(
-    (colors::SNOEP_BLUE[0] * 255.) as u8,
-    (colors::SNOEP_BLUE[1] * 255.) as u8,
-    (colors::SNOEP_BLUE[2] * 255.) as u8,
+
+pub const WARN_RED: Color32 = Color32::from_rgb(
+    (colors::WARN_RED[0] * 255.) as u8,
+    (colors::WARN_RED[1] * 255.) as u8,
+    (colors::WARN_RED[2] * 255.) as u8,
 );
 
 pub const REGULAR_TEXT_SIZE: f32 = 12.;

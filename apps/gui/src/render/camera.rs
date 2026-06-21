@@ -30,11 +30,11 @@ pub struct CameraHandles {
 
 pub fn setup(
     mut commands: Commands<'_, '_>,
-    mut egui_global_settings: ResMut<EguiGlobalSettings>,
-    mut images: ResMut<Assets<Image>>,
-    mut handles: ResMut<CameraHandles>,
-    cameras: Query<Entity, With<Camera>>,
-    configuration: Res<Configuration>,
+    mut egui_global_settings: ResMut<'_, EguiGlobalSettings>,
+    mut images: ResMut<'_, Assets<Image>>,
+    mut handles: ResMut<'_, CameraHandles>,
+    cameras: Query<'_, '_, Entity, With<Camera>>,
+    configuration: Res<'_, Configuration>,
 ) {
     for camera in cameras.iter() {
         commands.entity(camera).despawn();
@@ -68,8 +68,7 @@ pub fn setup(
         },
         AxesGizmoSyncCamera,
         Tonemapping::None,
-        bevy_blossom::CameraMarker,
-        bevy_orbit_camera::automatic::Marker,
+        automatic::Marker,
         OrbitCameraBundle::new(
             Controller {
                 mouse_rotate_sensitivity: Vec2::splat(0.2),
@@ -118,7 +117,6 @@ pub fn setup(
         commands.spawn((
             Camera3d::default(),
             RenderTarget::Image(handle.into()),
-            bevy_blossom::CameraMarker,
             Camera {
                 clear_color: clear_color.clone(),
                 ..Default::default()
@@ -131,8 +129,8 @@ pub fn setup(
 }
 
 pub fn update_camera_settings(
-    mut camera_controller: Query<&mut Controller>,
-    configuration: Res<Configuration>,
+    mut camera_controller: Query<'_, '_, &mut Controller>,
+    configuration: Res<'_, Configuration>,
 ) {
     let Ok(mut main_camera) = camera_controller.single_mut() else {
         warn_once!("No main camera controller");
@@ -146,12 +144,17 @@ pub fn update_camera_settings(
 }
 
 pub fn update(
-    configuration: Res<Configuration>,
-    ui_resource: Res<UiResource>,
-    mut custom_materials: ResMut<Assets<ToonMaterial>>,
-    window: Single<&Window>,
-    mut main_camera: Query<(&mut LookTransform, &Transform, &mut Camera), With<Controller>>,
-    mut other_cameras: Query<(&mut Transform, &mut Projection, &CameraFor), Without<Controller>>,
+    configuration: Res<'_, Configuration>,
+    ui_resource: Res<'_, UiResource>,
+    mut custom_materials: ResMut<'_, Assets<ToonMaterial>>,
+    window: Single<'_, '_, &Window>,
+    mut main_camera: Query<'_, '_, (&mut LookTransform, &Transform, &mut Camera), With<Controller>>,
+    mut other_cameras: Query<
+        '_,
+        '_,
+        (&mut Transform, &mut Projection, &CameraFor),
+        Without<Controller>,
+    >,
 ) {
     let (mut look, main_transform, mut main_camera) = main_camera.single_mut().unwrap();
 
@@ -208,14 +211,25 @@ fn orthographic_projection(viewport_height: f32) -> Projection {
 }
 
 fn viewport_from_rect(rect: Rect, window_size: UVec2) -> Option<Viewport> {
-    let size = UVec2::new(
-        valid_viewport_size(rect.max[0] - rect.min[0])?,
-        valid_viewport_size(rect.max[1] - rect.min[1])?,
-    );
-
     // Bevy panics on zero-sized viewports during window minimization/resizing.
-    (window_size.x > 0 && window_size.y > 0).then_some(Viewport {
-        physical_position: UVec2::new(rect.min[0] as u32, rect.min[1] as u32),
+    if window_size.x == 0 || window_size.y == 0 {
+        return None;
+    }
+
+    let pos = UVec2::new(rect.min[0] as u32, rect.min[1] as u32);
+    let end = UVec2::new(rect.max[0] as u32, rect.max[1] as u32);
+
+    // Clamp to the window bounds so the viewport never exceeds the render target.
+    let clamped_pos = pos.min(window_size.saturating_sub(UVec2::ONE));
+    let clamped_end = end.min(window_size);
+
+    let size = clamped_end.saturating_sub(clamped_pos);
+
+    valid_viewport_size(size.x as f32)?;
+    valid_viewport_size(size.y as f32)?;
+
+    Some(Viewport {
+        physical_position: clamped_pos,
         physical_size: size,
         ..Default::default()
     })

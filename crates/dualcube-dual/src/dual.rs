@@ -195,7 +195,7 @@ impl Dual {
             if !edges.contains(&start_twin) {
                 edges.insert(0, start_twin);
             }
-            if !edges.contains(&end_twin) {
+            if start_twin != end_twin && !edges.contains(&end_twin) {
                 edges.push(end_twin);
             }
             edges
@@ -204,7 +204,7 @@ impl Dual {
             if !edges.contains(&start_twin) {
                 edges.push(start_twin);
             }
-            if !edges.contains(&end_twin) {
+            if start_twin != end_twin && !edges.contains(&end_twin) {
                 edges.insert(0, end_twin);
             }
             edges

@@ -1,4 +1,4 @@
-use crate::utils::primitives::{EPS, Vector2D, Vector3D};
+use crate::utils::primitives::{Vector2D, Vector3D};
 use nalgebra::DMatrix;
 
 /// Represents the orientation of three points in 3D space.
@@ -23,7 +23,7 @@ pub fn calculate_triangle_area(t: (Vector3D, Vector3D, Vector3D)) -> f64 {
 
 #[must_use]
 pub fn are_points_coplanar(a: Vector3D, b: Vector3D, c: Vector3D, d: Vector3D) -> bool {
-    (b - a).cross(&(c - a)).dot(&(d - a)) == 0.
+    geometry_predicates::orient3d(a.into(), b.into(), c.into(), d.into()) == 0.0
 }
 
 #[must_use]
@@ -64,14 +64,25 @@ pub fn project_point_onto_plane(
 
 #[must_use]
 pub fn is_point_inside_triangle(p: Vector3D, t: (Vector3D, Vector3D, Vector3D)) -> bool {
-    let s1 = calculate_triangle_area((t.0, t.1, p));
-    let s2 = calculate_triangle_area((t.1, t.2, p));
-    let s3 = calculate_triangle_area((t.2, t.0, p));
-    let st = calculate_triangle_area(t);
-    (s1 + s2 + s3 - st).abs() < EPS
-        && (0.0 - EPS..=st + EPS).contains(&s1)
-        && (0.0 - EPS..=st + EPS).contains(&s2)
-        && (0.0 - EPS..=st + EPS).contains(&s3)
+    let (a, b, c) = t;
+
+    // Project to 2D using the triangle's plane for a robust inside test.
+    let ab = b - a;
+    let ac = c - a;
+    let cross = ab.cross(&ac);
+    if cross.norm() < 1e-12 {
+        return false;
+    }
+    let ux = ab.normalize();
+    let uy = cross.normalize().cross(&ux);
+
+    let project = |v: Vector3D| [v.dot(&ux), v.dot(&uy)];
+
+    let o1 = geometry_predicates::orient2d(project(a), project(b), project(p));
+    let o2 = geometry_predicates::orient2d(project(b), project(c), project(p));
+    let o3 = geometry_predicates::orient2d(project(c), project(a), project(p));
+
+    (o1 >= 0.0 && o2 >= 0.0 && o3 >= 0.0) || (o1 <= 0.0 && o2 <= 0.0 && o3 <= 0.0)
 }
 
 #[must_use]
@@ -136,6 +147,9 @@ pub fn calculate_3d_lineseg_intersection(
 
     let p = p_v - p_u;
     let q = q_v - q_u;
+    if p.norm() < 1.0e-12 || q.norm() < 1.0e-12 {
+        return None;
+    }
     let normal = p.cross(&q);
     if normal.norm() < 1.0e-12 {
         return None;
@@ -168,26 +182,30 @@ pub fn point_on_triangle(p: Vector3D, t: (Vector3D, Vector3D, Vector3D)) -> Vect
     // Normal vector of the triangle plane
     let n = ab.cross(&ac);
     let n_norm = n.norm();
-    let n_unit = n / n_norm;
 
-    // Distance from p to the plane
-    let dist_to_plane = ap.dot(&n_unit);
-    let proj = p - dist_to_plane * n_unit;
+    if n_norm > 1e-12 {
+        let n_unit = n / n_norm;
 
-    if n_norm != 0.0 && is_point_inside_triangle(proj, (a, b, c)) {
-        proj // Perpendicular projection onto the triangle plane
-    } else {
-        // Closest point to one of the triangle’s edges
-        let d1 = distance_to_segment(p, a, b);
-        let d2 = distance_to_segment(p, b, c);
-        let d3 = distance_to_segment(p, c, a);
-        if d1 <= d2 && d1 <= d3 {
-            point_on_edge(p, a, b)
-        } else if d2 <= d1 && d2 <= d3 {
-            point_on_edge(p, b, c)
-        } else {
-            point_on_edge(p, c, a)
+        // Distance from p to the plane
+        let dist_to_plane = ap.dot(&n_unit);
+        let proj = p - dist_to_plane * n_unit;
+
+        if is_point_inside_triangle(proj, (a, b, c)) {
+            return proj; // Perpendicular projection onto the triangle plane
         }
+    }
+
+    // Fall through to edge distance check
+    // Closest point to one of the triangle's edges
+    let d1 = distance_to_segment(p, a, b);
+    let d2 = distance_to_segment(p, b, c);
+    let d3 = distance_to_segment(p, c, a);
+    if d1 <= d2 && d1 <= d3 {
+        point_on_edge(p, a, b)
+    } else if d2 <= d1 && d2 <= d3 {
+        point_on_edge(p, b, c)
+    } else {
+        point_on_edge(p, c, a)
     }
 }
 
@@ -329,9 +347,18 @@ pub fn triangle_to_2d(
     let v1 = p1 - p0;
     let v2 = p2 - p0;
 
+    // Reject degenerate triangles
+    if v1.norm() < 1e-12 || v2.norm() < 1e-12 {
+        return None;
+    }
+    let cross = v1.cross(&v2);
+    if cross.norm() < 1e-12 {
+        return None;
+    }
+
     // 3. Construct orthonormal basis (u_x, u_y, u_z)
     let ux = v1.normalize();
-    let uz = v1.cross(&v2).normalize();
+    let uz = cross.normalize();
     let uy = uz.cross(&ux); // guaranteed orthonormal
 
     // 4. Project each vertex into 2D plane coordinates

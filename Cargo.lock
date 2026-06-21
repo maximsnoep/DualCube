@@ -403,15 +403,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bevy-blossom"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fec5767e1d9256a5f97fe1fdf21411847d27d643965dd9ef442082b8c802e99f"
-dependencies = [
- "bevy",
-]
-
-[[package]]
 name = "bevy-orbit-camera"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -892,7 +883,6 @@ dependencies = [
  "bevy_pbr",
  "bevy_picking",
  "bevy_platform",
- "bevy_post_process",
  "bevy_ptr",
  "bevy_reflect",
  "bevy_render",
@@ -1092,36 +1082,6 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-time",
-]
-
-[[package]]
-name = "bevy_post_process"
-version = "0.18.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8e1116cbc35637f267a29c7d2fe376e020f2b4402d6b525d328bae9c10460c7"
-dependencies = [
- "bevy_app",
- "bevy_asset",
- "bevy_camera",
- "bevy_color",
- "bevy_core_pipeline",
- "bevy_derive",
- "bevy_ecs",
- "bevy_image",
- "bevy_math",
- "bevy_platform",
- "bevy_reflect",
- "bevy_render",
- "bevy_shader",
- "bevy_transform",
- "bevy_utils",
- "bevy_window",
- "bitflags 2.10.0",
- "nonmax",
- "radsort",
- "smallvec",
- "thiserror 2.0.18",
- "tracing",
 ]
 
 [[package]]
@@ -2269,7 +2229,6 @@ dependencies = [
  "dualcube-primal",
  "dualcube-types",
  "grapff",
- "num-complex",
  "orx-parallel",
  "rand 0.10.1",
  "serde",
@@ -3026,6 +2985,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "geometry-predicates"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8dba84198cf199c11b83f1cb9243eaeb70dc50b719d2835ebf34bf2481bca010"
+
+[[package]]
 name = "gethostname"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3177,7 +3142,6 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "bevy-axes-gizmo",
- "bevy-blossom",
  "bevy-orbit-camera",
  "bevy-toon",
  "bevy-wicon",
@@ -3779,6 +3743,7 @@ version = "0.0.1"
 dependencies = [
  "bimap",
  "bvh",
+ "geometry-predicates",
  "itertools 0.15.0",
  "kdtree",
  "nalgebra",

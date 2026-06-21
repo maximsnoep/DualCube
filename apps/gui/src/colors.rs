@@ -26,7 +26,9 @@ pub const SNOEP_GREEN: Kolor = [181. / 255., 242. / 255., 117. / 255.];
 pub const SNOEP_ORANGE: Kolor = [242. / 255., 181. / 255., 117. / 255.];
 pub const SNOEP_PURPLE: Kolor = [181. / 255., 117. / 255., 242. / 255.];
 
-pub const RED_LIGHT: Kolor = [0.95, 0.61, 0.59];
+pub const OK_GREEN: Kolor = [125. / 255., 201. / 255., 111. / 255.];
+pub const WARN_RED: Kolor = [201. / 255., 111. / 255., 125. / 255.];
+pub const AND_BLUE: Kolor = [111. / 255., 125. / 255., 201. / 255.];
 
 pub const BETTINA_RED: Kolor = [231. / 255., 0. / 255., 0. / 255.];
 pub const BETTINA_GREEN: Kolor = [71. / 255., 142. / 255., 0. / 255.];
@@ -400,6 +402,16 @@ pub const fn from_direction(
             (Direction::X, _, _) => BETTINA_RED,
             (Direction::Y, _, _) => BETTINA_GREEN,
             (Direction::Z, _, _) => BETTINA_BLUE,
+        };
+    }
+
+    #[cfg(feature = "rgb")]
+    {
+        return match (direction, perspective, orientation) {
+            // General
+            (Direction::X, _, _) => WARN_RED,
+            (Direction::Y, _, _) => OK_GREEN,
+            (Direction::Z, _, _) => AND_BLUE,
         };
     }
 

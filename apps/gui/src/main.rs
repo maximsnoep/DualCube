@@ -29,6 +29,7 @@ fn main() {
         .init_resource::<SolutionResource>()
         .insert_resource(UiScale(1.0)) // no UI scaling
         .insert_resource(GlobalAmbientLight {
+            #[allow(unused_qualifications)]
             color: bevy::color::Color::WHITE,
             brightness: 1.0,
             ..Default::default()

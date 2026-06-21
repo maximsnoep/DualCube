@@ -9,49 +9,15 @@ use crate::colors;
 use crate::controls::InteractiveMode;
 use crate::jobs::{Job, JobState};
 use crate::render::Objects;
-use crate::render::store::RenderObjectSettingStore;
+use crate::render::store::{RenderObjectSetting, RenderObjectSettingStore};
 use crate::resources::{Configuration, Phase, SolutionResource};
 use bevy::prelude::*;
-use bevy_egui::egui::{Align, CursorIcon, Frame, Layout, MenuBar, TopBottomPanel, Ui};
+use bevy_egui::egui::{
+    Align, CursorIcon, Frame, Grid, Layout, MenuBar, RichText, TopBottomPanel, Ui,
+};
 use bevy_orbit_camera::automatic::AutomaticRotation;
 use dualcube::prelude::*;
-
-/// Visibility presets: which features of each object should be visible.
-const PRESETS: [(&str, fn(Objects) -> &'static [&'static str]); 6] = [
-    ("Black", |object| match object {
-        Objects::InputMesh | Objects::QuadMesh => &["black", "wireframe"],
-        Objects::Polycube => &["black", "paths", "flat paths"],
-        Objects::PolycubeMap => &["colored", "triangles"],
-    }),
-    ("Grayscale", |object| match object {
-        Objects::InputMesh | Objects::QuadMesh => &["gray", "wireframe"],
-        Objects::Polycube => &["gray", "paths", "flat paths"],
-        Objects::PolycubeMap => &["colored", "triangles"],
-    }),
-    ("Dual", |object| match object {
-        Objects::InputMesh | Objects::Polycube => &["black", "x-loops", "y-loops", "z-loops"],
-        Objects::PolycubeMap => &["colored", "triangles"],
-        Objects::QuadMesh => &["gray", "paths", "flat paths"],
-    }),
-    ("Primal", |object| match object {
-        Objects::InputMesh => &["segmentation", "paths", "flat paths", "wireframe"],
-        Objects::Polycube => &["colored", "paths", "flat paths"],
-        Objects::PolycubeMap => &["colored", "triangles"],
-        Objects::QuadMesh => &["colored", "wireframe", "paths", "flat paths"],
-    }),
-    ("Flow fields", |object| match object {
-        Objects::InputMesh => &["black", "x-field", "y-field", "z-field"],
-        Objects::Polycube => &[],
-        Objects::PolycubeMap => &[],
-        Objects::QuadMesh => &[],
-    }),
-    ("Flow graphs", |object| match object {
-        Objects::InputMesh => &["black", "x-graph", "y-graph", "z-graph"],
-        Objects::Polycube => &[],
-        Objects::PolycubeMap => &[],
-        Objects::QuadMesh => &[],
-    }),
-];
+use std::collections::HashMap;
 
 fn apply_render_preset(
     store: &mut RenderObjectSettingStore,
@@ -65,35 +31,138 @@ fn apply_render_preset(
     }
 }
 
+/// Hover-preview presets for the pipeline stage buttons.
+const PIPELINE_STAGE_PRESETS: [(&str, fn(Objects) -> &'static [&'static str]); 9] = [
+    ("Input", |object| match object {
+        Objects::InputMesh => &["gray", "wireframe"],
+        Objects::Polycube => &["gray", "paths", "flat paths"],
+        Objects::PolycubeMap => &["colored", "triangles"],
+        Objects::QuadMesh => &["gray", "wireframe"],
+    }),
+    ("Field", |object| match object {
+        Objects::InputMesh => &["black", "wireframe", "x-field", "y-field", "z-field"],
+        Objects::Polycube => &["black", "paths", "flat paths"],
+        Objects::PolycubeMap => &["colored", "triangles"],
+        Objects::QuadMesh => &["gray", "wireframe"],
+    }),
+    ("Graph", |object| match object {
+        Objects::InputMesh => &["black", "wireframe", "x-graph", "y-graph", "z-graph"],
+        Objects::Polycube => &["black", "paths", "flat paths"],
+        Objects::PolycubeMap => &["colored", "triangles"],
+        Objects::QuadMesh => &["gray", "wireframe"],
+    }),
+    ("Loops", |object| match object {
+        Objects::InputMesh | Objects::Polycube => &[
+            "black",
+            "wireframe",
+            "paths",
+            "flat paths",
+            "x-loops",
+            "y-loops",
+            "z-loops",
+        ],
+        Objects::PolycubeMap => &["colored", "triangles"],
+        Objects::QuadMesh => &["gray", "paths", "flat paths"],
+    }),
+    ("Dual", |object| match object {
+        Objects::InputMesh | Objects::Polycube => &[
+            "black",
+            "wireframe",
+            "paths",
+            "flat paths",
+            "x-loops",
+            "y-loops",
+            "z-loops",
+        ],
+        Objects::PolycubeMap => &["colored", "triangles"],
+        Objects::QuadMesh => &["gray", "paths", "flat paths"],
+    }),
+    ("Layout", |object| match object {
+        Objects::InputMesh => &["segmentation", "paths", "flat paths", "wireframe"],
+        Objects::Polycube => &["colored", "paths", "flat paths"],
+        Objects::PolycubeMap => &["colored", "triangles"],
+        Objects::QuadMesh => &["colored", "wireframe", "paths", "flat paths"],
+    }),
+    ("Polycube", |object| match object {
+        Objects::InputMesh => &["segmentation", "paths", "flat paths", "wireframe"],
+        Objects::Polycube => &["colored", "paths", "flat paths"],
+        Objects::PolycubeMap => &["colored", "triangles"],
+        Objects::QuadMesh => &["colored", "wireframe", "paths", "flat paths"],
+    }),
+    ("Quad", |object| match object {
+        Objects::InputMesh => &["gray", "wireframe"],
+        Objects::Polycube => &["gray", "paths", "flat paths"],
+        Objects::PolycubeMap => &["colored", "triangles"],
+        Objects::QuadMesh => &["gray", "wireframe", "paths", "flat paths"],
+    }),
+    ("Hex", |object| match object {
+        Objects::InputMesh => &["segmentation", "paths", "flat paths", "wireframe"],
+        Objects::Polycube => &["colored", "paths", "flat paths"],
+        Objects::PolycubeMap => &["colored", "triangles"],
+        Objects::QuadMesh => &["colored", "wireframe", "paths", "flat paths"],
+    }),
+];
+
+/// Look up a hover-preview preset by name.
+fn find_preset(name: &str) -> Option<fn(Objects) -> &'static [&'static str]> {
+    PIPELINE_STAGE_PRESETS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, preset)| *preset)
+}
+
+/// Tracks hover-preview state so that hovering a menu or pipeline button
+/// shows a render preview, and unhovering restores the previous settings.
+#[derive(Resource, Default)]
+pub(crate) struct HoverPreviewState {
+    /// Snapshot of render settings taken before the current hover preview.
+    pub saved: HashMap<Objects, RenderObjectSetting>,
+    /// Name of the currently hovered button (from `PIPELINE_STAGE_PRESETS`).
+    pub hovered: Option<&'static str>,
+    /// Name of the last clicked (committed) button.
+    pub active: Option<&'static str>,
+}
+
+fn save_settings(store: &RenderObjectSettingStore) -> HashMap<Objects, RenderObjectSetting> {
+    store.objects.clone()
+}
+
+fn restore_settings(
+    store: &mut RenderObjectSettingStore,
+    saved: HashMap<Objects, RenderObjectSetting>,
+) {
+    store.objects = saved;
+}
+
+enum Status {
+    Ok(String),
+    Err(String),
+}
+
 /// One pipeline stage: a menu with its actions (if available), otherwise a
 /// grayed-out label, followed by an optional status.
+///
+/// Returns the menu button's response (so the caller can detect hover/click)
+/// when the stage is available and not stopped.
 fn stage(
     ui: &mut Ui,
     stopped: bool,
     name: &str,
     available: bool,
-    status: Result<String>,
+    status: Status,
     menu: impl FnOnce(&mut Ui),
-) {
+) -> Option<bevy_egui::egui::InnerResponse<Option<()>>> {
     if available && !stopped {
-        menu_button(ui, name, menu);
+        let response = ui.menu_button(RichText::new(name).color(TEXT_COLOR).size(12.), menu);
 
         match status {
-            Ok(status) => label(
-                ui,
-                status.as_str(),
-                SMALL_TEXT_SIZE,
-                to_color32(colors::SNOEP_GREEN),
-            ),
-            Err(err) => label(
-                ui,
-                err.to_string().as_str(),
-                SMALL_TEXT_SIZE,
-                to_color32(colors::SNOEP_ORANGE),
-            ),
+            Status::Ok(status) => label(ui, &status, SMALL_TEXT_SIZE, to_color32(colors::OK_GREEN)),
+            Status::Err(err) => label(ui, &err, SMALL_TEXT_SIZE, to_color32(colors::WARN_RED)),
         }
+        Some(response)
     } else {
         label(ui, name, REGULAR_TEXT_SIZE, TEXT_COLOR2);
+        None
     }
 }
 
@@ -118,6 +187,7 @@ pub fn show(
     solution: Res<'_, SolutionResource>,
     mut render_setting_store: ResMut<'_, RenderObjectSettingStore>,
     mut automatic_rotation: ResMut<'_, AutomaticRotation>,
+    mut hover_preview: ResMut<'_, HoverPreviewState>,
 ) -> Result<(), BevyError> {
     TopBottomPanel::top("panel")
         .show_separator_line(false)
@@ -143,7 +213,6 @@ pub fn show(
                                     &mut jobs,
                                     &mut conf,
                                     &solution,
-                                    &mut render_setting_store,
                                     &mut automatic_rotation,
                                 );
                             });
@@ -157,7 +226,14 @@ pub fn show(
                     ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
                         ui.add_space(17.);
                         MenuBar::new().ui(ui, |ui| {
-                            pipeline_bar(ui, &mut jobs, &mut conf, &solution);
+                            pipeline_bar(
+                                ui,
+                                &mut jobs,
+                                &mut conf,
+                                &solution,
+                                &mut *render_setting_store,
+                                &mut *hover_preview,
+                            );
                         });
                     });
 
@@ -169,13 +245,12 @@ pub fn show(
     Ok(())
 }
 
-/// The File / Rendering / Camera / Manual menus.
+/// The File / Camera / Manual menus.
 fn menu_bar(
     ui: &mut Ui,
     jobs: &mut MessageWriter<'_, Job>,
     conf: &mut Configuration,
     solution: &SolutionResource,
-    render_setting_store: &mut RenderObjectSettingStore,
     automatic_rotation: &mut AutomaticRotation,
 ) {
     menu_button(ui, "File", |ui| {
@@ -191,21 +266,13 @@ fn menu_bar(
         sep(ui);
         if sleek_button(ui, "Export") {
             if let Some(path) = rfd::FileDialog::new().save_file() {
-                // jobs.write(Job::export(
-                //     solution.current_solution.clone(),
-                //     path.with_extension("obj"),
-                // ));
-                // jobs.write(Job::export(
-                //     solution.current_solution.clone(),
-                //     path.with_extension("flag"),
-                // ));
                 jobs.write(Job::export(
                     solution.current_solution.clone(),
                     path.with_extension("dc"),
                 ));
             }
         }
-        space(ui);
+        #[cfg(feature = "nlr")]
         if sleek_button(ui, "Export (NLR)") {
             if let Some(path) = rfd::FileDialog::new().save_file() {
                 jobs.write(Job::export(
@@ -214,33 +281,20 @@ fn menu_bar(
                 ));
             }
         }
-        space(ui);
-        if sleek_button(ui, "Export (Honors)") {
-            if let Some(path) = rfd::FileDialog::new().save_file() {
-                jobs.write(Job::export(
-                    solution.current_solution.clone(),
-                    path.with_extension("apg"),
-                ));
-            }
-        }
+        // space(ui);
+        // if sleek_button(ui, "Export (Honors)") {
+        //     if let Some(path) = rfd::FileDialog::new().save_file() {
+        //         jobs.write(Job::export(
+        //             solution.current_solution.clone(),
+        //             path.with_extension("apg"),
+        //         ));
+        //     }
+        // }
         sep(ui);
         if sleek_button(ui, "Quit") {
             std::process::exit(0);
         }
         space(ui);
-    });
-
-    space(ui);
-
-    menu_button(ui, "Rendering", |ui| {
-        space(ui);
-        label(ui, "Presets", REGULAR_TEXT_SIZE, TEXT_COLOR);
-        for (name, preset) in PRESETS {
-            space(ui);
-            if sleek_button(ui, name) {
-                apply_render_preset(render_setting_store, preset);
-            }
-        }
     });
 
     space(ui);
@@ -294,16 +348,37 @@ fn menu_bar(
         }
 
         space(ui);
+        label(ui, "Up axis", REGULAR_TEXT_SIZE, TEXT_COLOR);
+        space(ui);
 
-        if sleek_button(ui, "X up") {
-            conf.camera_up = Vec3::X;
-        }
-        if sleek_button(ui, "Y up") {
-            conf.camera_up = Vec3::Y;
-        }
-        if sleek_button(ui, "Z up") {
-            conf.camera_up = Vec3::Z;
-        }
+        Grid::new("up_axis_grid")
+            .min_col_width(64.)
+            .max_col_width(64.)
+            .spacing([8.0, 4.0])
+            .show(ui, |ui| {
+                for &(axis_vec, label, dir) in &[
+                    (Vec3::X, "+X", Direction::X),
+                    (Vec3::NEG_X, "-X", Direction::X),
+                    (Vec3::Y, "+Y", Direction::Y),
+                    (Vec3::NEG_Y, "-Y", Direction::Y),
+                    (Vec3::Z, "+Z", Direction::Z),
+                    (Vec3::NEG_Z, "-Z", Direction::Z),
+                ] {
+                    let color = to_color32(colors::from_direction(dir, None, None));
+                    let is_active = conf.camera_up == axis_vec;
+                    let btn_color = if is_active { color } else { TEXT_COLOR2 };
+                    if ui
+                        .button(RichText::new(label).color(btn_color).size(12.))
+                        .clicked()
+                    {
+                        conf.camera_up = axis_vec;
+                    }
+                    // After every 2 items, advance to next row
+                    if label == "-X" || label == "-Y" || label == "-Z" {
+                        ui.end_row();
+                    }
+                }
+            });
 
         space(ui);
     });
@@ -339,17 +414,20 @@ fn menu_bar(
             if let Some(Some(sol)) = solution.next[conf.direction as usize].get(&edgepair) {
                 ui.label("DUAL[");
                 if sol.dual.is_ok() {
-                    ui.label(colored_text("Ok", BLUE));
+                    ui.label(colored_text("Ok", OK_GREEN));
                 } else {
-                    ui.label(colored_text(&format!("{:?}", sol.dual.as_ref().err()), RED));
+                    ui.label(colored_text(
+                        &format!("{:?}", sol.dual.as_ref().err()),
+                        WARN_RED,
+                    ));
                 }
                 ui.label("]");
 
                 ui.label("EMBD[");
                 if sol.layout.is_some() {
-                    ui.label(colored_text("Ok", BLUE));
+                    ui.label(colored_text("Ok", OK_GREEN));
                 } else {
-                    ui.label(colored_text("Not found", RED));
+                    ui.label(colored_text("Not found", OK_GREEN));
                 }
                 ui.label("]");
             }
@@ -376,18 +454,34 @@ fn pipeline_bar(
     jobs: &mut MessageWriter<'_, Job>,
     conf: &mut Configuration,
     solution: &SolutionResource,
+    render_setting_store: &mut RenderObjectSettingStore,
+    hover_preview: &mut HoverPreviewState,
 ) {
     let current = &solution.current_solution;
     let mut stopped = false;
 
+    // Collect stage responses for hover/click detection.
+    let mut stage_responses: Vec<(&'static str, bevy_egui::egui::InnerResponse<Option<()>>)> =
+        Vec::new();
+
     // Input
-    label(ui, "Input", REGULAR_TEXT_SIZE, TEXT_COLOR);
-    label(
+    if let Some(resp) = stage(
         ui,
-        &format!("{}", current.mesh_ref.nr_verts()),
-        SMALL_TEXT_SIZE,
-        to_color32(colors::SNOEP_GREEN),
-    );
+        stopped,
+        "Input",
+        current.mesh_ref.nr_verts() != 0,
+        Status::Ok(format!("{}", current.mesh_ref.nr_verts())),
+        |ui| {
+            label(
+                ui,
+                &format!("{} vertices", current.mesh_ref.nr_verts()),
+                REGULAR_TEXT_SIZE,
+                TEXT_COLOR,
+            );
+        },
+    ) {
+        stage_responses.push(("Input", resp));
+    }
 
     space(ui);
     space(ui);
@@ -398,14 +492,14 @@ fn pipeline_bar(
     space(ui);
 
     // Field
-    stage(
+    if let Some(resp) = stage(
         ui,
         stopped,
         "Field",
         current.mesh_ref.nr_verts() != 0,
         match current.fields {
-            Some(_) => Ok(format!("{}", current.loops.len())),
-            None => Err(BevyError::from("missing")),
+            Some(_) => Status::Ok("Ok".to_string()),
+            None => Status::Err("missing".to_string()),
         },
         |ui| {
             let params = &mut conf.fields_params;
@@ -434,21 +528,23 @@ fn pipeline_bar(
                 ));
             }
         },
-    );
+    ) {
+        stage_responses.push(("Field", resp));
+    }
 
     space(ui);
     space(ui);
     space(ui);
 
     // Graph
-    stage(
+    if let Some(resp) = stage(
         ui,
         stopped,
         "Graph",
         current.fields.is_some(),
         match current.flow_graphs {
-            Some(_) => Ok("Ok".to_string()),
-            None => Err(BevyError::from("missing")),
+            Some(_) => Status::Ok("Ok".to_string()),
+            None => Status::Err("missing".to_string()),
         },
         |ui| {
             slider(
@@ -469,7 +565,9 @@ fn pipeline_bar(
                 ));
             }
         },
-    );
+    ) {
+        stage_responses.push(("Graph", resp));
+    }
 
     space(ui);
     space(ui);
@@ -480,12 +578,12 @@ fn pipeline_bar(
     space(ui);
 
     // Loops
-    stage(
+    if let Some(resp) = stage(
         ui,
         stopped,
         "Loops",
         current.flow_graphs.is_some(),
-        Ok(format!("{}", current.loops.len())),
+        Status::Ok(format!("{}", current.loops.len())),
         |ui| {
             if sleek_button(ui, "initialize") {
                 jobs.write(Job::initialize_loops(current.clone(), conf.clone()));
@@ -497,30 +595,34 @@ fn pipeline_bar(
             slider(ui, "pool1", &mut conf.pool1, 1..=20);
             slider(ui, "pool2", &mut conf.pool2, 1..=50);
         },
-    );
+    ) {
+        stage_responses.push(("Loops", resp));
+    }
     stop_toggle(ui, conf, &mut stopped, Phase::Loops);
 
     // Dual
-    stage(
+    if let Some(resp) = stage(
         ui,
         stopped,
         "Dual",
         !current.loops.is_empty(),
         match &current.dual {
-            Ok(_) => Ok("Ok".to_string()),
-            Err(err) => Err(BevyError::from(err.to_string())),
+            Ok(_) => Status::Ok("Ok".to_string()),
+            Err(err) => Status::Err(err.to_string()),
         },
         |ui| {
             if sleek_button(ui, "(re)compute") {
                 jobs.write(Job::compute_dual(current.clone(), conf.clone()));
             }
         },
-    );
+    ) {
+        stage_responses.push(("Dual", resp));
+    }
     stop_toggle(ui, conf, &mut stopped, Phase::Dual);
 
     // Layout
 
-    stage(
+    if let Some(resp) = stage(
         ui,
         stopped,
         "Layout",
@@ -528,11 +630,11 @@ fn pipeline_bar(
         match &current.layout {
             Some(layout) => match (layout.alignment, layout.orthogonality) {
                 (Some(alignment), Some(orthogonality)) => {
-                    Ok(format!("{alignment:.3}, {orthogonality:.3}"))
+                    Status::Ok(format!("{alignment:.3}, {orthogonality:.3}"))
                 }
-                _ => Err(BevyError::from("missing")),
+                _ => Status::Err("missing".to_string()),
             },
-            None => Err(BevyError::from("missing")),
+            None => Status::Err("missing".to_string()),
         },
         |ui| {
             if sleek_button(ui, "(re)compute corners") {
@@ -549,18 +651,20 @@ fn pipeline_bar(
                 jobs.write(Job::path_straightening(current.clone(), conf.clone()));
             }
         },
-    );
+    ) {
+        stage_responses.push(("Layout", resp));
+    }
     stop_toggle(ui, conf, &mut stopped, Phase::Layout);
 
     // Polycube
-    stage(
+    if let Some(resp) = stage(
         ui,
         stopped,
         "Polycube",
         current.layout.is_some(),
         match current.polycube {
-            Some(_) => Ok("Ok".to_string()),
-            None => Err(BevyError::from("missing")),
+            Some(_) => Status::Ok("Ok".to_string()),
+            None => Status::Err("missing".to_string()),
         },
         |ui| {
             ui.checkbox(&mut conf.unit, "unit");
@@ -568,7 +672,9 @@ fn pipeline_bar(
                 jobs.write(Job::compute_polycube(current.clone(), conf.clone()));
             }
         },
-    );
+    ) {
+        stage_responses.push(("Polycube", resp));
+    }
 
     space(ui);
     space(ui);
@@ -579,22 +685,22 @@ fn pipeline_bar(
     space(ui);
 
     // Quad
-    stage(
+    #[cfg(feature = "quad")]
+    if let Some(resp) = stage(
         ui,
         stopped,
         "Quad",
         current.polycube.is_some(),
-        match current.quad {
-            Some(_) => Ok("Ok".to_string()),
-            None => Err(BevyError::from("missing")),
-        },
+        Status::Ok("".to_string()),
         |ui| {
             if sleek_button(ui, "(re)compute") {
                 jobs.write(Job::compute_quad(current.clone(), conf.clone()));
             }
             slider(ui, "omega", &mut conf.omega, 1..=20);
         },
-    );
+    ) {
+        stage_responses.push(("Quad", resp));
+    }
 
     space(ui);
     space(ui);
@@ -602,16 +708,51 @@ fn pipeline_bar(
     space(ui);
 
     // Hex
-    stage(
+    #[cfg(feature = "hex")]
+    if let Some(resp) = stage(
         ui,
         stopped,
         "Hex",
         current.polycube.is_some(),
-        Ok("".to_string()),
+        Status::Ok("".to_string()),
         |ui| {
             if sleek_button(ui, "(re)compute") {
                 jobs.write(Job::compute_hex(current.clone(), conf.clone()));
             }
         },
-    );
+    ) {
+        stage_responses.push(("Hex", resp));
+    }
+
+    // ── Hover‑preview for pipeline stages ─────────────────────────
+    let mut hovered_this_frame: Option<&'static str> = None;
+
+    for (name, resp) in &stage_responses {
+        if resp.response.clicked() {
+            // Commit: apply permanently and clear hover state.
+            if let Some(p) = find_preset(name) {
+                apply_render_preset(render_setting_store, p);
+            }
+            hover_preview.active = Some(name);
+            hover_preview.hovered = None;
+            hover_preview.saved.clear();
+        } else if resp.response.hovered() {
+            hovered_this_frame = Some(name);
+        }
+    }
+
+    // Handle hover enter / exit.
+    if hovered_this_frame != hover_preview.hovered {
+        if hover_preview.hovered.is_some() && !hover_preview.saved.is_empty() {
+            restore_settings(render_setting_store, hover_preview.saved.clone());
+            hover_preview.saved.clear();
+        }
+        if let Some(name) = hovered_this_frame {
+            hover_preview.saved = save_settings(render_setting_store);
+            if let Some(p) = find_preset(name) {
+                apply_render_preset(render_setting_store, p);
+            }
+        }
+        hover_preview.hovered = hovered_this_frame;
+    }
 }

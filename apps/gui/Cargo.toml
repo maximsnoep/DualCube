@@ -11,6 +11,8 @@ pastel = []
 light_mode = []
 quad = ["dep:dualcube-quad"]
 hex = ["dep:dualcube-hex"]
+nlr = []
+rgb = []
 
 [dependencies]
 dualcube = { path = "../../crates/dualcube" }
@@ -74,8 +76,6 @@ bevy-orbit-camera = "0.3.3"
 # bevy-orbit-camera = { path = "../../../bevy-orbit-camera" }
 bevy-axes-gizmo = "0.3.1"
 # bevy-axes-gizmo = { path = "../../../bevy-axes-gizmo" }
-bevy-blossom = "0.2.0"
-# bevy-blossom = { path = "../../../bevy-blossom" }
 bevy-toon = "0.2.0"
 # bevy-toon = { path = "../../../bevy-toon" }
 bevy-wicon = "0.18.1"

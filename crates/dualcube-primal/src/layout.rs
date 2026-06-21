@@ -176,7 +176,7 @@ impl Layout {
                 // Get the highest score
                 let max_score = *vertex_to_count
                     .values()
-                    .max_by(|a, b| a.partial_cmp(b).unwrap())
+                    .max_by(|a, b| a.total_cmp(b))
                     .unwrap();
 
                 // Get all vertices with the highest count
@@ -230,13 +230,13 @@ impl Layout {
             let min = zone_regions_with_candidates
                 .iter()
                 .flatten()
-                .min_by(|a, b| a.partial_cmp(b).unwrap())
+                .min_by(|a, b| a.total_cmp(b))
                 .unwrap()
                 .to_owned();
             let max = zone_regions_with_candidates
                 .iter()
                 .flatten()
-                .max_by(|a, b| a.partial_cmp(b).unwrap())
+                .max_by(|a, b| a.total_cmp(b))
                 .unwrap()
                 .to_owned();
             let steps = (0..n)
@@ -250,7 +250,7 @@ impl Layout {
                     let best_distance_to_region = region_with_candidates
                         .iter()
                         .map(|&candidate| (step - candidate).abs())
-                        .min_by(|a, b| a.partial_cmp(b).unwrap())
+                        .min_by(|a, b| a.total_cmp(b))
                         .unwrap();
                     if best_distance_to_region > worst_distance_for_step {
                         worst_distance_for_step = best_distance_to_region;
@@ -278,7 +278,7 @@ impl Layout {
                 .iter()
                 .map(|&v| (v, self.dual_ref.mesh_ref.position(v)))
                 .map(|(v, pos)| (v, pos.metric_distance(&target)))
-                .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+                .min_by(|a, b| a.1.total_cmp(&b.1))
                 .unwrap()
                 .0;
 

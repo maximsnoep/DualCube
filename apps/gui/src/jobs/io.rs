@@ -20,7 +20,7 @@ impl Job {
                 return None;
             }
             info!("Exporting solution to {}", path.display());
-            io::export_solution(&solution, &path);
+            let _ = io::export_solution(&solution, &path);
             None
         })
     }

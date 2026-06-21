@@ -67,6 +67,11 @@ fn get_edge_weight<T: Tag>(
     let flow_vector = get_flow_from_edge_to_edge(mesh, field, e0, e1);
     let flow_magnitude = flow_vector.norm().clamp(0.0, 1.0);
     let confidence = 1.0 - flow_magnitude;
+
+    if flow_magnitude < 1e-12 {
+        return confidence * params.confidence_weight;
+    }
+
     let flow_direction = flow_vector.normalize();
 
     let edge_vector = mesh.position(e1) - mesh.position(e0);

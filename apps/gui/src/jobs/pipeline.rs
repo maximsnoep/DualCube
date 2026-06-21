@@ -17,6 +17,7 @@ use mehsh::prelude::VertKey;
 
 /// A completed stage of the pipeline.
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 pub(super) enum Stage {
     Field,
     Graph,
@@ -84,6 +85,7 @@ fn completed(stage: Stage, solution: Solution, configuration: &Configuration) ->
     })
 }
 
+#[allow(dead_code)]
 impl Job {
     pub fn initialize_loops(solution: Solution, configuration: Configuration) -> Self {
         Self::new("initializing loops", move || {
@@ -187,6 +189,7 @@ impl Job {
         })
     }
 
+    #[allow(unused_variables)]
     pub fn compute_quad(solution: Solution, configuration: Configuration) -> Self {
         #[cfg(feature = "quad")]
         {
@@ -208,6 +211,7 @@ impl Job {
         }
     }
 
+    #[allow(unused_variables)]
     pub fn compute_hex(solution: Solution, configuration: Configuration) -> Self {
         #[cfg(feature = "hex")]
         {

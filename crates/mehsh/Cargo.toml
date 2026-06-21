@@ -22,6 +22,7 @@ thiserror = "2.0.17"
 slotmap = { version = "1.0.7", features = ["serde"] }
 bimap = { version = "0.6.3", features = ["serde"] } # for face and vertex ID maps
 kdtree = "0.7.0" # for vertex lookup
+geometry-predicates = "0.3.0" # Shewchuk's adaptive precision geometry predicates
 bvh = "0.11.0" # for face lookup
 orx-parallel = "3.4.0"
 

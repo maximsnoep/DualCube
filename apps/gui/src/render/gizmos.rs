@@ -7,7 +7,7 @@ use std::collections::HashMap;
 #[derive(Default, Reflect, GizmoConfigGroup)]
 pub struct PerpetualGizmos {}
 
-pub fn setup(mut config_store: ResMut<GizmoConfigStore>) {
+pub fn setup(mut config_store: ResMut<'_, GizmoConfigStore>) {
     let (perp_gizmos, _) = config_store.config_mut::<PerpetualGizmos>();
     perp_gizmos.depth_bias = -1.0;
 }

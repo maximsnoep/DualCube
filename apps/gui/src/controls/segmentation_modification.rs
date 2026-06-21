@@ -7,14 +7,14 @@ use bevy::prelude::*;
 use dualcube::prelude::*;
 
 pub fn segmentation_modification_system(
-    mouse: Res<ButtonInput<MouseButton>>,
-    keyboard: Res<ButtonInput<KeyCode>>,
-    mesh_resmut: Res<InputResource>,
-    mut solution: ResMut<SolutionResource>,
-    _cache: ResMut<CacheResource>,
-    mut gizmos: Gizmos<PerpetualGizmos>,
-    configuration: ResMut<Configuration>,
-    mut jobs: MessageWriter<Job>,
+    mouse: Res<'_, ButtonInput<MouseButton>>,
+    keyboard: Res<'_, ButtonInput<KeyCode>>,
+    mesh_resmut: Res<'_, InputResource>,
+    mut solution: ResMut<'_, SolutionResource>,
+    _cache: ResMut<'_, CacheResource>,
+    mut gizmos: Gizmos<'_, '_, PerpetualGizmos>,
+    configuration: ResMut<'_, Configuration>,
+    mut jobs: MessageWriter<'_, Job>,
     position: Vector3D,
     _nearest_face: FaceID,
 ) -> Result<(), BevyError> {

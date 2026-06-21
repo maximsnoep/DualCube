@@ -42,7 +42,7 @@ impl Plugin for RenderPlugin {
 /// To add a new scene: add a variant, one line in [`Objects::spec`], and a
 /// module with a `build` function that constructs its [`RenderObject`].
 #[derive(PartialEq, Eq, Hash, Debug, Copy, Clone, Default)]
-pub enum Objects {
+pub(crate) enum Objects {
     InputMesh,
     #[default]
     Polycube,
@@ -102,6 +102,7 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
 }
 
 /// The configured background color as a Bevy color.
+#[allow(unused_qualifications)]
 pub(crate) fn clear_color(configuration: &Configuration) -> bevy::color::Color {
     bevy::color::Color::srgb_u8(
         configuration.clear_color[0],

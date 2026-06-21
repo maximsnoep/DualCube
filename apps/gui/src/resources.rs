@@ -23,6 +23,7 @@ pub struct Configuration {
     pub direction: Direction,
 
     pub unit: bool,
+    #[allow(dead_code)]
     pub omega: usize,
     pub iterations: usize,
     pub pool1: usize,

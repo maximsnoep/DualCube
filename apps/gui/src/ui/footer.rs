@@ -1,4 +1,4 @@
-use super::theme::{LIGHT_RED, RED, TEXT_COLOR, sized_text, text_format, to_color32};
+use super::theme::{TEXT_COLOR, WARN_RED, sized_text, text_format, to_color32};
 use super::widgets::timer_animation;
 use crate::colors;
 use crate::controls::InteractiveMode;
@@ -15,13 +15,7 @@ use dualcube::prelude::*;
 const STAT_SIZE: f32 = 8.0;
 
 fn usage_color(value: f64) -> Color32 {
-    if value < 70.0 {
-        TEXT_COLOR
-    } else if value < 90.0 {
-        LIGHT_RED
-    } else {
-        RED
-    }
+    if value < 70.0 { TEXT_COLOR } else { WARN_RED }
 }
 
 /// Shows the bottom panel.
@@ -72,13 +66,7 @@ pub fn show(
                     };
 
                     let fps = measure(&FrameTimeDiagnosticsPlugin::FPS);
-                    let fps_color = if fps < 30.0 {
-                        RED
-                    } else if fps < 50.0 {
-                        LIGHT_RED
-                    } else {
-                        TEXT_COLOR
-                    };
+                    let fps_color = if fps < 30.0 { WARN_RED } else { TEXT_COLOR };
 
                     let mode = match conf.interactive_mode {
                         InteractiveMode::None => "automatic",

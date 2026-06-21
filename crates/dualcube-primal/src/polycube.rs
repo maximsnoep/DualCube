@@ -229,7 +229,9 @@ impl Polycube {
                 vert_ids.id(&v2).unwrap()
             ));
 
-            let path = layout.edge_to_path.get(&edge_id).unwrap();
+            let Some(path) = layout.edge_to_path.get(&edge_id) else {
+                continue;
+            };
             let length_of_path = path
                 .windows(2)
                 .map(|w| layout.granulated_mesh.distance(w[0], w[1]))

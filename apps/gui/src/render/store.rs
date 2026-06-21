@@ -28,6 +28,7 @@ pub struct Rendered {
 pub struct MainMesh;
 
 /// A single renderable feature of a [`RenderObject`].
+#[allow(unused_qualifications)]
 #[derive(Clone)]
 pub enum RenderAsset {
     Mesh(bevy::mesh::Mesh),
@@ -114,8 +115,8 @@ pub struct RenderObjectSettingStore {
 /// Syncs the settings store with the object store: every feature gets a
 /// visibility toggle, newly seen features start with their default visibility.
 pub fn update_render_settings(
-    render_object_store: Res<RenderObjectStore>,
-    mut render_settings_store: ResMut<RenderObjectSettingStore>,
+    render_object_store: Res<'_, RenderObjectStore>,
+    mut render_settings_store: ResMut<'_, RenderObjectSettingStore>,
 ) {
     let default = |object: &Objects, label: &str| {
         matches!(
@@ -159,21 +160,19 @@ pub fn update_render_settings(
 }
 
 /// Despawns and respawns rendered entities for objects whose settings changed.
+#[allow(unused_qualifications)]
 pub fn respawn_renders(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<bevy::mesh::Mesh>>,
-    mut gizmos: ResMut<Assets<GizmoAsset>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut custom_materials: ResMut<Assets<ToonMaterial>>,
-    configuration: Res<Configuration>,
-    render_object_store: Res<RenderObjectStore>,
-    mut render_settings_store: ResMut<RenderObjectSettingStore>,
-    rendered_mesh_query: Query<(Entity, &Rendered)>,
+    mut commands: Commands<'_, '_>,
+    mut meshes: ResMut<'_, Assets<bevy::mesh::Mesh>>,
+    mut gizmos: ResMut<'_, Assets<GizmoAsset>>,
+    mut materials: ResMut<'_, Assets<StandardMaterial>>,
+    mut custom_materials: ResMut<'_, Assets<ToonMaterial>>,
+    configuration: Res<'_, Configuration>,
+    render_object_store: Res<'_, RenderObjectStore>,
+    mut render_settings_store: ResMut<'_, RenderObjectSettingStore>,
+    rendered_mesh_query: Query<'_, '_, (Entity, &Rendered)>,
 ) {
     let mut changed_objects = HashSet::new();
-    if render_object_store.is_changed() {
-        changed_objects.extend(render_object_store.objects.keys().copied());
-    }
     for (&object, settings) in &render_settings_store.objects {
         if render_settings_store.last_applied_objects.get(&object) != Some(settings) {
             changed_objects.insert(object);
@@ -183,6 +182,10 @@ pub fn respawn_renders(
         if !render_settings_store.objects.contains_key(object) {
             changed_objects.insert(*object);
         }
+    }
+    // When the object store itself is refreshed (new data loaded), re-render everything.
+    if render_object_store.is_changed() {
+        changed_objects.extend(render_object_store.objects.keys().copied());
     }
 
     if changed_objects.is_empty() {

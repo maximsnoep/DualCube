@@ -19,6 +19,7 @@ pub struct UiPlugin;
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<dock::UiResource>()
+            .init_resource::<menu::HoverPreviewState>()
             .add_plugins(bevy_egui::EguiPlugin::default())
             .add_observer(setup)
             .add_systems(

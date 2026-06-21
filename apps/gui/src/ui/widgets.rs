@@ -1,6 +1,6 @@
 //! Small reusable egui widgets.
 
-use super::theme::{RED, TEXT_COLOR, TEXT_COLOR2, colored_text, sized_text, text};
+use super::theme::{TEXT_COLOR, TEXT_COLOR2, WARN_RED, colored_text, sized_text, text};
 use bevy::prelude::Time;
 use bevy_egui::egui::{Color32, RichText, Slider, Ui, emath};
 use std::ops::RangeInclusive;
@@ -62,7 +62,7 @@ pub fn sleek_button(ui: &mut Ui, label: &str) -> bool {
 }
 
 pub fn sleek_button_warn(ui: &mut Ui, label: &str) -> bool {
-    click_button(ui, label, RED)
+    click_button(ui, label, WARN_RED)
 }
 
 pub fn sleek_button_unfocused(ui: &mut Ui, label: &str) -> bool {
