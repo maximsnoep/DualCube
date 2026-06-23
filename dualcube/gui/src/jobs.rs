@@ -651,6 +651,12 @@ fn poll_jobs(
                 }
 
                 Some(JobResult::Imported((solution, configuration))) => {
+                    info!(
+                        "Loaded model: {} vertices, {} edges, {} faces",
+                        solution.mesh_ref.nr_verts(),
+                        solution.mesh_ref.nr_edges(),
+                        solution.mesh_ref.nr_faces(),
+                    );
                     *input_resource = InputResource::new(solution.mesh_ref.clone());
                     solution_resource.current_solution = solution;
                     solution_resource.next[0] = HashMap::new();
