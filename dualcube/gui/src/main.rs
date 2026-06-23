@@ -218,6 +218,9 @@ pub struct SolutionResource {
     current_solution: Solution,
     next: [HashMap<[EdgeID; 2], Option<Solution>>; 3],
     selected_corner: Option<VertKey<POLYCUBE>>,
+    /// File stem of the most recently imported model (e.g. "airplane1"), used
+    /// to name comprehensive-screenshot output folders/files.
+    pub model_name: String,
 }
 
 impl Default for SolutionResource {
@@ -226,6 +229,7 @@ impl Default for SolutionResource {
             current_solution: Solution::new(Arc::new(mehsh::mesh::connectivity::Mesh::default())),
             next: [HashMap::new(), HashMap::new(), HashMap::new()],
             selected_corner: None,
+            model_name: String::new(),
         }
     }
 }
@@ -247,6 +251,9 @@ fn main() {
         .init_resource::<RenderObjectSettingStore>()
         .init_resource::<RenderObjectStore>()
         .init_resource::<CameraHandles>()
+        .init_resource::<render::ScreenshotCameraOverride>()
+        .init_resource::<render::ComprehensiveState>()
+        .init_resource::<render::PreviewTileHandles>()
         .insert_resource(UiScale(1.0)) // no UI scaling
         .init_gizmo_group::<PerpetualGizmos>()
         .insert_resource(GlobalAmbientLight {
@@ -324,6 +331,8 @@ fn main() {
         .add_systems(Update, controls::system)
         .add_systems(Update, update_field)
         .add_systems(Update, render::take_screenshot)
+        .add_systems(Update, render::drive_comprehensive_capture)
+        .add_systems(Update, render::apply_captured_tiles)
         .run();
 }
 

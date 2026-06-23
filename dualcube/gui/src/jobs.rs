@@ -113,10 +113,17 @@ async fn run_job(job: Job) -> Option<JobResult> {
         Job::Import {
             path,
             configuration,
-        } => Some(JobResult::Imported((
-            io::import_solution(path),
-            configuration,
-        ))),
+        } => {
+            let model_name = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            Some(JobResult::Imported((
+                io::import_solution(path),
+                configuration,
+                model_name,
+            )))
+        }
 
         Job::CalculateSkeleton {
             mut solution,
@@ -650,15 +657,17 @@ fn poll_jobs(
                     // TODO: insert into your resources
                 }
 
-                Some(JobResult::Imported((solution, configuration))) => {
+                Some(JobResult::Imported((solution, configuration, model_name))) => {
                     info!(
-                        "Loaded model: {} vertices, {} edges, {} faces",
+                        "Loaded model '{}': {} vertices, {} edges, {} faces",
+                        model_name,
                         solution.mesh_ref.nr_verts(),
                         solution.mesh_ref.nr_edges(),
                         solution.mesh_ref.nr_faces(),
                     );
                     *input_resource = InputResource::new(solution.mesh_ref.clone());
                     solution_resource.current_solution = solution;
+                    solution_resource.model_name = model_name;
                     solution_resource.next[0] = HashMap::new();
                     solution_resource.next[1] = HashMap::new();
                     solution_resource.next[2] = HashMap::new();
@@ -1095,7 +1104,7 @@ impl Job {
 
 /// Results of jobs
 enum JobResult {
-    Imported((Solution, Configuration)),
+    Imported((Solution, Configuration, String)),
     // After calculating skeleton
     SkeletonCalculated((Solution, Configuration)),
     // For example after initializing or optimizing loop structure

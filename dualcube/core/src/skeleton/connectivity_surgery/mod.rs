@@ -1442,10 +1442,10 @@ pub fn extract_skeleton(
     contracted_mesh: &Mesh<CONTRACTION>,
     original_mesh: &Mesh<INPUT>,
     refine_embedding: bool,
-) -> (CurveSkeleton, Option<FailedSurgeryDiagnostic>) {
+) -> (CurveSkeleton, Option<FailedSurgeryDiagnostic>, Option<usize>) {
     let Some(mut ctx) = SurgeryContext::new(contracted_mesh, original_mesh) else {
-        // Preprocessing already logged the reason.
-        return (CurveSkeleton::default(), None);
+        // Preprocessing already logged the reason; genus is unknown here.
+        return (CurveSkeleton::default(), None, None);
     };
     let mut heap = BinaryHeap::new();
 
@@ -1611,7 +1611,7 @@ pub fn extract_skeleton(
         if refine_embedding {
             skeleton.refine_embeddings(original_mesh);
         }
-        (skeleton, None)
+        (skeleton, None, Some(ctx.target_g))
     } else {
         warn!(
             "Connectivity surgery did NOT complete after {:.2}s: {} faces remain after {} collapses. Returning empty skeleton to the pipeline and the partial state as a separate diagnostic.",
@@ -1630,7 +1630,7 @@ pub fn extract_skeleton(
             skeleton: partial_skeleton,
             remaining_face_positions,
         };
-        (CurveSkeleton::default(), Some(diagnostic))
+        (CurveSkeleton::default(), Some(diagnostic), Some(ctx.target_g))
     }
 }
 

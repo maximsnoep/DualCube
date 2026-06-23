@@ -1,7 +1,8 @@
 use crate::controls::InteractiveMode;
 use crate::jobs::{Job, JobRequest, JobState};
 use crate::render::{
-    CameraFor, Objects, RenderObjectSetting, RenderObjectSettingStore, ScreenshotHandle,
+    CameraFor, ComprehensiveMode, ComprehensiveRequest, Objects, PreviewTileHandles,
+    RenderObjectSetting, RenderObjectSettingStore, ScreenshotHandle, PENDING_COMPREHENSIVE,
     PENDING_SCREENSHOT,
 };
 use crate::{
@@ -160,6 +161,8 @@ pub struct UiResource {
     /// the offscreen screenshot camera's texture, i.e. exactly what "Save
     /// Screenshot" will write to disk.
     pub show_screenshot_preview: bool,
+    /// Whether the comprehensive 4-quadrant preview window is shown.
+    pub show_comprehensive_preview: bool,
 }
 
 const RED: Color32 = Color32::from_rgb(
@@ -185,6 +188,7 @@ impl Default for UiResource {
             camera_import_text: String::new(),
             pending_camera_position: None,
             show_screenshot_preview: false,
+            show_comprehensive_preview: false,
             tree: {
                 let mut tree = DockState::new(vec![Objects::InputMesh]);
 
@@ -472,6 +476,7 @@ fn header(
     camera_import_text: &mut String,
     pending_camera_position: &mut Option<(Vec3, Vec3)>,
     show_screenshot_preview: &mut bool,
+    show_comprehensive_preview: &mut bool,
 ) {
     ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
         Frame {
@@ -603,6 +608,23 @@ fn header(
                                 Objects::QuadMesh => {
                                     vec!["colored", "wireframe", "paths", "flat paths"]
                                 }
+                                Objects::ContractedMesh => vec!["gray", "wireframe"],
+                            };
+                            for (label, setting) in settings.settings.iter_mut() {
+                                setting.visible = show.contains(&label.as_str());
+                            }
+                        }
+                    }
+                    
+                    space(ui);
+
+                    if sleek_button(ui, "> Patches") {
+                        for (object, settings) in render_object_settings_store.objects.iter_mut() {
+                            let show = match object {
+                                Objects::InputMesh => vec!["patches"],
+                                Objects::Polycube => vec!["patches"],
+                                Objects::PolycubeMap => vec!["colored", "triangles"],
+                                Objects::QuadMesh => vec!["gray", "wireframe"],
                                 Objects::ContractedMesh => vec!["gray", "wireframe"],
                             };
                             for (label, setting) in settings.settings.iter_mut() {
@@ -749,6 +771,21 @@ fn header(
                         }
                     } else if sleek_button_unfocused(ui, preview_label) {
                         *show_screenshot_preview = true;
+                    }
+
+                    space(ui);
+
+                    let comprehensive_label = if *show_comprehensive_preview {
+                        "Hide comprehensive [active]"
+                    } else {
+                        "Comprehensive preview"
+                    };
+                    if *show_comprehensive_preview {
+                        if sleek_button(ui, comprehensive_label) {
+                            *show_comprehensive_preview = false;
+                        }
+                    } else if sleek_button_unfocused(ui, comprehensive_label) {
+                        *show_comprehensive_preview = true;
                     }
 
                     space(ui);
@@ -1121,7 +1158,7 @@ pub fn update(
     mut render_setting_store: ResMut<RenderObjectSettingStore>,
     time: Res<Time>,
     image_handle: Res<CameraHandles>,
-    screenshot_handle: Res<ScreenshotHandle>,
+    (screenshot_handle, preview_tiles): (Res<ScreenshotHandle>, Res<PreviewTileHandles>),
     mut ui_resource: ResMut<UiResource>,
     diagnostics: Res<DiagnosticsStore>,
     latest_log: Res<LatestLogLine>,
@@ -1201,6 +1238,7 @@ pub fn update(
                         &mut ui_r.camera_import_text,
                         &mut ui_r.pending_camera_position,
                         &mut ui_r.show_screenshot_preview,
+                        &mut ui_r.show_comprehensive_preview,
                     );
 
                     ui.add_space(5.);
@@ -1655,7 +1693,115 @@ pub fn update(
         }
     }
 
+    // Comprehensive 4-quadrant preview: shows the four captured views (patches,
+    // dual, primal, segmentation+paths). The tiles only update when "Refresh"
+    // (or "Save") runs the capture sequence.
+    if ui_resource.show_comprehensive_preview {
+        let tile_textures: Vec<_> = preview_tiles
+            .0
+            .iter()
+            .map(|h| egui_ctx.add_image(bevy_egui::EguiTextureHandle::Strong(h.clone())))
+            .collect();
+
+        let mut open = true;
+        bevy_egui::egui::Window::new("Comprehensive preview")
+            .open(&mut open)
+            .resizable(true)
+            .default_size([600.0, 660.0])
+            .show(egui_ctx.ctx_mut()?, |ui| {
+                const LABELS: [&str; 4] =
+                    ["1: Patches", "2: Dual", "3: Primal", "4: Segmentation"];
+
+                ui.horizontal(|ui| {
+                    if sleek_button(ui, "Refresh") {
+                        request_comprehensive(ComprehensiveMode::Preview, &solution);
+                    }
+                    if sleek_button(ui, "Save to ./screenshots") {
+                        request_comprehensive(ComprehensiveMode::Save, &solution);
+                    }
+                });
+                space(ui);
+
+                // 2x2 grid of square tiles. Size purely off available *width*
+                // (which the user controls) so tile size can't be driven by the
+                // content height — otherwise the resizable window would grow a
+                // little every frame. Account for egui's item spacing between
+                // the two columns, plus a small margin to absorb rounding.
+                let gap = ui.spacing().item_spacing.x;
+                let side = ((ui.available_width() - gap) / 2.0 - 1.0).max(1.0);
+                for row in 0..2 {
+                    ui.horizontal(|ui| {
+                        for col in 0..2 {
+                            let i = row * 2 + col;
+                            ui.vertical(|ui| {
+                                if let Some(&tex) = tile_textures.get(i) {
+                                    ui.add(bevy_egui::egui::widgets::Image::new(
+                                        bevy_egui::egui::load::SizedTexture::new(
+                                            tex,
+                                            [side, side],
+                                        ),
+                                    ));
+                                }
+                                label(ui, LABELS[i], 10., Color32::WHITE);
+                            });
+                        }
+                    });
+                }
+            });
+        if !open {
+            ui_resource.show_comprehensive_preview = false;
+        }
+    }
+
     Ok(())
+}
+
+/// Builds and queues a comprehensive-capture request from the current solution.
+/// Resolves the model name, genus, and mesh stats, and (for `Save`) the output
+/// directory `./screenshots/{model}-genus{g}` and `stats.txt` contents.
+fn request_comprehensive(mode: ComprehensiveMode, solution: &SolutionResource) {
+    let sol = &solution.current_solution;
+    let v = sol.mesh_ref.nr_verts();
+    // `nr_edges()` counts half-edges; report undirected edges to match the
+    // counts in the input .obj/.stl.
+    let e = sol.mesh_ref.nr_edges() / 2;
+    let f = sol.mesh_ref.nr_faces();
+    let genus = sol
+        .skeleton
+        .as_ref()
+        .and_then(|s| s.genus())
+        .unwrap_or_else(|| euler_genus(v, e, f));
+    let base_name = if solution.model_name.is_empty() {
+        "model".to_string()
+    } else {
+        solution.model_name.clone()
+    };
+
+    let (save_dir, stats_text) = match mode {
+        ComprehensiveMode::Save => {
+            let dir = PathBuf::from("screenshots").join(format!("{base_name}-genus{genus}"));
+            let stats = format!(
+                "model: {base_name}\nvertices: {v}\nedges: {e}\nfaces: {f}\ngenus: {genus}\n"
+            );
+            (Some(dir), stats)
+        }
+        ComprehensiveMode::Preview => (None, String::new()),
+    };
+
+    *PENDING_COMPREHENSIVE.lock().unwrap() = Some(ComprehensiveRequest {
+        mode,
+        save_dir,
+        base_name,
+        stats_text,
+    });
+}
+
+/// Genus from the Euler characteristic of a closed triangle mesh, used only as a
+/// fallback when no skeleton (and thus no surgery-derived genus) is available.
+/// `e` is the undirected edge count.
+fn euler_genus(v: usize, e: usize, f: usize) -> usize {
+    let chi = v as isize - e as isize + f as isize;
+    (2 - chi).max(0) as usize / 2
 }
 
 fn parse_vec3(s: &str) -> Option<Vec3> {

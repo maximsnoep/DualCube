@@ -65,6 +65,13 @@ pub struct SkeletonData {
     /// intended purely for visual inspection so the user can see what
     /// surgery got stuck on.
     failed_surgery: Option<FailedSurgeryDiagnostic>,
+
+    /// Genus of the input surface, as derived by connectivity surgery's
+    /// topology preprocessing (`target_g`). `None` when preprocessing
+    /// rejected the input (non-manifold / disconnected) so no genus was
+    /// computed.
+    #[serde(default)]
+    genus: Option<usize>,
 }
 
 impl SkeletonData {
@@ -101,6 +108,12 @@ impl SkeletonData {
         self.failed_surgery.as_ref()
     }
 
+    /// Genus of the input surface as derived by connectivity surgery, or
+    /// `None` if topology preprocessing rejected the input.
+    pub fn genus(&self) -> Option<usize> {
+        self.genus
+    }
+
     pub fn update_convexity(
         &mut self,
         mesh: Arc<Mesh<INPUT>>,
@@ -110,7 +123,7 @@ impl SkeletonData {
         refine_embedding: bool,
     ) -> (Option<Polycube>, Option<Quad>) {
         // Reuse contraction
-        let (curve_skeleton, mut cleaned_skeleton, failed_surgery) =
+        let (curve_skeleton, mut cleaned_skeleton, failed_surgery, genus) =
             surgery_and_simplification(&mesh, &self.contraction_mesh, refine_embedding);
 
         // Reuse pipeline post simplifcation
@@ -135,6 +148,7 @@ impl SkeletonData {
         self.labeled_skeleton = labeled;
         self.polycube_skeleton = polycube_skeleton;
         self.failed_surgery = failed_surgery;
+        self.genus = genus;
 
         (polycube, quad)
     }
@@ -272,7 +286,7 @@ pub fn get_skeleton_based_mapping(
     // Start by doing contraction
     let contracted_mesh = contract_mesh(&mesh, 50);
 
-    let (raw_curve_skeleton, mut cleaned_skeleton, failed_surgery) =
+    let (raw_curve_skeleton, mut cleaned_skeleton, failed_surgery, genus) =
         surgery_and_simplification(&mesh, &contracted_mesh, refine_embedding);
 
     let (labeled, polycube_and_skeleton) = post_simplification_stage(
@@ -299,6 +313,7 @@ pub fn get_skeleton_based_mapping(
             labeled_skeleton: labeled,
             polycube_skeleton,
             failed_surgery,
+            genus,
         },
         polycube,
         quad,
@@ -315,15 +330,16 @@ fn surgery_and_simplification(
     mesh: &Arc<Mesh<INPUT>>,
     contracted_mesh: &Mesh<CONTRACTION>,
     refine_embedding: bool,
-) -> (CurveSkeleton, CurveSkeleton, Option<FailedSurgeryDiagnostic>) {
-    let (curve_skeleton, failed_surgery) = extract_skeleton(contracted_mesh, mesh, refine_embedding);
+) -> (CurveSkeleton, CurveSkeleton, Option<FailedSurgeryDiagnostic>, Option<usize>) {
+    let (curve_skeleton, failed_surgery, genus) =
+        extract_skeleton(contracted_mesh, mesh, refine_embedding);
 
     let mut cleaned_skeleton = curve_skeleton.clone();
     simplify_skeleton(&mut cleaned_skeleton, mesh);
     // Smooth region boundaries
     // cleaned_skeleton.smooth_boundaries(mesh); // This is not really necessary...
 
-    (curve_skeleton, cleaned_skeleton, failed_surgery)
+    (curve_skeleton, cleaned_skeleton, failed_surgery, genus)
 }
 
 /// The decomposed part of the skeletonization process that happens after simplification.

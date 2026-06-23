@@ -46,6 +46,98 @@ pub struct ScreenshotCamera;
 #[derive(Resource)]
 pub struct ScreenshotHandle(pub Handle<Image>);
 
+/// Number of views captured by a "comprehensive" screenshot (also the number
+/// of quadrants in the preview window).
+pub const COMPREHENSIVE_VIEW_COUNT: usize = 4;
+
+/// The four comprehensive-screenshot views: which object the offscreen camera
+/// frames, and which render features are made visible for it. These mirror the
+/// "Patches", "Dual", "Primal", and a segmentation-with-paths preset.
+const COMPREHENSIVE_VIEWS: [(Objects, &[&str]); COMPREHENSIVE_VIEW_COUNT] = [
+    (Objects::InputMesh, &["patches"]),
+    (Objects::InputMesh, &["black", "x-loops", "y-loops", "z-loops"]),
+    (Objects::Polycube, &["colored", "paths", "flat paths"]),
+    (Objects::InputMesh, &["segmentation", "paths", "flat paths"]),
+];
+
+/// When `Some`, the offscreen screenshot camera frames this object instead of
+/// the largest panel's object. Used to drive the comprehensive capture through
+/// the four views.
+#[derive(Resource, Default)]
+pub struct ScreenshotCameraOverride(pub Option<Objects>);
+
+/// Handles for the [`COMPREHENSIVE_VIEW_COUNT`] preview tile images shown in the
+/// comprehensive preview window's quadrants. Captured frames are copied in here.
+#[derive(Resource, Default)]
+pub struct PreviewTileHandles(pub Vec<Handle<Image>>);
+
+/// What a comprehensive capture run should do with each captured view.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum ComprehensiveMode {
+    /// Only refresh the preview tiles.
+    #[default]
+    Preview,
+    /// Refresh the preview tiles and write each view to disk.
+    Save,
+}
+
+/// A request from the UI to run a comprehensive capture. Saved into
+/// [`PENDING_COMPREHENSIVE`]; consumed by [`drive_comprehensive_capture`].
+pub struct ComprehensiveRequest {
+    pub mode: ComprehensiveMode,
+    /// Output directory for `Save` mode (created if needed).
+    pub save_dir: Option<PathBuf>,
+    /// Base file name for `Save` mode (the model name); files are
+    /// `{base_name}-{n}.png`.
+    pub base_name: String,
+    /// Contents of `stats.txt` written once at the start of a `Save` run.
+    pub stats_text: String,
+}
+
+pub static PENDING_COMPREHENSIVE: Mutex<Option<ComprehensiveRequest>> = Mutex::new(None);
+
+/// A captured view handed off from the screenshot observer (which can't touch
+/// ECS resources) to [`apply_captured_tiles`].
+struct CapturedTile {
+    index: usize,
+    image: Image,
+    save_path: Option<PathBuf>,
+}
+
+static CAPTURED_TILES: Mutex<Vec<CapturedTile>> = Mutex::new(Vec::new());
+
+/// Phases of capturing one comprehensive view.
+#[derive(Default, PartialEq, Eq, Clone, Copy)]
+enum CapturePhase {
+    /// Apply the view's render settings + camera override.
+    #[default]
+    ApplyConfig,
+    /// Let the scene respawn and render settle.
+    Wait,
+    /// Spawn the screenshot capture.
+    Capture,
+    /// Wait until the captured tile has been processed.
+    WaitCapture,
+    /// Restore settings and finish.
+    Finish,
+}
+
+/// State machine driving a comprehensive capture across the four views.
+#[derive(Resource, Default)]
+pub struct ComprehensiveState {
+    active: bool,
+    mode: ComprehensiveMode,
+    save_dir: Option<PathBuf>,
+    base_name: String,
+    view: usize,
+    phase: CapturePhase,
+    /// Seconds left to wait for the scene to respawn + render before capturing.
+    wait_secs: f32,
+    captures_done: usize,
+    /// Snapshot of render settings taken at the start, restored at the end.
+    saved_settings: Option<HashMap<Objects, RenderObjectSetting>>,
+}
+
 const DEFAULT_CAMERA_EYE: Vec3 = Vec3::new(25.0, 25.0, 25.0);
 const DEFAULT_CAMERA_TARGET: Vec3 = Vec3::new(0., 0., 0.);
 const DEFAULT_CAMERA_TEXTURE_SIZE: u32 = 640 * 2;
@@ -383,6 +475,32 @@ pub fn reset(
     screenshot_image.resize(screenshot_image.texture_descriptor.size);
     let screenshot_handle = images.add(screenshot_image);
     commands.insert_resource(ScreenshotHandle(screenshot_handle.clone()));
+
+    // Preview tiles for the comprehensive 4-quadrant preview. Same format/size
+    // as the screenshot target so captured pixels can be copied in directly.
+    let mut tile_handles = Vec::with_capacity(COMPREHENSIVE_VIEW_COUNT);
+    for _ in 0..COMPREHENSIVE_VIEW_COUNT {
+        let mut tile = Image {
+            texture_descriptor: TextureDescriptor {
+                label: None,
+                size: Extent3d {
+                    width: 2048,
+                    height: 2048,
+                    ..default()
+                },
+                dimension: TextureDimension::D2,
+                format: TextureFormat::Rgba8UnormSrgb,
+                mip_level_count: 1,
+                sample_count: 1,
+                usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+                view_formats: &[],
+            },
+            ..default()
+        };
+        tile.resize(tile.texture_descriptor.size);
+        tile_handles.push(images.add(tile));
+    }
+    commands.insert_resource(PreviewTileHandles(tile_handles));
     commands.spawn((
         Camera3d::default(),
         Projection::default(),
@@ -621,6 +739,7 @@ pub fn update(
         (&mut Transform, &mut Projection),
         (With<ScreenshotCamera>, Without<Controller>),
     >,
+    screenshot_override: Res<ScreenshotCameraOverride>,
 ) {
     let (_, main_transform, mut main_camera) = main_camera.single_mut().unwrap();
 
@@ -701,10 +820,14 @@ pub fn update(
         best
     };
 
+    // During a comprehensive capture the screenshot camera is pointed at a
+    // specific object per view; otherwise it follows the largest panel.
+    let screenshot_object = screenshot_override.0.unwrap_or(largest_object);
+
     for (mut transform, mut projection) in &mut screenshot_cameras {
-        transform.translation = normalized_translation + Vec3::from(largest_object);
+        transform.translation = normalized_translation + Vec3::from(screenshot_object);
         transform.rotation = normalized_rotation;
-        if matches!(largest_object, Objects::PolycubeMap | Objects::Polycube) {
+        if matches!(screenshot_object, Objects::PolycubeMap | Objects::Polycube) {
             let mut proj = OrthographicProjection::default_3d();
             proj.scaling_mode = ScalingMode::FixedVertical {
                 viewport_height: distance,
@@ -1652,4 +1775,167 @@ pub fn take_screenshot(mut commands: Commands, handle: Option<Res<ScreenshotHand
                 Err(e) => error!("Failed to convert screenshot image: {e:?}"),
             }
         });
+}
+
+/// Sets exactly the listed features of `object` visible (all others hidden),
+/// leaving other objects' settings untouched. Mutating the store triggers
+/// [`respawn_renders`] so the next frame reflects the change.
+fn apply_view_config(store: &mut RenderObjectSettingStore, object: Objects, visible: &[&str]) {
+    if let Some(setting) = store.objects.get_mut(&object) {
+        for (label, feature) in setting.settings.iter_mut() {
+            feature.visible = visible.contains(&label.as_str());
+        }
+    }
+}
+
+/// Drives the comprehensive capture state machine. Picks up requests from
+/// [`PENDING_COMPREHENSIVE`], then for each of the four views: applies the
+/// view's render config + camera override, waits for the scene to settle,
+/// captures the offscreen image, and waits for the tile to be processed. On
+/// finish it restores the original render settings.
+pub fn drive_comprehensive_capture(
+    mut commands: Commands,
+    mut state: ResMut<ComprehensiveState>,
+    mut settings: ResMut<RenderObjectSettingStore>,
+    mut cam_override: ResMut<ScreenshotCameraOverride>,
+    screenshot_handle: Option<Res<ScreenshotHandle>>,
+    time: Res<Time>,
+) {
+    if !state.active {
+        let Some(request) = PENDING_COMPREHENSIVE.lock().unwrap().take() else {
+            return;
+        };
+        if screenshot_handle.is_none() {
+            return;
+        }
+
+        // Save mode: create the output directory and write stats.txt up front.
+        if request.mode == ComprehensiveMode::Save {
+            if let Some(dir) = &request.save_dir {
+                if let Err(e) = std::fs::create_dir_all(dir) {
+                    error!("Failed to create screenshot directory {}: {e}", dir.display());
+                    return;
+                }
+                let stats_path = dir.join("stats.txt");
+                if let Err(e) = std::fs::write(&stats_path, &request.stats_text) {
+                    error!("Failed to write {}: {e}", stats_path.display());
+                }
+            }
+        }
+
+        state.active = true;
+        state.mode = request.mode;
+        state.save_dir = request.save_dir;
+        state.base_name = request.base_name;
+        state.view = 0;
+        state.phase = CapturePhase::ApplyConfig;
+        state.wait_secs = 0.0;
+        state.captures_done = 0;
+        state.saved_settings = Some(settings.objects.clone());
+        return;
+    }
+
+    match state.phase {
+        CapturePhase::ApplyConfig => {
+            let (object, visible) = COMPREHENSIVE_VIEWS[state.view];
+            apply_view_config(&mut settings, object, visible);
+            cam_override.0 = Some(object);
+            // `respawn_renders` runs on a 100ms timer, so wait comfortably past
+            // that (plus a render frame) before capturing.
+            state.wait_secs = 0.3;
+            state.phase = CapturePhase::Wait;
+        }
+        CapturePhase::Wait => {
+            state.wait_secs -= time.delta_secs();
+            if state.wait_secs <= 0.0 {
+                state.phase = CapturePhase::Capture;
+            }
+        }
+        CapturePhase::Capture => {
+            if let Some(handle) = screenshot_handle.as_ref() {
+                let index = state.view;
+                let save_path = if state.mode == ComprehensiveMode::Save {
+                    state
+                        .save_dir
+                        .as_ref()
+                        .map(|dir| dir.join(format!("{}-{}.png", state.base_name, index + 1)))
+                } else {
+                    None
+                };
+                commands.spawn(Screenshot::image(handle.0.clone())).observe(
+                    move |screenshot: On<ScreenshotCaptured>| {
+                        CAPTURED_TILES.lock().unwrap().push(CapturedTile {
+                            index,
+                            image: screenshot.image.clone(),
+                            save_path: save_path.clone(),
+                        });
+                    },
+                );
+            }
+            state.phase = CapturePhase::WaitCapture;
+        }
+        CapturePhase::WaitCapture => {
+            // `apply_captured_tiles` bumps `captures_done` once this view's tile
+            // has been written to disk / copied into the preview tile.
+            if state.captures_done > state.view {
+                state.view += 1;
+                state.phase = if state.view < COMPREHENSIVE_VIEW_COUNT {
+                    CapturePhase::ApplyConfig
+                } else {
+                    CapturePhase::Finish
+                };
+            }
+        }
+        CapturePhase::Finish => {
+            if let Some(saved) = state.saved_settings.take() {
+                settings.objects = saved;
+            }
+            cam_override.0 = None;
+            state.active = false;
+            if state.mode == ComprehensiveMode::Save {
+                if let Some(dir) = &state.save_dir {
+                    info!("Comprehensive screenshot saved to {}", dir.display());
+                }
+            }
+        }
+    }
+}
+
+/// Drains captured comprehensive tiles: saves each to disk (Save mode) and
+/// copies its pixels into the matching preview tile image for the 4-quadrant
+/// preview, then advances the capture state machine.
+pub fn apply_captured_tiles(
+    mut images: ResMut<Assets<Image>>,
+    tiles: Res<PreviewTileHandles>,
+    mut state: ResMut<ComprehensiveState>,
+) {
+    let drained: Vec<CapturedTile> = {
+        let mut queue = CAPTURED_TILES.lock().unwrap();
+        if queue.is_empty() {
+            return;
+        }
+        queue.drain(..).collect()
+    };
+
+    for tile in drained {
+        if let Some(path) = &tile.save_path {
+            match tile.image.clone().try_into_dynamic() {
+                Ok(dyn_img) => match dyn_img.to_rgba8().save(path) {
+                    Ok(()) => info!("Saved {}", path.display()),
+                    Err(e) => error!("Failed to save screenshot tile: {e}"),
+                },
+                Err(e) => error!("Failed to convert tile image: {e:?}"),
+            }
+        }
+
+        // Copy the captured pixels into the preview tile (same size/format),
+        // preserving its texture descriptor so egui keeps sampling it.
+        if let Some(handle) = tiles.0.get(tile.index) {
+            if let Some(target) = images.get_mut(handle) {
+                target.data = tile.image.data.clone();
+            }
+        }
+
+        state.captures_done += 1;
+    }
 }
