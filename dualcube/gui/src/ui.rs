@@ -1,6 +1,9 @@
 use crate::controls::InteractiveMode;
 use crate::jobs::{Job, JobRequest, JobState};
-use crate::render::{CameraFor, Objects, RenderObjectSetting, RenderObjectSettingStore, PENDING_SCREENSHOT};
+use crate::render::{
+    CameraFor, Objects, RenderObjectSetting, RenderObjectSettingStore, ScreenshotHandle,
+    PENDING_SCREENSHOT,
+};
 use crate::{
     colors, CameraHandles, Configuration, InputResource, Perspective, Phase, PrincipalDirection,
     SolutionResource,
@@ -153,6 +156,10 @@ pub struct UiResource {
     pub tree: DockState<Objects>,
     pub camera_import_text: String,
     pub pending_camera_position: Option<(Vec3, Vec3)>,
+    /// Whether the live screenshot-preview window is shown. The preview displays
+    /// the offscreen screenshot camera's texture, i.e. exactly what "Save
+    /// Screenshot" will write to disk.
+    pub show_screenshot_preview: bool,
 }
 
 const RED: Color32 = Color32::from_rgb(
@@ -177,6 +184,7 @@ impl Default for UiResource {
         UiResource {
             camera_import_text: String::new(),
             pending_camera_position: None,
+            show_screenshot_preview: false,
             tree: {
                 let mut tree = DockState::new(vec![Objects::InputMesh]);
 
@@ -463,6 +471,7 @@ fn header(
     target: Vec3,
     camera_import_text: &mut String,
     pending_camera_position: &mut Option<(Vec3, Vec3)>,
+    show_screenshot_preview: &mut bool,
 ) {
     ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
         Frame {
@@ -725,6 +734,21 @@ fn header(
                                 *PENDING_SCREENSHOT.lock().unwrap() = Some(path);
                             }
                         });
+                    }
+
+                    space(ui);
+
+                    let preview_label = if *show_screenshot_preview {
+                        "Hide preview [active]"
+                    } else {
+                        "Show preview"
+                    };
+                    if *show_screenshot_preview {
+                        if sleek_button(ui, preview_label) {
+                            *show_screenshot_preview = false;
+                        }
+                    } else if sleek_button_unfocused(ui, preview_label) {
+                        *show_screenshot_preview = true;
                     }
 
                     space(ui);
@@ -1097,6 +1121,7 @@ pub fn update(
     mut render_setting_store: ResMut<RenderObjectSettingStore>,
     time: Res<Time>,
     image_handle: Res<CameraHandles>,
+    screenshot_handle: Res<ScreenshotHandle>,
     mut ui_resource: ResMut<UiResource>,
     diagnostics: Res<DiagnosticsStore>,
     latest_log: Res<LatestLogLine>,
@@ -1175,6 +1200,7 @@ pub fn update(
                         camera_target,
                         &mut ui_r.camera_import_text,
                         &mut ui_r.pending_camera_position,
+                        &mut ui_r.show_screenshot_preview,
                     );
 
                     ui.add_space(5.);
@@ -1598,6 +1624,37 @@ pub fn update(
                 render_setting_store.objects = tab_viewer.render_settings.clone();
             }
         });
+
+    // Live screenshot preview: shows the offscreen screenshot camera's texture,
+    // i.e. exactly what "Save Screenshot" will write to disk. The texture is
+    // re-rendered every frame, so this updates as the camera orbits/zooms.
+    if ui_resource.show_screenshot_preview {
+        let screenshot_texture = egui_ctx.add_image(bevy_egui::EguiTextureHandle::Strong(
+            screenshot_handle.0.clone(),
+        ));
+        let mut open = true;
+        bevy_egui::egui::Window::new("Screenshot preview")
+            .open(&mut open)
+            .resizable(true)
+            .default_size([400.0, 400.0])
+            .show(egui_ctx.ctx_mut()?, |ui| {
+                // The screenshot texture is square; fit it to the smaller of the
+                // available width/height so it never overflows the window.
+                let side = ui.available_width().min(ui.available_height()).max(1.0);
+                ui.centered_and_justified(|ui| {
+                    ui.add(bevy_egui::egui::widgets::Image::new(
+                        bevy_egui::egui::load::SizedTexture::new(
+                            screenshot_texture,
+                            [side, side],
+                        ),
+                    ));
+                });
+            });
+        if !open {
+            ui_resource.show_screenshot_preview = false;
+        }
+    }
+
     Ok(())
 }
 
