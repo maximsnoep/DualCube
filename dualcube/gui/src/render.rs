@@ -6,7 +6,7 @@ use crate::render_skeleton::{
     create_invalid_region_gizmos, create_routing_diagnostics_gizmos, create_skeleton_gizmos,
 };
 use crate::ui::UiResource;
-use crate::{colors, MainMesh, PerpetualGizmos};
+use crate::{colors, InputResource, MainMesh, PerpetualGizmos};
 use crate::{
     to_principal_direction, vector3d_to_vec3, CameraHandles, Configuration, Perspective,
     PrincipalDirection, Rendered,
@@ -22,6 +22,7 @@ use bevy::render::render_resource::{
 };
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
 use bevy_axes_gizmo::AxesGizmoSyncCamera;
+use bevy_egui::EguiContexts;
 use bevy_egui::EguiGlobalSettings;
 use bevy_egui::PrimaryEguiContext;
 use bevy_orbit_camera::*;
@@ -136,6 +137,13 @@ pub struct ComprehensiveState {
     captures_done: usize,
     /// Snapshot of render settings taken at the start, restored at the end.
     saved_settings: Option<HashMap<Objects, RenderObjectSetting>>,
+}
+
+impl ComprehensiveState {
+    /// Whether a comprehensive capture run is currently in progress.
+    pub fn is_running(&self) -> bool {
+        self.active
+    }
 }
 
 const DEFAULT_CAMERA_EYE: Vec3 = Vec3::new(25.0, 25.0, 25.0);
@@ -1938,4 +1946,237 @@ pub fn apply_captured_tiles(
 
         state.captures_done += 1;
     }
+}
+
+/// Set by the "Fit to view" button to request framing the model.
+pub static PENDING_FIT: Mutex<bool> = Mutex::new(false);
+
+/// Latest captured screenshot frame handed from the capture observer to the fit
+/// state machine for pixel analysis.
+static FIT_CAPTURE: Mutex<Option<Image>> = Mutex::new(None);
+
+/// Fraction of the frame left as a gap between the model and the edge on the
+/// tightest axis.
+const FIT_MARGIN: f32 = 0.03;
+
+/// Max camera-adjustment passes per fit.
+const FIT_MAX_ITERATIONS: u32 = 8;
+
+/// Phases of one fit iteration.
+#[derive(Default, PartialEq, Eq, Clone, Copy)]
+enum FitPhase {
+    /// Let the screenshot camera render the current pose.
+    #[default]
+    Wait,
+    /// Capture the screenshot texture.
+    Capture,
+    /// Wait for the captured frame, then analyze + adjust.
+    WaitCapture,
+    /// Restore state and finish.
+    Finish,
+}
+
+/// State machine that frames the model by repeatedly rendering it to the
+/// offscreen screenshot texture, measuring where it actually lands, and nudging
+/// the camera until centred with [`FIT_MARGIN`].
+#[derive(Resource, Default)]
+pub struct FitState {
+    active: bool,
+    phase: FitPhase,
+    iterations_left: u32,
+    wait_frames: u32,
+    /// View-space bounding-box center of the input model (depth reference).
+    model_center: Vec3,
+}
+
+/// Frames the input model by measuring it in the offscreen screenshot texture
+/// (a clean, square, UI-free render) and iterating the camera until the model is
+/// centred with a [`FIT_MARGIN`] gap on the tightest edge. Orientation never
+/// changes — only the camera's target and distance. Triggered by the "Fit to
+/// view" button (via [`PENDING_FIT`]) or the `F` key (unless typing into the UI).
+///
+/// Image-based on purpose: it sidesteps viewport / projection / perspective-skew
+/// math by optimizing exactly what gets rendered.
+pub fn fit_camera_to_view(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut egui_ctx: EguiContexts,
+    mut commands: Commands,
+    input: Res<InputResource>,
+    screenshot_handle: Option<Res<ScreenshotHandle>>,
+    comprehensive: Res<ComprehensiveState>,
+    mut cam_override: ResMut<ScreenshotCameraOverride>,
+    mut state: ResMut<FitState>,
+    mut cameras: Query<(&mut LookTransform, Option<&Projection>), With<Controller>>,
+) {
+    if !state.active {
+        let button = std::mem::take(&mut *PENDING_FIT.lock().unwrap());
+        let typing = egui_ctx
+            .ctx_mut()
+            .map(|c| c.wants_keyboard_input())
+            .unwrap_or(false);
+        let key = !typing && keyboard.just_pressed(KeyCode::KeyF);
+        if !button && !key {
+            return;
+        }
+        // Both the fit and the comprehensive capture drive the screenshot camera;
+        // don't start a fit while a comprehensive run is active.
+        if input.mesh.nr_verts() == 0 || comprehensive.is_running() || screenshot_handle.is_none() {
+            return;
+        }
+
+        // View-space bbox center of the input model, for depth estimation.
+        let translation = input.properties.translation;
+        let scale = input.properties.scale;
+        let mut min = Vec3::splat(f32::MAX);
+        let mut max = Vec3::splat(f32::MIN);
+        for v in input.mesh.vert_ids() {
+            let p = world_to_view(input.mesh.position(v), translation, scale);
+            min = min.min(p);
+            max = max.max(p);
+        }
+        if !min.is_finite() || !max.is_finite() {
+            return;
+        }
+        state.model_center = (min + max) * 0.5;
+        state.active = true;
+        state.phase = FitPhase::Wait;
+        state.wait_frames = 2;
+        state.iterations_left = FIT_MAX_ITERATIONS;
+        *FIT_CAPTURE.lock().unwrap() = None;
+        // Point the screenshot camera at the model regardless of the largest panel.
+        cam_override.0 = Some(Objects::InputMesh);
+        return;
+    }
+
+    match state.phase {
+        FitPhase::Wait => {
+            if state.wait_frames > 0 {
+                state.wait_frames -= 1;
+            } else {
+                state.phase = FitPhase::Capture;
+            }
+        }
+        FitPhase::Capture => {
+            if let Some(handle) = screenshot_handle.as_ref() {
+                commands.spawn(Screenshot::image(handle.0.clone())).observe(
+                    move |screenshot: On<ScreenshotCaptured>| {
+                        *FIT_CAPTURE.lock().unwrap() = Some(screenshot.image.clone());
+                    },
+                );
+            }
+            // Safety timeout (frames) so a missed capture can't hang the fit.
+            state.wait_frames = 120;
+            state.phase = FitPhase::WaitCapture;
+        }
+        FitPhase::WaitCapture => {
+            let Some(img) = FIT_CAPTURE.lock().unwrap().take() else {
+                state.wait_frames = state.wait_frames.saturating_sub(1);
+                if state.wait_frames == 0 {
+                    state.phase = FitPhase::Finish;
+                }
+                return;
+            };
+            let converged = match cameras.single_mut() {
+                Ok((mut look, projection)) => {
+                    let vfov = match projection {
+                        Some(Projection::Perspective(p)) => p.fov,
+                        _ => std::f32::consts::FRAC_PI_4,
+                    };
+                    fit_adjust(&img, &mut look, state.model_center, vfov)
+                }
+                Err(_) => true,
+            };
+            state.iterations_left = state.iterations_left.saturating_sub(1);
+            if converged || state.iterations_left == 0 {
+                state.phase = FitPhase::Finish;
+            } else {
+                state.wait_frames = 2;
+                state.phase = FitPhase::Wait;
+            }
+        }
+        FitPhase::Finish => {
+            cam_override.0 = None;
+            state.active = false;
+        }
+    }
+}
+
+/// Measures the model's bounding box in the captured frame (opaque pixels over
+/// the transparent background) and nudges the camera to centre it with
+/// [`FIT_MARGIN`]. Returns whether the framing has converged.
+fn fit_adjust(img: &Image, look: &mut LookTransform, model_center: Vec3, vfov: f32) -> bool {
+    let Some(data) = img.data.as_ref() else {
+        return true;
+    };
+    let w = img.width() as usize;
+    let h = img.height() as usize;
+    if w == 0 || h == 0 || data.len() < w * h * 4 {
+        return true;
+    }
+
+    // Bounding box of model pixels. The screenshot camera renders the model
+    // opaque over a transparent background, so alpha distinguishes them (a
+    // colour test would fail on a black-feature model over a black-transparent
+    // background).
+    const ALPHA_THRESHOLD: u8 = 16;
+    const STEP: usize = 2;
+    let (mut xmin, mut xmax, mut ymin, mut ymax) = (usize::MAX, 0usize, usize::MAX, 0usize);
+    let mut found = false;
+    let mut y = 0;
+    while y < h {
+        let mut x = 0;
+        while x < w {
+            let alpha = data[(y * w + x) * 4 + 3];
+            if alpha > ALPHA_THRESHOLD {
+                found = true;
+                xmin = xmin.min(x);
+                xmax = xmax.max(x);
+                ymin = ymin.min(y);
+                ymax = ymax.max(y);
+            }
+            x += STEP;
+        }
+        y += STEP;
+    }
+    if !found {
+        return true;
+    }
+
+    // Screen-space offset of the model's center and its half-extent, in pixels.
+    let off_x = (xmin + xmax) as f32 * 0.5 - w as f32 * 0.5;
+    let off_y = (ymin + ymax) as f32 * 0.5 - h as f32 * 0.5;
+    let half = (((xmax - xmin) as f32) * 0.5)
+        .max(((ymax - ymin) as f32) * 0.5)
+        .max(1.0);
+
+    // Camera basis from the (unchanged) orientation.
+    let forward = (look.target - look.eye).normalize_or_zero();
+    if forward == Vec3::ZERO {
+        return true;
+    }
+    let mut right = forward.cross(Vec3::Y);
+    if right.length_squared() < 1e-9 {
+        right = forward.cross(Vec3::Z);
+    }
+    let right = right.normalize();
+    let up = right.cross(forward).normalize();
+
+    // The screenshot texture is square, so one world-per-pixel scale (derived
+    // from the vertical FOV at the model's depth) covers both axes.
+    let depth = (model_center - look.eye).dot(forward).max(1e-3);
+    let world_per_px = 2.0 * depth * (vfov * 0.5).tan() / h as f32;
+
+    // Pan the whole camera so the model's pixel center moves to the frame center
+    // (image Y is top-down, hence the negated up component).
+    let pan = right * (off_x * world_per_px) - up * (off_y * world_per_px);
+    look.eye += pan;
+    look.target += pan;
+
+    // Scale distance so the larger half-extent fills to `1 - FIT_MARGIN`.
+    let desired_half = (h as f32 * 0.5) * (1.0 - FIT_MARGIN);
+    let ratio = half / desired_half;
+    let dir = look.eye - look.target;
+    look.eye = look.target + dir * ratio;
+
+    off_x.abs() < 2.0 && off_y.abs() < 2.0 && (ratio - 1.0).abs() < 0.01
 }

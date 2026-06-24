@@ -254,6 +254,7 @@ fn main() {
         .init_resource::<render::ScreenshotCameraOverride>()
         .init_resource::<render::ComprehensiveState>()
         .init_resource::<render::PreviewTileHandles>()
+        .init_resource::<render::FitState>()
         .insert_resource(UiScale(1.0)) // no UI scaling
         .init_gizmo_group::<PerpetualGizmos>()
         .insert_resource(GlobalAmbientLight {
@@ -333,6 +334,7 @@ fn main() {
         .add_systems(Update, render::take_screenshot)
         .add_systems(Update, render::drive_comprehensive_capture)
         .add_systems(Update, render::apply_captured_tiles)
+        .add_systems(Update, render::fit_camera_to_view)
         .run();
 }
 

@@ -3,7 +3,7 @@ use crate::jobs::{Job, JobRequest, JobState};
 use crate::render::{
     CameraFor, ComprehensiveMode, ComprehensiveRequest, Objects, PreviewTileHandles,
     RenderObjectSetting, RenderObjectSettingStore, ScreenshotHandle, PENDING_COMPREHENSIVE,
-    PENDING_SCREENSHOT,
+    PENDING_FIT, PENDING_SCREENSHOT,
 };
 use crate::{
     colors, CameraHandles, Configuration, InputResource, Perspective, Phase, PrincipalDirection,
@@ -643,6 +643,12 @@ fn header(
                     let m = 2.0;
 
                     space(ui);
+
+                    if sleek_button(ui, "Fit to view [F]") {
+                        *PENDING_FIT.lock().unwrap() = true;
+                    }
+
+                    sep(ui);
 
                     label(ui, "Automatic camera rotation", 12., Color32::WHITE);
 
