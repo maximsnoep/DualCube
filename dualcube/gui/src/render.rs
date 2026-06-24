@@ -393,6 +393,9 @@ pub fn reset(
             Tonemapping::None,
             bevy_blossom::CameraMarker,
             bevy_orbit_camera::automatic::Marker,
+            // Layer 1 carries the background spheres (see respawn_renders); the
+            // dock cameras show them, the screenshot camera does not.
+            RenderLayers::from_layers(&[0, 1]),
         ))
         .insert((OrbitCameraBundle::new(
             Controller {
@@ -457,6 +460,7 @@ pub fn reset(
             projection,
             Tonemapping::None,
             CameraFor(object),
+            RenderLayers::from_layers(&[0, 1]),
         ));
     }
 
@@ -520,6 +524,9 @@ pub fn reset(
         },
         Tonemapping::None,
         ScreenshotCamera,
+        // Layer 0 only: excludes the background spheres (layer 1) so screenshots
+        // keep a transparent background even when the camera is outside a sphere.
+        RenderLayers::layer(0),
     ));
 }
 
@@ -724,11 +731,14 @@ pub fn respawn_renders(
                 }
             }
             // Spawning covers such that the objects are view-blocked.
+            // On render layer 1 so only the dock cameras show them; the
+            // screenshot camera (layer 0) keeps a transparent background.
             commands.spawn((
                 Mesh3d(meshes.add(Sphere::new(400.))),
                 MeshMaterial3d(background_material.clone()),
                 Transform::from_translation(Vec3::from(object)),
                 Rendered,
+                RenderLayers::layer(1),
             ));
         }
     }
