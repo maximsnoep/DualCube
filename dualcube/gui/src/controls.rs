@@ -6,6 +6,7 @@ use crate::{
 };
 use bevy::picking::backend::ray::RayMap;
 use bevy::prelude::*;
+use bevy_orbit_camera::Controller;
 use dualcube::prelude::*;
 use itertools::Itertools;
 use mehsh::prelude::*;
@@ -421,12 +422,17 @@ pub fn skeleton_node_modification_system(
         gizmos.line(a_view, b_view, colors::to_bevy(colors::LIGHT_GRAY));
     }
 
-    // Find nearest skeleton node by perpendicular distance to the cursor ray (Bevy world space).
+    // Find the skeleton node nearest the cursor *on screen* (Bevy world space ray).
+    // We minimize the angular distance from the ray (perpendicular distance divided by
+    // depth along the ray), not the raw perpendicular distance. Raw perpendicular distance
+    // is depth-biased: a far-away node only needs to be loosely aligned with the ray to
+    // score a tiny perpendicular, so it would beat a node sitting right under the cursor but
+    // closer to the camera. Nodes behind the camera (along <= 0) are excluded entirely.
     // This works without any mesh entity being present under the cursor.
-    let nearest_node = ray.map(|r| {
+    let nearest_node = ray.and_then(|r| {
         cleaned_skeleton
             .node_indices()
-            .min_by_key(|&idx| {
+            .filter_map(|idx| {
                 let node_world = world_to_view(
                     cleaned_skeleton[idx].position,
                     mesh_resmut.properties.translation,
@@ -434,10 +440,14 @@ pub fn skeleton_node_modification_system(
                 );
                 let to_node = node_world - r.origin;
                 let along = to_node.dot(*r.direction);
+                if along <= 0.0 {
+                    return None; // behind the camera
+                }
                 let perp = to_node - *r.direction * along;
-                OrderedFloat(perp.length())
+                Some((idx, OrderedFloat(perp.length() / along)))
             })
-            .unwrap()
+            .min_by_key(|&(_, angular_dist)| angular_dist)
+            .map(|(idx, _)| idx)
     });
 
     // Draw all nodes — red if marked for removal, white otherwise; larger if hovered
@@ -487,6 +497,9 @@ pub fn system(
     mut gizmos: Gizmos<PerpetualGizmos>,
     mut configuration: ResMut<Configuration>,
     jobs: MessageWriter<JobRequest>,
+    windows: Query<&Window>,
+    main_camera: Query<(Entity, &Camera), With<Controller>>,
+    mut egui_ctx: bevy_egui::EguiContexts,
 ) -> Result<(), BevyError> {
     configuration.raycasted = None;
     configuration.selected = None;
@@ -513,7 +526,54 @@ pub fn system(
     // Skeleton node modification uses ray-to-node distance, so it works without a mesh surface hit.
     // The raw cursor ray is passed; hover/click target the node geometrically nearest the ray.
     if configuration.interactive_mode == InteractiveMode::SkeletonNodeModification {
-        let ray = ray_map.iter().next().map(|(_, r)| *r);
+        // Bevy still produces a picking ray when the cursor is over the egui UI, so we only
+        // feed a ray to the picker when the cursor is genuinely on the 3D view. Two filters:
+        //   1. The 3D viewport is itself rendered inside the central egui dock panel, which
+        //      lives in `Order::Background`. Floating egui windows (e.g. the screenshot/
+        //      comprehensive previews) and tooltips sit in a higher layer on top of it. So we
+        //      block only when the topmost egui layer under the cursor is *not* the background
+        //      layer — using `is_pointer_over_area()` here would block everything, since the
+        //      dock panel always counts as an area.
+        //   2. The cursor must be inside the camera viewport rect, which excludes the docked
+        //      side/top/bottom panels (they fall outside the main surface leaf).
+        // The skeleton overlay is still drawn (with no hover target) when ray is None.
+        let main_camera = main_camera.single().ok();
+        let pointer_over_egui_window = egui_ctx
+            .ctx_mut()
+            .map(|c| match c.pointer_latest_pos() {
+                Some(pos) => c
+                    .layer_id_at(pos)
+                    .map(|layer| layer.order != bevy_egui::egui::Order::Background)
+                    .unwrap_or(false),
+                None => false,
+            })
+            .unwrap_or(false);
+        let cursor_in_viewport = !pointer_over_egui_window
+            && (|| -> Option<bool> {
+                let window = windows.iter().next()?;
+                let cursor = window.cursor_position()?;
+                let (_, camera) = main_camera?;
+                let rect = camera.physical_viewport_rect()?;
+                let physical = (cursor * window.scale_factor()).as_uvec2();
+                Some(rect.contains(physical))
+            })()
+            .unwrap_or(false);
+
+        // Pick the ray belonging to the main 3D camera specifically. Both the 3D camera and
+        // the egui 2D camera render to the window and produce picking rays, and `RayMap` is a
+        // hash map with arbitrary iteration order — so `iter().next()` could return the egui
+        // camera's ray (a different projection), which reshuffles when cameras are respawned
+        // on model load and made selection appear random. Filtering by camera entity is stable.
+        let ray = if cursor_in_viewport {
+            main_camera.and_then(|(cam_entity, _)| {
+                ray_map
+                    .iter()
+                    .find(|(id, _)| id.camera == cam_entity)
+                    .map(|(_, r)| *r)
+            })
+        } else {
+            None
+        };
         return skeleton_node_modification_system(mouse, mesh_resmut, solution, gizmos, configuration, ray);
     }
 
